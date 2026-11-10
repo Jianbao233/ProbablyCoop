@@ -1,0 +1,22 @@
+<Manifest>
+  <ID>probably_coop</ID>
+  <Name>双人合伙店 / Probably Coop</Name>
+  <Author>ProbablyCoop Contributors</Author>
+  <ModVersion>0.1.0</ModVersion>
+  <Description>双人原版前端协作经营、独立角色与随身物品、共享店铺和共同日结</Description>
+  <GameVersions>
+    <Version>0.46</Version>
+  </GameVersions>
+  <Prerequisites />
+  <Assemblies>
+    <Assembly>ProbablyCoop.dll</Assembly>
+  </Assemblies>
+  <Capabilities>
+    <Capability>files</Capability>
+    <Capability>steam</Capability>
+    <Capability>network</Capability>
+    <Capability>native</Capability>
+    <Capability>reflection-external</Capability>
+    <Capability>dynamic-code</Capability>
+  </Capabilities>
+</Manifest>

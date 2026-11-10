@@ -1,0 +1,117 @@
+title,Probably Coop
+room_header,Create or join a shared shop
+native_header,Shared shop · Room controls
+native_hint,Use F7 for room controls and personal carry.
+open,Open (F7)
+prototype,Prototype · shared test tiles
+code_hint,Enter a room code or host IPv4
+join_code_hint,Paste a room code
+host_address_hint,Host's virtual LAN or local IPv4
+steam_friend_hint,Your partner can right-click you in Steam Friends and choose Join Game.
+status_steam_join_busy,Leave your current room before joining from Steam Friends again.
+room_code,Room code
+code_copied,Copied
+close_room,Close room
+cancel_connection,Cancel connection
+confirm_close_room,Closing the room disconnects your partner. Close it?
+confirm_leave_room,Leave the room and return to the main menu?
+host_start_hint,Start or resume a co-op save to open your shared shop.
+create,Host on Steam
+local_create,Host local test
+join,Join
+copy,Copy code
+leave,Leave
+approve,Accept
+pending,Waiting for host
+status_idle,Create a room or paste a room code.
+status_local_idle,Start a room for a local test guest.
+status_local_waiting,Local room ready. Copy the PSL code for the guest.
+status_local_connected,Local test guest connected.
+status_creating,Creating a Steam lobby…
+status_joining,Joining a Steam lobby…
+status_bad_code,Invalid room code.
+status_create_failed,Could not create the room.
+status_join_failed,Could not join the room.
+status_waiting,Room ready. Copy the code for your partner.
+status_approve,A partner is waiting for your approval.
+status_await_approval,Waiting for the host to approve.
+status_handshake,Checking versions and establishing P2P…
+status_connected,Partner connected.
+status_shop_connected,Connected to the shared shop.
+status_incompatible,Game or mod build mismatch.
+status_peer_timeout,Peer disconnected. Rejoin with the room code.
+status_lobby_timeout,Steam lobby request timed out.
+status_wrong_lobby,This is not an active Probably Coop room.
+status_metadata_failed,Could not publish room details.
+status_steam_offline,Connect to Steam and try again.
+status_host_left,The original host left. Room closed.
+new_run,New co-op game
+cancel_run,Cancel new co-op save
+day,Day
+cash,Cash
+night_cost,Night services cost
+page,Page
+ready,Ready
+unready,Cancel ready
+finish_day,End day
+buy,Buy
+sell,Sell
+stock,Stock
+counter,Counter
+armed,Co-op save armed. Start a new game from the main menu.
+shop_waiting,Create a room for this co-op save.
+more_items,First 80 items
+phase_Playing,Open for business
+phase_Ready,Night service panel open
+phase_Settling,Settling
+phase_Saved,Checkpoint saved
+phase_SaveUnverified,Operation or save unverified
+phase_Ended,Run ended
+result_Applied,Applied
+result_Stale,State changed. Retry.
+result_Unavailable,Unavailable
+result_NoSpace,No empty slot for entire stack
+result_Busy,Host busy
+result_Failed,Operation failed
+shop_header,Shared shop · Click to move goods
+lan_create,Host on LAN
+status_bad_address,Enter the host PC LAN or VPN IPv4 address.
+status_lan_waiting,LAN room ready. Copy the PSI room code for your partner.
+status_lan_connected,LAN partner connected.
+status_steam_unavailable,Steam is unavailable. Enter an IPv4 address to host on LAN.
+day_peer_waiting,Waiting for your partner to join or reconnect
+travel_unavailable,The guest can currently travel to the Dumping Grounds.
+day_peer_outside,Your partner must return before settling the day.
+trade_current_offer,Current offer
+resume_run,Resume co-op
+no_checkpoints,No readable co-op checkpoints.
+checkpoint_unavailable,Could not read that co-op checkpoint.
+cursor_location_0,Main menu
+cursor_location_1,Store
+cursor_location_2,Dumping Grounds
+cursor_location_3,Commissary
+cursor_location_4,Dr. Jackson
+cursor_location_5,Away
+cursor_surface_41,Stock
+cursor_surface_42,Back counter
+cursor_surface_43,Ground
+cursor_surface_46,Front counter
+cursor_surface_47,Display case
+cursor_surface_50,Negotiation
+cursor_surface_51,Night bill
+cursor_surface_52,Morning report
+cursor_surface_53,Viewing an item or machine panel
+cursor_carrying,Carrying
+history_checkpoint,Earlier checkpoint
+incompatible_checkpoint,This file does not pass the current two-character save checks. The original file is preserved.
+personal_carry,Open / close personal inventory
+party_ready_status,You: {0}  Partner: {1}
+party_ready,Ready
+party_pending,Waiting
+party_host_finish,Confirm to settle
+trip_confirm,Ready to travel
+trip_refresh,Update travel readiness
+drop_full,The destination is full. The item stays where it was.
+drop_busy,The item or target is busy. The item stays where it was.
+drop_unavailable,This item cannot be placed on or used with that target.
+drop_stale,The item or target changed. The unconfirmed move was restored.

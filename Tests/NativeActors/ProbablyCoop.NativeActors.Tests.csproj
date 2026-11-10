@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="com.rlabrecque.steamworks.net">
+      <HintPath>$(GameManaged)\com.rlabrecque.steamworks.net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Compile Include="*.cs" />
+    <Compile Include="..\..\Core\ActivityScope.cs" Link="Core\ActivityScope.cs" />
+    <Compile Include="..\..\Game\NativeActorState.cs" Link="Game\NativeActorState.cs" />
+    <Compile Include="..\..\Game\NativeActorRun.cs" Link="Game\NativeActorRun.cs" />
+    <Compile Include="..\..\Game\NativeActorFieldAccess.cs" Link="Game\NativeActorFieldAccess.cs" />
+    <Compile Include="..\..\Game\NativeActorProjection.cs" Link="Game\NativeActorProjection.cs" />
+    <Compile Include="..\..\Game\NativeActorInventory.cs" Link="Game\NativeActorInventory.cs" />
+    <Compile Include="..\..\Game\NativeActorCarry.cs" Link="Game\NativeActorCarry.cs" />
+    <Compile Include="..\..\Game\NativeActorCarryAccess.cs" Link="Game\NativeActorCarryAccess.cs" />
+  </ItemGroup>
+  <Target Name="RecordNativeReferencePath" AfterTargets="Build">
+    <WriteLinesToFile File="$(OutDir)native-managed-path.txt" Lines="$(GameManaged)" Overwrite="true" />
+  </Target>
+</Project>

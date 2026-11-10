@@ -1,0 +1,117 @@
+title,双人合伙店
+room_header,创建或加入同一家店铺
+native_header,共享经营 · 房间管理
+native_hint,F7 管理房间和随身物品。
+open,打开（F7）
+prototype,原型 · 共享测试格子
+code_hint,输入房间码或房主本机 IPv4
+join_code_hint,粘贴房间码
+host_address_hint,本机虚拟局域网或内网 IPv4
+steam_friend_hint,让合伙人在 Steam 好友列表右键你并选择「加入游戏」。
+status_steam_join_busy,当前已有房间。退出后可从 Steam 好友列表重新加入。
+room_code,房间码
+code_copied,已复制
+close_room,关闭房间
+cancel_connection,取消连接
+confirm_close_room,关闭房间会断开合伙人的连接。确定关闭？
+confirm_leave_room,确定离开房间并返回主菜单？
+host_start_hint,新建或继续合作档后即可一起开店。
+create,Steam 建房
+local_create,开启本机测试
+join,加入
+copy,复制房间码
+leave,退出
+approve,接受
+pending,等待主机
+status_idle,创建房间或粘贴房间码。
+status_local_idle,开启一个仅供本机副机加入的测试房间。
+status_local_waiting,本机房间已创建，复制 PSL 房间码给副机。
+status_local_connected,本机副机已连接。
+status_creating,正在创建 Steam 大厅…
+status_joining,正在加入 Steam 大厅…
+status_bad_code,房间码无效。
+status_create_failed,无法创建房间。
+status_join_failed,无法加入房间。
+status_waiting,房间已创建。复制房间码给合伙人。
+status_approve,合伙人正在等待确认。
+status_await_approval,等待房主确认。
+status_handshake,正在核对版本并建立 P2P 连接…
+status_connected,合伙人已连接。
+status_shop_connected,已连接共享店铺。
+status_incompatible,游戏或模组版本不一致。
+status_peer_timeout,对端已断线，请通过房间码重进。
+status_lobby_timeout,Steam 大厅请求超时。
+status_wrong_lobby,该房间并非有效的双人合伙店房间。
+status_metadata_failed,无法发布房间信息。
+status_steam_offline,请连接 Steam 后重试。
+status_host_left,原房主已离开，房间已关闭。
+new_run,新建合作局
+cancel_run,取消新建合作局
+day,天数
+cash,现金
+night_cost,夜间服务费用
+page,页
+ready,准备
+unready,取消准备
+finish_day,结算当天
+buy,买入
+sell,卖出
+stock,主仓
+counter,后柜台
+armed,已标记。请从主菜单选择「新游戏」。
+shop_waiting,为这个合作存档创建房间。
+more_items,仅显示前 80 件
+phase_Playing,营业中
+phase_Ready,夜间结算面板已打开
+phase_Settling,正在结算
+phase_Saved,存档检查点已写入
+phase_SaveUnverified,操作或存档未确认
+phase_Ended,经营结束
+result_Applied,已执行
+result_Stale,状态已变化，请重试
+result_Unavailable,当前不可用
+result_NoSpace,没有容纳整件货物的空位
+result_Busy,主机正在处理其他操作
+result_Failed,操作失败
+shop_header,共享经营 · 点击可移动货物
+lan_create,局域网建房
+status_bad_address,请填写房主电脑的局域网或虚拟局域网 IPv4 地址。
+status_lan_waiting,局域网房间已创建。复制 PSI 房间码给合伙人。
+status_lan_connected,局域网合伙人已连接。
+status_steam_unavailable,Steam 尚未就绪。可输入 IPv4 开局域网房间。
+day_peer_waiting,等待合伙人加入或重连
+travel_unavailable,此版本的副机暂可前往垃圾倾倒场。
+day_peer_outside,合伙人还在外面，回店后才能日结。
+trade_current_offer,当前报价
+resume_run,继续合作档
+no_checkpoints,没有可读取的合作检查点。
+checkpoint_unavailable,无法读取这个合作检查点。
+cursor_location_0,主菜单
+cursor_location_1,店内
+cursor_location_2,垃圾倾倒场
+cursor_location_3,配给站
+cursor_location_4,杰克逊博士
+cursor_location_5,外出
+cursor_surface_41,主仓
+cursor_surface_42,后柜台
+cursor_surface_43,地面
+cursor_surface_46,前柜台
+cursor_surface_47,展示柜
+cursor_surface_50,议价平板
+cursor_surface_51,夜间账单
+cursor_surface_52,日报
+cursor_surface_53,查看物品或机器面板
+cursor_carrying,搬运中
+history_checkpoint,历史检查点
+incompatible_checkpoint,此文件未通过当前双角色存档校验，原文件已保留。
+personal_carry,打开／关闭随身物品
+party_ready_status,你：{0}  合伙人：{1}
+party_ready,已准备
+party_pending,待准备
+party_host_finish,请确认结算
+trip_confirm,同意并准备
+trip_refresh,更新出行准备
+drop_full,目标没有足够空间，物品留在原处。
+drop_busy,物品或目标正被占用，物品留在原处。
+drop_unavailable,物品无法放到或用于该目标，物品留在原处。
+drop_stale,物品或目标已变化，已恢复未确认的移动。

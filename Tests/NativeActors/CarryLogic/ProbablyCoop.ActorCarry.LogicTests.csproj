@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net9.0</TargetFramework><OutputType>Exe</OutputType><LangVersion>latest</LangVersion><EnableDefaultCompileItems>false</EnableDefaultCompileItems><OutDir>bin\$(Configuration)\</OutDir></PropertyGroup>
+  <ItemGroup>
+    <Reference Remove="@(Reference)" />
+    <Compile Include="Logic.cs" />
+    <Compile Include="..\..\..\Game\NativeActorCarry.cs" Link="Game\NativeActorCarry.cs" />
+  </ItemGroup>
+  <Target Name="RejectInheritedGameReferences" BeforeTargets="PrepareForBuild"><Error Condition="'@(Reference)' != ''" Text="CarryLogic uses explicit doubles, never game or Harmony references." /></Target>
+</Project>

@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>ProbablyCoop</AssemblyName>
+    <RootNamespace>ProbablyCoop</RootNamespace>
+    <Version>0.1.0</Version>
+
+    <ModId>probably_coop</ModId>
+    <OutDir>$(MSBuildThisFileDirectory)torelease\ProbablyCoop\</OutDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="DOTween">
+      <HintPath>$(GameManaged)\DOTween.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DOTweenPro">
+      <HintPath>$(GameManaged)\DOTweenPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Febucci.TextAnimator.Runtime">
+      <HintPath>$(GameManaged)\Febucci.TextAnimator.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="com.rlabrecque.steamworks.net">
+      <HintPath>$(GameManaged)\com.rlabrecque.steamworks.net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(GameManaged)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(GameManaged)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(GameManaged)\UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Compile Remove="Tests\**\*.cs;LocalGuest\**\*.cs" />
+  </ItemGroup>
+
+  <Target Name="RequireGameReferences" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(GameManaged)/Assembly-CSharp.dll')"
+           Text="Set PSGameDir to your Probably Stolen installation or GameManaged to its Managed directory." />
+  </Target>
+
+  <!-- A normal build stages the installable mod, without game assemblies. -->
+  <Target Name="StageModFiles" AfterTargets="Build">
+    <ItemGroup>
+      <ModRes Include="$(MSBuildThisFileDirectory)manifest.xml" />
+      <CoopLocalization Include="$(MSBuildThisFileDirectory)Localization\*.csv" />
+      <ModRes Include="$(MSBuildThisFileDirectory)Textures\**\*.png" />
+      <ModRes Include="$(MSBuildThisFileDirectory)Sounds\**\*.*" />
+      <ModRes Include="$(MSBuildThisFileDirectory)LootTables\**\*.json" />
+      <ModRes Include="$(MSBuildThisFileDirectory)Books\**\*.json" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ModRes)"
+          DestinationFiles="@(ModRes->'$(OutDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(CoopLocalization)" DestinationFolder="$(OutDir)Localization"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

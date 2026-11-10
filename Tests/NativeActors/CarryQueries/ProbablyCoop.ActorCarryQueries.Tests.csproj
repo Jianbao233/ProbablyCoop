@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net9.0</TargetFramework><OutputType>Exe</OutputType><EnableDefaultCompileItems>false</EnableDefaultCompileItems><OutDir>bin\$(Configuration)\</OutDir></PropertyGroup>
+  <ItemGroup><Compile Include="Program.cs" /></ItemGroup>
+  <Target Name="RecordNativeReferencePath" AfterTargets="Build"><WriteLinesToFile File="$(OutDir)native-managed-path.txt" Lines="$(GameManaged)" Overwrite="true" /></Target>
+</Project>

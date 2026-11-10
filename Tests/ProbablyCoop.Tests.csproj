@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OutDir>bin\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="QaDesktop.cs" />
+    <Compile Remove="InputProbe\**\*.cs" />
+    <Compile Remove="NativeActors\**\*.cs" />
+    <Compile Remove="NativeActorActivities\**\*.cs" />
+    <Compile Remove="NativeBarterOfferLogic\**\*.cs" />
+    <Compile Include="..\Core\*.cs" Link="Core\%(Filename)%(Extension)" />
+    <Compile Include="..\Game\NativeSnapshotCodec.cs" Link="Game\NativeSnapshotCodec.cs" />
+    <Compile Include="..\Game\NativeJoinSnapshot.cs" Link="Game\NativeJoinSnapshot.cs" />
+    <Compile Include="..\Game\NativeCommandEnvelope.cs" Link="Game\NativeCommandEnvelope.cs" />
+    <Compile Include="..\Game\NativeSnapshotBinary.cs" Link="Game\NativeSnapshotBinary.cs" />
+    <Compile Include="..\Game\NativeSnapshotIndex.cs" Link="Game\NativeSnapshotIndex.cs" />
+    <Compile Include="..\Game\NativeRootProjection.cs" Link="Game\NativeRootProjection.cs" />
+    <Compile Include="..\Game\NativeActorInventory.cs" Link="Game\NativeActorInventory.cs" />
+    <Compile Include="..\Game\NativeReceiptProjection.cs" Link="Game\NativeReceiptProjection.cs" />
+    <Compile Include="..\Game\NativeDeferredFields.cs" Link="Game\NativeDeferredFields.cs" />
+    <Compile Include="..\Game\NativeRecordBasis.cs" Link="Game\NativeRecordBasis.cs" />
+    <Compile Include="..\Game\NativeTagRow.cs" Link="Game\NativeTagRow.cs" />
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(GameManaged)\Newtonsoft.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateDependencyFile>true</GenerateDependencyFile>
+    <OutDir>bin\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Directory.Build.props supplies real game references for Mod projects.
+         This isolated logic suite uses only its explicit doubles below. -->
+    <Reference Remove="@(Reference)" />
+    <Compile Include="Logic.cs" />
+    <Compile Include="..\..\..\Game\NativeActorNight.cs" Link="Game\NativeActorNight.cs" />
+  </ItemGroup>
+  <Target Name="RejectInheritedGameReferences" BeforeTargets="PrepareForBuild">
+    <Error Condition="'@(Reference)' != ''" Text="NightLogic must not reference game or Harmony assemblies; it tests explicit doubles only." />
+  </Target>
+</Project>

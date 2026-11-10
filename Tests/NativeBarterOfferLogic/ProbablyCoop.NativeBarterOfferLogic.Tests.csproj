@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="Stubs.cs" />
+    <Compile Include="..\..\Game\NativeBarterOffer.cs" Link="Game\NativeBarterOffer.cs" />
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(GameManaged)\Newtonsoft.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="ValidateStandaloneReferences" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(GameManaged)\Newtonsoft.Json.dll')"
+           Text="Set PSGameDir to a Probably Stolen installation or GameManaged to its Managed directory containing Newtonsoft.Json.dll." />
+    <Error Condition="'@(Reference)' != 'Newtonsoft.Json'"
+           Text="This STUB test must not reference game, Unity or Harmony assemblies." />
+  </Target>
+</Project>

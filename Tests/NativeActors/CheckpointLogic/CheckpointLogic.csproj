@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateDependencyFile>true</GenerateDependencyFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- This suite uses native/ES3 doubles, never the actual game assemblies. -->
+    <Reference Remove="@(Reference)" />
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(GameManaged)\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Compile Include="Logic.cs" />
+    <Compile Include="Entry.cs" />
+    <Compile Include="..\..\..\Game\NativeActorCheckpoint.cs" Link="NativeActorCheckpoint.cs" />
+  </ItemGroup>
+  <Target Name="RecordReferencePath" AfterTargets="Build">
+    <WriteLinesToFile File="$(OutDir)native-managed-path.txt" Lines="$(GameManaged)" Overwrite="true" />
+  </Target>
+</Project>

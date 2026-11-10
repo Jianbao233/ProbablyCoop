@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="*.cs" />
+    <Compile Include="..\..\Core\ActivityScope.cs" Link="Core\ActivityScope.cs" />
+    <Compile Include="..\..\Game\NativeActorState.cs" Link="Game\NativeActorState.cs" />
+    <Compile Include="..\..\Game\NativeActorRun.cs" Link="Game\NativeActorRun.cs" />
+    <Compile Include="..\..\Game\NativeActorActivities.cs" Link="Game\NativeActorActivities.cs" />
+    <Compile Include="..\..\Game\NativeActorPersonalUi.cs" Link="Game\NativeActorPersonalUi.cs" />
+    <Compile Include="..\..\Game\NativeActorPartnerSetup.cs" Link="Game\NativeActorPartnerSetup.cs" />
+    <Compile Include="..\..\Game\NativeActorPerkQueries.cs" Link="Game\NativeActorPerkQueries.cs" />
+  </ItemGroup>
+  <Target Name="RecordNativeReferencePath" AfterTargets="Build">
+    <WriteLinesToFile File="$(OutDir)native-managed-path.txt" Lines="$(GameManaged)" Overwrite="true" />
+  </Target>
+</Project>
