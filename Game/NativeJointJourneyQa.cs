@@ -16,6 +16,9 @@ internal sealed partial class NativeBackgroundQa
     private string hostObservedScene="";
     private bool eveningFixture;
     private bool blockedTripRetryVerified;
+    private int travelRecoveryHost;
+    private bool travelRecoverySleepOpened, travelRecoveryGuest;
+    private const string TravelRecoveryTag="QA_TRAVEL_RECOVERY_READY";
     private const string TravelPackTag="PROBABLY_COOP_QA_TRAVEL_PACK";
     private const string TravelHostPackTag="PROBABLY_COOP_QA_TRAVEL_HOST_PACK";
     private GameItem travelBackpack;
@@ -64,6 +67,12 @@ internal sealed partial class NativeBackgroundQa
         var world=NativeWorld.Host; if(world==null) return;
         if(!eveningFixture && PlayerStore.Instance.storeState==PlayerStore.StoreState.CLOSED)
         { eveningFixture=true; PlayerStore.Instance.visitLeftTonight=3; Record("FIXTURE afterhours-quota","three destinations per evening for coverage; native close normally grants one"); }
+        if(travelRecoveryHost==1 && world.ProposedTrip.Length==0)
+        {
+            Require(!MapUIManager.Instance.IsInTransit && !MapUIManager.Instance.IsOutside && world.TripReady==0,
+                "sleep canceled the trip after departure started");
+            travelRecoveryHost=2;
+        }
         if(world.ProposedTrip.Length>0 && world.TripReady==2)
         {
             bool returning=world.ProposedTrip=="return";
@@ -75,6 +84,12 @@ internal sealed partial class NativeBackgroundQa
                 var actors=NativeActorSession.Current;
                 Require(actors!=null && world.HasActorProjection && travelHostBackpack.parentInventory==EmporiumEntry.Instance.invElement,
                     "joint journey requires separate actor carry and untouched Host bag");
+                if(travelRecoveryHost==0)
+                {
+                    VerifyBlockedBackpackRecovery(world);
+                    return;
+                }
+                if(travelRecoveryHost==1) return;
                 using(actors.Enter(NativeActorRun.Slot.Host))
                 {
                     // Host keeps its own original selectedBackpack draft. It
@@ -132,6 +147,64 @@ internal sealed partial class NativeBackgroundQa
             Record("PASS host-joint-return","store scene restored");
         }
     }
+    private void VerifyBlockedBackpackRecovery(NativeWorld world)
+    {
+        string destination=world.ProposedTrip;
+        var entry=EmporiumEntry.Instance;
+        entry.selectedBackpack=travelBackpack;
+        MapUIManager.Instance.OpenUI();
+        Require(TransitUI.IsOpen,"Host could not stage its already open transit map");
+        world.ProposeTrip(destination,true);
+        Require(world.TripReady==2 && !MapUIManager.Instance.IsInTransit && travelBackpack.parentInventory==entry.invElement,
+            "two players selecting one bag changed the first confirmation or moved inventory");
+
+        world.OpenTravelPreparation();
+        var choices=(GameGridScrollableInventory)AccessTools.Field(typeof(OverlayHandler),"itemChooseInventory").GetValue(OverlayHandler.current);
+        var window=(PixelWindow)AccessTools.Field(typeof(OverlayHandler),"itemChooseWindow").GetValue(OverlayHandler.current);
+        var trip=CustomUIManager.Instance.GetWindow("coop_joint_trip");
+        Require(window.IsVisible() && !TransitUI.IsOpen && trip?.IsVisible==false &&
+            !choices.childItems.OfType<GameItemElement>().Any(item=>ReferenceEquals(NativeLocalItemChooser.SourceOf(item),travelBackpack)),
+            "reselecting a bag left the map/confirmation in front or offered the reserved bag");
+        var replacement=choices.childItems.OfType<GameItemElement>().Single(item=>ReferenceEquals(NativeLocalItemChooser.SourceOf(item),travelHostBackpack));
+        RecipeSelectHandler.current.callback(replacement);
+        Require(ReferenceEquals(entry.selectedBackpack,travelHostBackpack) && !window.IsVisible() && !TransitUI.IsOpen &&
+            CustomUIManager.Instance.IsOpen("coop_joint_trip") && world.TripReady==2,
+            "changing the backpack did not return to the same shared confirmation");
+        travelHostBackpack.EnableTag(TravelRecoveryTag);
+        travelRecoveryHost=1;
+        Record("PASS bug-10-reselect-backpack","same bag refused without losing first consent; old map closed; original picker returned to the pending confirmation");
+    }
+
+    private bool CheckTravelSleepRecovery(CoopSession session)
+    {
+        var world=NativeWorld.Guest;
+        if(!travelHostBackpack.IsTag(TravelRecoveryTag)) return false;
+        if(!travelRecoverySleepOpened)
+        {
+            if(session.Shop.View.Phase!=ShopDay.Ready || QaWaiting(session.Native)) return false;
+            var bed=UnityEngine.Object.FindObjectOfType<StoreBedroll>();
+            Require(bed!=null && world.ProposedTrip==AfterhourLocation.DUMPING_GROUND && !TransitUI.IsOpen,
+                "Guest did not reach the pending trip with an accessible original bed");
+            bed.GetComponent<Interactable>().OnClick();
+            Require(EndOfDayUIManager.Instance.IsOpen,"original bed did not open sleep after blocked departure");
+            travelRecoverySleepOpened=true;
+            return false;
+        }
+        if(world.ProposedTrip.Length!=0 || world.HasPendingWork || QaWaiting(session.Native)) return false;
+        var dayButton=(TabletButton)AccessTools.Field(typeof(EndOfDayUIManager),"endDayButton").GetValue(EndOfDayUIManager.Instance);
+        Require(EndOfDayUIManager.Instance.IsOpen && dayButton?.Interactable==true && !TransitUI.IsOpen &&
+            !CustomUIManager.Instance.IsOpen("coop_joint_trip") && ReferenceEquals(EmporiumEntry.Instance.selectedBackpack,travelBackpack),
+            "sleep could not proceed, an old trip stayed visible, or the original backpack choice was lost");
+        EndOfDayUIManager.Instance.CloseUI();
+        MapUIManager.Instance.OpenUI();
+        Require(TransitUI.IsOpen,"transit could not reopen after canceling the blocked trip");
+        MapUIManager.Instance.Travel(AfterhourLocation.Get(AfterhourLocation.DUMPING_GROUND));
+        Require(QaWaiting(session.Native),"retry with the previous backpack did not reach the host");
+        travelRecoveryGuest=true;
+        Record("PASS bug-10-sleep-and-travel-retry","original bed opened ready-to-sleep, canceled both sides' pending trip, and the same selected bag could depart without reselection");
+        return true;
+    }
+
     private bool RunJointJourneys(CoopSession session,double now)
     {
         if(journeyIndex>=journeyLocations.Length) return true;
@@ -190,6 +263,11 @@ internal sealed partial class NativeBackgroundQa
         if(journeyStep==3)
         {
             Require(now<journeyUntil,"shared arrival timed out: "+journeyLocations[journeyIndex]+" result="+QaResult(session.Native));
+            if(journeyIndex==0 && !travelRecoveryGuest)
+            {
+                if(CheckTravelSleepRecovery(session)) journeyUntil=now+20;
+                return false;
+            }
             if(MapUIManager.Instance.Current?.Id!=journeyLocations[journeyIndex]) return false;
             Require(!EmporiumEntry.Instance.storePhysical.activeSelf,"guest retained shop scene on outing");
             var location=MapUIManager.Instance.Current;

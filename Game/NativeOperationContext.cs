@@ -31,7 +31,7 @@ internal sealed partial class NativeWorld
             phoneStopProof=null;
             ResetDynamicChoice();
             ClearFrontends();
-            NativeLocalItemChooser.Close(this);
+            CloseTravelPreparation();
             CancelAllHandActions();
             placementPreviews.Clear();
             controlPreviews.Clear();

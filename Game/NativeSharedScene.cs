@@ -65,6 +65,8 @@ internal sealed partial class NativeWorld
                 contents=ContentsProof(selected,!host);
             }
         }
+        if(HasActorProjection && backpack!=0 && BackpackReservedByPeer(EmporiumEntry.Instance.selectedBackpack))
+        { CommandNotice("另一位玩家已经选了这个背包。请选择另一个，或选择不携带。"); return; }
         if(host)
         {
             var result=(ShopResult)TravelRequest(destination,1,null,backpack,contents);
@@ -90,9 +92,16 @@ internal sealed partial class NativeWorld
                 {
                     using var scope=actorRun.Enter((NativeActorRun.Slot)index);
                     if(!ValidTravelBackpack(tripBags[index],tripBagProofs[index],out _))
+                    {
                         tripReady=(byte)(tripReady&~(1<<index));
+                        tripBags[index]=0;
+                        tripBagProofs[index]="";
+                        proposedBackpack=tripBags[tripInitiator-1];
+                        proposedBackpackProof=tripBagProofs[tripInitiator-1];
+                        nextCapture=0;
+                    }
                 }
-            if(proposedTrip.Length>0 && tripProof!=TravelProof()) { tripReady=0; tripProof=TravelProof(); nextCapture=0; }
+            if(proposedTrip.Length>0 && tripProof!=TravelProof()) ResetActorTrip();
             return;
         }
         if(proposedTrip.Length>0 && proposedTrip!="return" && !ValidTravelBackpack(proposedBackpack,proposedBackpackProof,out _))
@@ -103,11 +112,11 @@ internal sealed partial class NativeWorld
     {
         if(HasActorProjection) return ActorTravelRequest(destination,actor,expected,backpack,backpackProof);
         if(EndingActive || shop.Settling || string.IsNullOrEmpty(destination)) return (ushort)ShopResult.Busy;
+        var map=MapUIManager.Instance; var store=PlayerStore.Instance;
+        if(map.IsInTransit) return (ushort)ShopResult.Busy;
+        if(destination=="cancel") { ResetActorTrip(); return (ushort)ShopResult.Applied; }
         string proof=TravelProof();
         if(actor==2 && expected!=proof) return (ushort)ShopResult.Stale;
-        var map=MapUIManager.Instance; var store=PlayerStore.Instance;
-        if((bool)AccessTools.Field(typeof(MapUIManager),"inTransit").GetValue(map)) return (ushort)ShopResult.Busy;
-        if(destination=="cancel") { proposedTrip=""; proposedBackpack=0; proposedBackpackProof=""; tripReady=0; nextCapture=0; return (ushort)ShopResult.Applied; }
         GameItem selectedBackpack=null;
         if(destination=="return")
         { if(!map.IsOutside) return (ushort)ShopResult.Unavailable; }
@@ -147,10 +156,10 @@ internal sealed partial class NativeWorld
         if(actor is not (1 or 2) || EndingActive || shop.Settling || string.IsNullOrEmpty(destination)) return (ushort)ShopResult.Busy;
         var map=MapUIManager.Instance;
         var session=NativeActorSession.Current;
-        if(session==null || (bool)AccessTools.Field(typeof(MapUIManager),"inTransit").GetValue(map)) return (ushort)ShopResult.Busy;
+        if(session==null || map.IsInTransit) return (ushort)ShopResult.Busy;
+        if(destination=="cancel") { ResetActorTrip(); return (ushort)ShopResult.Applied; }
         string proof=TravelProof();
         if(actor==2 && expected!=proof) return (ushort)ShopResult.Stale;
-        if(destination=="cancel") { ResetActorTrip(); return (ushort)ShopResult.Applied; }
         bool first=proposedTrip!=destination || tripInitiator==0;
         var initiator=first ? actor : tripInitiator;
         var store=PlayerStore.Instance;
@@ -188,6 +197,7 @@ internal sealed partial class NativeWorld
             return (ushort)ShopResult.Busy;
         if(destination!="return")
         {
+            var selectedBags=new GameItem[2];
             for(int i=0;i<2;i++)
             {
                 using var scope=session.Enter((NativeActorRun.Slot)i);
@@ -199,9 +209,9 @@ internal sealed partial class NativeWorld
                     if(slot.childItem!=null || target?.IsValid()!=true || target.numTransfer!=selected.unitCount)
                         return (ushort)ShopResult.NoSpace;
                 }
-                session.Carry.SetSelected((NativeActorRun.Slot)i,selected);
+                selectedBags[i]=selected;
             }
-            if(location.UsesAfterhourBag && !PrepareActorBackpacks(session)) return (ushort)ShopResult.NoSpace;
+            if(location.UsesAfterhourBag && !PrepareActorBackpacks(session,selectedBags)) return (ushort)ShopResult.NoSpace;
         }
         session.Activities.RetireScene();
         var activity=session.Activities.Begin(map,"joint-travel",(NativeActorRun.Slot)(tripInitiator-1),
@@ -212,19 +222,22 @@ internal sealed partial class NativeWorld
         return (ushort)ShopResult.Applied;
     }
 
-    private static bool PrepareActorBackpacks(NativeActorSession session)
+    private static bool PrepareActorBackpacks(NativeActorSession session,GameItem[] selected)
     {
+        var carry=session.Carry;
+        var previous=new[]{carry.Selected(NativeActorRun.Slot.Host),carry.Selected(NativeActorRun.Slot.Partner)};
         var moves=new List<(NativeActorRun.Slot Actor,GameItem Item,GameInventory Parent,GridShape Shape,int Count)>();
         for(int i=0;i<2;i++)
         {
             var actor=(NativeActorRun.Slot)i;
-            var item=session.Carry.Selected(actor);
-            if(item!=null && !ReferenceEquals(item.parentInventory,session.Carry.Get(actor,NativeActorInventory.CarrySlot.Backpack)))
+            var item=selected[i];
+            if(item!=null && !ReferenceEquals(item.parentInventory,carry.Get(actor,NativeActorInventory.CarrySlot.Backpack)))
                 moves.Add((actor,item,item.parentInventory,item.modifiedShape.Clone(),item.unitCount));
         }
         bool complete=false;
         try
         {
+            for(int i=0;i<2;i++) carry.SetSelected((NativeActorRun.Slot)i,selected[i]);
             foreach(var move in moves)
             {
                 using var scope=session.Enter(move.Actor);
@@ -235,6 +248,8 @@ internal sealed partial class NativeWorld
         finally
         {
             if(!complete)
+            {
+                for(int i=0;i<2;i++) carry.SetSelected((NativeActorRun.Slot)i,previous[i]);
                 foreach(var move in moves.AsEnumerable().Reverse())
                 {
                     using var scope=session.Enter(move.Actor);
@@ -244,8 +259,8 @@ internal sealed partial class NativeWorld
                         var error=new InvalidOperationException("Could not restore a refused joint backpack transfer");
                         session.MarkFault(error); throw error;
                     }
-                    session.Carry.SetSelected(move.Actor,move.Item);
                 }
+            }
         }
     }
 
@@ -263,10 +278,17 @@ internal sealed partial class NativeWorld
     internal void RequestScavenge() => Submit(new JObject { ["kind"]="scavenge" });
     private void TickTripUi()
     {
+        if(selectingTravelBackpack || EndOfDayUIManager.Instance!=null && EndOfDayUIManager.Instance.IsOpen)
+        {
+            tripUi?.Hide();
+            drawnTrip=null;
+            return;
+        }
         string key=proposedTrip+":"+tripReady+":"+proposedBackpack+":"+proposedBackpackProof+":"+string.Join(",",tripBags);
         if(drawnTrip==key) return; drawnTrip=key; tripUi?.Close(); tripUi=null;
         if(proposedTrip.Length==0) return;
         string destination=proposedTrip;
+        TransitUI.Close();
         var panel=CustomUIManager.Instance.CreateWindow("coop_joint_trip","共同出行","meta");
         panel.AddLabel(destination=="return" ? "一起返回当铺" : "一起前往："+AfterhourLocation.Get(destination).GetTitle());
         if(destination=="return" && EmporiumEntry.Instance.afterhourInventory.childItems.Count>0)
@@ -276,8 +298,12 @@ internal sealed partial class NativeWorld
         {
             if(HasActorProjection)
             {
-                for(int i=0;i<2;i++) panel.AddLabel((i==0 ? "房主" : "伙伴")+"背包："+
-                    (tripBags[i]!=0 && model.Objects.TryGetValue(tripBags[i],out var value) && value is GameItem selected ? selected.GetDisplayName() : "不携带"));
+                for(int i=0;i<2;i++)
+                {
+                    var bag=i==(host ? 0 : 1) ? EmporiumEntry.Instance.selectedBackpack :
+                        tripBags[i]!=0 && model.Objects.TryGetValue(tripBags[i],out var value) ? value as GameItem : null;
+                    panel.AddLabel((i==0 ? "房主" : "伙伴")+"背包："+(bag?.GetDisplayName() ?? "不携带"));
+                }
                 panel.AddButton("选择我的背包",OpenTravelPreparation);
             }
             else panel.AddLabel("携带背包："+(proposedBackpack!=0 && model.Objects.TryGetValue(proposedBackpack,out var bag) && bag is GameItem item ? item.GetDisplayName() : "不携带"));
@@ -314,6 +340,7 @@ internal sealed partial class NativeWorld
         {
             var map=MapUIManager.Instance; var e=EmporiumEntry.Instance;
             e.selectedBackpack=null;
+            CloseTravelPreparation();
             TransitUI.Close(); NegociationUIManager.Instance.CloseUI();
             e.CloseItemWindowUIWindow();
             AccessTools.Method(typeof(MapUIManager),"CloseLocationPanel").Invoke(map,null);

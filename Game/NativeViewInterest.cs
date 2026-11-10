@@ -47,7 +47,7 @@ internal sealed partial class NativeWorld
         if(now<nextViews && toolId==lastTool && hover==lastHover && publishedInterest==readOrder.Interest) return;
         lastTool=toolId; lastHover=hover; publishedInterest=readOrder.Interest;
         nextViews=now+0.5;
-        var ids=model.Objects.Where(p=>p.Value is PixelWindow w && w.IsVisible()).Select(p=>p.Key).Prepend(toolId).Where(id=>id!=0).Take(62).Prepend(publishedInterest).Prepend(hover).ToArray();
+        var ids=model.Objects.Where(p=>p.Value is PixelWindow w && w.handler != null && w.IsVisible()).Select(p=>p.Key).Prepend(toolId).Where(id=>id!=0).Take(62).Prepend(publishedInterest).Prepend(hover).ToArray();
         var bytes=new byte[ids.Length*4];
         for(int i=0;i<ids.Length;i++) BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(i*4,4),ids[i]);
         link.PublishPresence(bytes);

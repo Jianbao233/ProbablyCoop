@@ -11,6 +11,8 @@ namespace ProbablyCoop;
 internal sealed class NativeGuest
 {
     internal static bool Active { get; private set; }
+    internal static bool MenuExitRequested { get; private set; }
+    internal bool EnteredShop { get; private set; }
     private readonly Dictionary<uint, GameItemElement> replicas = new Dictionary<uint, GameItemElement>();
     private bool awaitingReply;
     private readonly NativeGuestEvents events = new NativeGuestEvents();
@@ -37,9 +39,12 @@ internal sealed class NativeGuest
 
     internal void Tick(CoopSession session)
     {
+        if (SceneManager.GetActiveScene().name != "InventoryScene") return;
+        EnteredShop = true;
         var link = session.Shop;
+        var entry = EmporiumEntry.Instance;
         if (!link.View.Active || !PlayerStore.IsInstanceExist() ||
-            EmporiumEntry.Instance?.invElement == null) return;
+            entry == null || entry.invElement == null) return;
         if (!world.TickGuest(session.Native, replicas)) return;
         trade.Tick(link,world.View,world.ShopPresentation);
         events.Tick(link,world.View);
@@ -89,6 +94,21 @@ internal sealed class NativeGuest
             return;
         }
         Active = false;
+        MenuExitRequested = false;
+    }
+
+    [HarmonyPatch(typeof(EscapeUIManager), nameof(EscapeUIManager.OnMainMenu))]
+    private static class LeaveGuestFromNativeMenu
+    {
+        private static bool Prefix(EscapeUIManager __instance)
+        {
+            if (!Active) return true;
+            if (!MenuExitRequested) __instance.OnAnyClick();
+            // Keep the scene alive until the runtime has released the replica
+            // and room. Vanilla resets the store before loading the menu.
+            MenuExitRequested = true;
+            return false;
+        }
     }
 
     [HarmonyPatch]

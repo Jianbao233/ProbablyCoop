@@ -199,7 +199,7 @@ internal sealed partial class NativeBackgroundQa
                 Record("PASS dual-window-pacing", "original option reapply; connected loopback uses 60 Hz with background simulation");
             }
             if (now - started > 900+soakSeconds) throw new InvalidOperationException($"timeout stage={stage}");
-            if(VerifyGuestRoomExit(inMenu,now)) return;
+            if(VerifyGuestRoomExit(room,inMenu,now)) return;
             if(waterMerchantQa) { TickWaterMerchant(room,shop,inMenu,now); return; }
             if(TickBoundaryGuest(room,guest,inMenu,now)) return;
             if (host)
@@ -439,7 +439,7 @@ internal sealed partial class NativeBackgroundQa
                 if(RunFreshGuest(room.Session,now))
                 {
                     if(boundaryRecovery) Finish("PASS guest runtime");
-                    else BeginGuestRoomExit(room,now);
+                    else BeginGuestRoomExit(room,now,fromEscapeMenu:true);
                 }
                 return;
             }

@@ -10,25 +10,43 @@ namespace ProbablyCoop;
 internal sealed partial class NativeBackgroundQa
 {
     private double leaveRoomDeadline;
+    private bool leaveFromEscapeMenu;
 
-    private void BeginGuestRoomExit(RoomSelector room,double now)
+    private void BeginGuestRoomExit(RoomSelector room,double now,bool fromEscapeMenu=false)
     {
         leaveRoomDeadline=now+20;
-        room.Leave();
+        leaveFromEscapeMenu=fromEscapeMenu;
+        if(!fromEscapeMenu)
+        {
+            room.Leave();
+            return;
+        }
+
+        Require(room.IsGuest && room.Session?.State==LinkState.Connected && NativeWorld.Guest?.Ready==true,
+            "native return must start while the guest is still in the room");
+        var escape=StoreUIManager.Instance.escapeUIManager;
+        escape.OpenEscapeMenu();
+        escape.OnMainMenu();
+        Require(NativeGuest.MenuExitRequested && room.Session?.State==LinkState.Connected,
+            "native return bypassed the guest teardown request");
     }
 
-    private bool VerifyGuestRoomExit(bool inMenu,double now)
+    private bool VerifyGuestRoomExit(RoomSelector room,bool inMenu,double now)
     {
         if(leaveRoomDeadline==0) return false;
         Require(now<leaveRoomDeadline,"guest returned without a usable cooperative menu entry");
         if(!inMenu || NativeGuest.Active || NativePointer.Current==null) return true;
+        Require(!room.HasLobby && !room.IsGuest && NativeWorld.Guest==null && !NativeGuest.MenuExitRequested,
+            "main menu retained the previous guest session");
         var entry=GameObject.Find("ProbablyCoopMenuButton");
         if(entry==null || !entry.TryGetComponent<Button>(out var button) || !button.IsInteractable()) return true;
         ushort surface=NativePointer.Current.FindSurface(Vector2.zero,out _,out uint entity);
         Require(surface==32 && entity==0,"main-menu pointer still resolves a destroyed shop surface");
         button.onClick.Invoke();
         Require(CustomUIManager.Instance.IsOpen("probably_coop_panel"),"main-menu button failed after leaving the guest room");
-        Record("PASS bug-03-return-to-menu","left room in the native guest, shop surface retired, original main-menu coop entry opened room panel");
+        Record("PASS bug-03-return-to-menu",leaveFromEscapeMenu
+            ? "original Escape menu returned a connected guest to the main menu; room and replica retired; coop entry opened the room panel"
+            : "left room in the native guest, shop surface retired, original main-menu coop entry opened room panel");
         Finish("PASS guest runtime");
         return true;
     }

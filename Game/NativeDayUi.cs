@@ -1,8 +1,20 @@
 using System;
+using HarmonyLib;
 using ProbablyCoop.Core;
 using UnityEngine;
 
 namespace ProbablyCoop;
+
+[HarmonyPatch(typeof(EndOfDayUIManager),nameof(EndOfDayUIManager.OpenUI))]
+internal static class CloseDepartureForNight
+{
+    private static void Postfix(EndOfDayUIManager __instance)
+    {
+        if(!__instance.IsOpen) return;
+        var world=NativeGuest.Active ? NativeWorld.Guest : NativeWorld.Host;
+        world?.CancelDepartureForSleep();
+    }
+}
 
 internal sealed class NativeDayUi
 {

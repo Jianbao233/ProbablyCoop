@@ -553,7 +553,8 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         rows = Array.Empty<int>();
         if (!Active || NativeActorSession.Current?.CanCommit==false || store.storeState!=PlayerStore.StoreState.CLOSED || guestOutside || heldId != 0 ||
             NativeWorld.Host?.PartnerHasHand==true || ItemMultiSelectHandler.current?.IsGroupDragging==true ||
-            ItemMouseDragHandler.current?.IsDraggingItem == true || MapUIManager.Instance?.IsOutside != false ||
+            ItemMouseDragHandler.current?.IsDraggingItem == true || MapUIManager.Instance==null ||
+            MapUIManager.Instance.IsOutside || MapUIManager.Instance.IsInTransit ||
             !store.CanEndDay() || store.storeService == null || store.storeService.Count > 64) return false;
         long cost = 0;
         var costs = new List<int>();

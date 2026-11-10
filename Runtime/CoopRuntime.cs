@@ -40,6 +40,11 @@ internal sealed class CoopRuntime : MonoBehaviour
             var scene = SceneManager.GetActiveScene().name;
             bool inMenu = scene == "EmporiumMenu" || MainMenuUIController.Instance != null &&
                 EmporiumEntry.Instance == null;
+            if (guest != null && (NativeGuest.MenuExitRequested || scene == "EmporiumMenu" && guest.EnteredShop))
+            {
+                LeaveGuest();
+                return;
+            }
             if (inMenu)
             {
                 if (returningGuest)
@@ -143,11 +148,7 @@ internal sealed class CoopRuntime : MonoBehaviour
                 if (!room.IsGuest || connection?.State != LinkState.Connected || !connection.Shop.View.Active ||
                     !guest.Matches(connection))
                 {
-                    guest = null;
-                    dayUi.Reset();
-                    returningGuest = true;
-                    room.Leave();
-                    NativeGuest.ReturnToMenu();
+                    LeaveGuest();
                     return;
                 }
                 guest.Tick(connection);
@@ -179,6 +180,16 @@ internal sealed class CoopRuntime : MonoBehaviour
             Debug.LogError($"[probably_coop] runtime stopped: {exception}");
             Stop();
         }
+    }
+
+    private void LeaveGuest()
+    {
+        guest = null;
+        returningGuest = true;
+        dayUi.Reset();
+        NativeActorCarryUi.Reset();
+        room.Leave();
+        NativeGuest.ReturnToMenu();
     }
 
     private void CaptureHostAfterReceive()
