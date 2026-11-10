@@ -30,3 +30,7 @@ dotnet run --project Tests/NativeActors/ProbablyCoop.NativeActors.Tests.csproj -
 | `Tests/` | 可独立构建的协议与原生接口测试 |
 
 内容 Mod 作者请从 [联机适配指南](docs/compatibility.md) 开始。开发分支与版本规则见 [贡献指南](CONTRIBUTING.md)。
+
+## 许可证
+
+ProbablyCoop 的原创源码和文档采用 [MIT 许可证](LICENSE)。你可以在自己的 Mod 中使用、修改和分发这些代码，并在分发的副本或实质部分中保留原版权声明及许可证全文。游戏本体及第三方依赖适用各自的授权。
