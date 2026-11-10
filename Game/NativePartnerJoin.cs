@@ -18,7 +18,8 @@ internal sealed class NativePartnerJoin : IDisposable
     private bool required, picker, sent, disposing;
     private NativeActorPartnerSetup.DraftHandle pickerOwner;
     private string[] draft;
-    private double retry;
+    private double retry, pickerDeadline;
+    private string pickerFailure;
 
     internal void ObserveConnection(bool valid)
     {
@@ -47,7 +48,12 @@ internal sealed class NativePartnerJoin : IDisposable
         {
             if(connection.Waiting) return false;
             if(connection.Result==(ushort)ShopResult.Applied) return false; // wait for matching published facts
-            if(connection.Result!=(ushort)ShopResult.Busy) throw new InvalidOperationException("Host rejected partner character creation: "+connection.Result);
+            if(connection.Result!=(ushort)ShopResult.Busy)
+            {
+                Debug.LogWarning("[probably_coop] host rejected partner character creation: "+connection.Result);
+                room.Leave("partner_setup_rejected");
+                return false;
+            }
             sent=false; retry=Time.realtimeSinceStartupAsDouble+0.5;
         }
         if(draft==null && !picker)
@@ -61,14 +67,7 @@ internal sealed class NativePartnerJoin : IDisposable
             }
             else
             {
-                var expected=link; var expectedStamp=stamp;
-                picker=true;
-                if(!NativeActorPartnerSetup.TryOpenDraft(ids=>
-                    {
-                        picker=false;
-                        if(ReferenceEquals(link,expected) && expectedStamp.IsCurrent(expected)) draft=ids;
-                    },()=> { picker=false; if(!disposing) room.Leave(); },out var reason,out pickerOwner))
-                { picker=false; throw new InvalidOperationException(reason); }
+                TryOpenPicker(room);
             }
         }
         if(draft!=null && !connection.Waiting && Time.realtimeSinceStartupAsDouble>=retry)
@@ -79,6 +78,51 @@ internal sealed class NativePartnerJoin : IDisposable
         }
         return false;
     }
+    private void TryOpenPicker(RoomSelector room)
+    {
+        double now=Time.realtimeSinceStartupAsDouble;
+        if(now<retry) return;
+        if(pickerDeadline==0) pickerDeadline=now+10;
+        var expected=link; var expectedStamp=stamp;
+        picker=true;
+        string reason;
+        try
+        {
+            if(NativeActorPartnerSetup.TryOpenDraft(ids=>
+            {
+                picker=false;
+                if(ReferenceEquals(link,expected) && expectedStamp.IsCurrent(expected)) draft=ids;
+            },()=> { picker=false; if(!disposing) room.Leave(); },out reason,out pickerOwner))
+            {
+                pickerDeadline=0;
+                pickerFailure=null;
+                return;
+            }
+        }
+        catch(Exception error)
+        {
+            // UI construction failures should end this join, while leaving
+            // the multiplayer menu and future room attempts usable.
+            Debug.LogWarning("[probably_coop] native partner picker failed: "+error);
+            picker=false;
+            room.Leave("partner_picker_unavailable");
+            return;
+        }
+
+        picker=false;
+        if(pickerFailure!=reason)
+        {
+            pickerFailure=reason;
+            Debug.Log("[probably_coop] waiting for native partner picker: "+reason);
+        }
+        if(now>=pickerDeadline)
+        {
+            room.Leave("partner_picker_unavailable");
+            return;
+        }
+        retry=now+0.5;
+    }
+
     public void Dispose()
     {
         if(disposing) return;
@@ -89,7 +133,7 @@ internal sealed class NativePartnerJoin : IDisposable
             NativeActorPartnerSetup.CancelDraft(pickerOwner);
         }
         finally
-        { link=null; observed=0; run=Guid.Empty; required=picker=sent=false; pickerOwner=null; draft=null; retry=0; disposing=false; }
+        { link=null; observed=0; run=Guid.Empty; required=picker=sent=false; pickerOwner=null; draft=null; retry=pickerDeadline=0; pickerFailure=null; disposing=false; }
     }
 }
 

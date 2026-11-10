@@ -39,6 +39,8 @@ status_handshake,正在核对版本并建立 P2P 连接…
 status_connected,合伙人已连接。
 status_shop_connected,已连接共享店铺。
 status_incompatible,游戏或模组版本不一致。
+status_partner_picker_unavailable,原版伙伴天赋窗口未能打开。可返回主菜单后重新加入。
+status_partner_setup_rejected,房主未接受该天赋组合。请重新加入并选择。
 status_peer_timeout,对端已断线，请通过房间码重进。
 status_lobby_timeout,Steam 大厅请求超时。
 status_wrong_lobby,该房间并非有效的双人合伙店房间。

@@ -439,11 +439,11 @@ internal sealed partial class NativeBackgroundQa
             if(!multiClientTraded && !client.isBusinessComplete)
             {
                 var e=EmporiumEntry.Instance;
-                // The successful-rent scenario must not spend its rent on a
-                // randomized supplier. This only changes the QA actor's buying
-                // decisions; no cash, quote, native button or rent rule changes.
+                // Keep enough for the next required payment and night's
+                // services when choosing optional purchases in this QA run.
                 int reservedRent=rentVerified ? 0 : Math.Max(0,store.rentValue+store.temporaryRent);
-                int spendable=Math.Max(0,store.playerCash-reservedRent);
+                int reservedServices=Math.Max(0,store.storeService.Where(service=>service.IsActive()).Sum(service=>service.cost));
+                int spendable=Math.Max(0,store.playerCash-reservedRent-reservedServices);
                 GameItem offered=null;
                 if(client.clientIntent is StoreClient.ClientIntent.SELL or StoreClient.ClientIntent.SELLNBUY)
                     offered=e.frontInvinvElement.childItems.FirstOrDefault(i=>!GeneralHelper.IsItemOwned(i) && i.GetNegociatedValue()<=spendable);
@@ -494,7 +494,7 @@ internal sealed partial class NativeBackgroundQa
                     supplierOfferVerified=true; NativeOffscreenCapture.Capture("qa-supplier-delivery");
                     Record("PASS native-supplier-delivery-offer",projected+"; original Guest Selling tablet and wholesale footer/button verified; cash="+store.playerCash);
                     if(!wholesaleAffordable)
-                        Record("TRACE supplier-not-purchased","real offer retained; cash="+store.playerCash+" reservedRent="+reservedRent+" quote="+supplierQuote+"; no receipt/ownership claim");
+                        Record("TRACE supplier-not-purchased","real offer retained; cash="+store.playerCash+" reservedRent="+reservedRent+" reservedServices="+reservedServices+" quote="+supplierQuote+"; no receipt/ownership claim");
                 }
                 if(wholesaleAffordable)
                 {
@@ -503,7 +503,7 @@ internal sealed partial class NativeBackgroundQa
                 if(!wholesaleAffordable && AccessTools.Field(typeof(NegociationUIManager),"mode").GetValue(ui).ToString()=="Selling" &&
                     e.backInvinvElement.childItems.Where(i=>!GeneralHelper.IsItemOwned(i)).Sum(i=>(int)i.GetNegociatedValue())>spendable)
                 {
-                    Record("TRACE rent-reserve","skip purchase cash="+store.playerCash+" reserved="+reservedRent+" client="+client.identifier);
+                    Record("TRACE night-reserve","skip purchase cash="+store.playerCash+" reserved="+(reservedRent+reservedServices)+" client="+client.identifier);
                     button=null;
                 }
                 if(button?.Interactable==true)

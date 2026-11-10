@@ -208,6 +208,7 @@ internal sealed partial class NativeBackgroundQa
                 journeyMarkers[1]=NativeWorld.Guest.PointerIdentity(GraphUtils.FindAllChildrenType<GameItem>(travelBackpack).Single());
                 Require(journeyMarkers.All(id=>id!=0) && journeyMarkers[0]!=journeyMarkers[1],"travel markers lack distinct native identities");
                 Record("PASS shared-travel-backpack","same shared destination, distinct Host/Partner bags and contents; original local equipment slot renders only Partner bag");
+                VerifyCarryWindowDrag(session.Native);
             }
             Require(NativePointer.CurrentLocation()==(ushort)(journeyIndex+2),"guest cursor identified the wrong shared destination");
             Require(location.StageObject==null || location.StageObject.activeSelf,"native destination background not active");

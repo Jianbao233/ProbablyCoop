@@ -217,6 +217,8 @@ internal sealed class NativePointer : IDisposable
     internal ushort FindSurface(Vector2 mouse, out Vector2 position,out uint entity)
     {
         entity=0;
+        position=Vector2.zero;
+        if(EmporiumEntry.Instance==null) return Viewport;
         // Use the actual frontmost raycast result, not a rectangle underneath
         // an independently positioned machine window. No OS mouse is changed.
         var events=EventSystem.current;
@@ -224,7 +226,8 @@ internal sealed class NativePointer : IDisposable
         {
             if(raycastSystem!=events) { raycastSystem=events; raycastEvent=new PointerEventData(events); }
             raycastEvent.position=mouse; raycasts.Clear(); events.RaycastAll(raycastEvent,raycasts);
-            var hit=raycasts.Count>0 ? raycasts[0].gameObject.GetComponentInParent<TreeNodeRender>() : null;
+            var hitObject=raycasts.Count>0 ? raycasts[0].gameObject : null;
+            var hit=hitObject!=null ? hitObject.GetComponentInParent<TreeNodeRender>() : null;
             for(var node=hit;node!=null;node=node.parent)
             {
                 var element=node.element;
@@ -249,18 +252,32 @@ internal sealed class NativePointer : IDisposable
     private static RectTransform Surface(ushort surface)
     {
         var entry = EmporiumEntry.Instance;
-        return surface switch
+        if(entry==null) return null;
+        switch(surface)
         {
-            InventoryBase + 1 => entry?.invElement?.inner.rectTransform,
-            InventoryBase + 2 => entry?.backInvinvElement?.inner.rectTransform,
-            InventoryBase + 3 => entry?.afterhourInventory?.inner.rectTransform,
-            InventoryBase + 6 => entry?.frontInvinvElement?.inner.rectTransform,
-            InventoryBase + 7 => entry?.showcaseElement?.inner.rectTransform,
-            Negotiation => NegociationUIManager.Instance?.uiObject?.GetComponent<NegotiationTabletFrame>()?.panel,
-            NightBill => EndOfDayUIManager.Instance?.UI?.GetComponent<EndOfDayTabletFrame>()?.panel,
-            MorningReport => StartOfDayUIManager.Instance?.UIPanel?.transform as RectTransform,
+            case Negotiation:
+                var negotiation=NegociationUIManager.Instance;
+                var tablet=negotiation!=null && negotiation.uiObject!=null
+                    ? negotiation.uiObject.GetComponent<NegotiationTabletFrame>() : null;
+                return tablet!=null ? tablet.panel : null;
+            case NightBill:
+                var end=EndOfDayUIManager.Instance;
+                var bill=end!=null && end.UI!=null ? end.UI.GetComponent<EndOfDayTabletFrame>() : null;
+                return bill!=null ? bill.panel : null;
+            case MorningReport:
+                var start=StartOfDayUIManager.Instance;
+                return start!=null && start.UIPanel!=null ? start.UIPanel.transform as RectTransform : null;
+        }
+        var grid=surface switch
+        {
+            InventoryBase + 1 => entry.invElement,
+            InventoryBase + 2 => entry.backInvinvElement,
+            InventoryBase + 3 => entry.afterhourInventory,
+            InventoryBase + 6 => entry.frontInvinvElement,
+            InventoryBase + 7 => entry.showcaseElement,
             _ => null
         };
+        return grid?.inner!=null ? grid.inner.rectTransform : null;
     }
 
     private static bool TrySurface(ushort id, Vector2 mouse, out Vector2 position)

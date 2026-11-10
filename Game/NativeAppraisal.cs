@@ -7,13 +7,15 @@ using ProbablyCoop.Core;
 
 namespace ProbablyCoop;
 
-// The original certificate window reads the local actor's confirmed appraisal
-// data. Its toggles submit a typed, versioned edit; no host UI is borrowed and
-// no replica writes PlayerStore.appraisalBlacklist.
+// The certificate configures which appraisal work the shop accepts. The
+// host's existing native settings drive that pool and both local windows.
 internal sealed partial class NativeWorld
 {
     private const string AppraisalWindowId="appraisal_items";
     private static readonly MethodInfo AppraisalSetAllowed=AccessTools.Method(typeof(AppraisalItemsWindow),"SetAllowed");
+    private static readonly Action<bool> BuildAppraisalWindow=AccessTools.MethodDelegate<Action<bool>>(
+        AccessTools.Method(typeof(AppraisalItemsWindow),nameof(AppraisalItemsWindow.Open),new[]{typeof(bool)}));
+    [ThreadStatic] private static NativeActorState appraisalRenderSettings;
     private GameItem appraisalFrontendTarget;
     private string appraisalRenderedProof;
     private bool appraisalRefresh;
@@ -29,13 +31,22 @@ internal sealed partial class NativeWorld
             if(!string.IsNullOrEmpty(type.itemId)) itemNames[type.itemId]=type.GetDisplayName();
     }
 
-    private static string AppraisalProof()=>HashData(new JObject {
-        ["rank"]=AppraisalRankHelper.GetRank(),
-        ["declined"]=NativeActorFieldAccess.Get_appraisalPromotionDeclined(PlayerStore.Instance),
-        ["blacklist"]=new JArray((NativeActorFieldAccess.Get_appraisalBlacklist(PlayerStore.Instance) ??
-            new System.Collections.Generic.List<string>()).OrderBy(id=>id,StringComparer.Ordinal)) });
-    private static string AppraisalRenderProof()=>HashData(new JObject { ["state"]=AppraisalProof(),
-        ["names"]=new JArray(AppraisalItemRegistry.GetUnlocked(AppraisalRankHelper.GetRank()).Select(type=>type.GetDisplayName())) });
+    private int AppraisalSettingsRank()=>remoteHostActor?.appraiserLevel ?? PlayerStore.Instance.appraiserLevel;
+    private string AppraisalProof()=>HashData(new JObject {
+        ["rank"]=AppraisalSettingsRank(),
+        ["declined"]=remoteHostActor?.appraisalPromotionDeclined ?? PlayerStore.Instance.appraisalPromotionDeclined,
+        ["blacklist"]=new JArray((remoteHostActor?.appraisalBlacklist ?? PlayerStore.Instance.appraisalBlacklist ??
+            Enumerable.Empty<string>()).OrderBy(id=>id,StringComparer.Ordinal)) });
+    private string AppraisalRenderProof()=>HashData(new JObject { ["state"]=AppraisalProof(),
+        ["names"]=new JArray(AppraisalItemRegistry.GetUnlocked(AppraisalSettingsRank()).Select(type=>type.GetDisplayName())) });
+
+    private void RenderAppraisal(bool sound)
+    {
+        var previous=appraisalRenderSettings;
+        appraisalRenderSettings=remoteHostActor;
+        try { BuildAppraisalWindow(sound); }
+        finally { appraisalRenderSettings=previous; }
+    }
 
     internal bool AppraisalFrontendVisible(GameItem target)=>target!=null && ReferenceEquals(appraisalFrontendTarget,target) &&
         CustomUIManager.Instance?.GetWindow(AppraisalWindowId)?.IsAlive==true;
@@ -44,7 +55,7 @@ internal sealed partial class NativeWorld
     {
         if(host || target==null) return;
         appraisalFrontendTarget=target;
-        AppraisalItemsWindow.Open();
+        RenderAppraisal(true);
         appraisalRenderedProof=AppraisalRenderProof();
         appraisalRefresh=false;
     }
@@ -65,7 +76,7 @@ internal sealed partial class NativeWorld
         // A second toggle cannot turn an unconfirmed draft into a new proof.
         // Its visual state is reconciled after the outstanding source result.
         if(appraisalAttempt!=null) { appraisalRefresh=true; return false; }
-        if(!AppraisalItemRegistry.CanBlock(type,AppraisalRankHelper.GetRank())) { appraisalRefresh=true; return false; }
+        if(!AppraisalItemRegistry.CanBlock(type,AppraisalSettingsRank())) { appraisalRefresh=true; return false; }
         var command=new JObject { ["kind"]="frontend",["type"]=(int)FrontendKind.Appraisal,
             ["view"]=view.Serial,["id"]=(uint)data["entity"],["token"]=data["moveToken"],
             ["actor"]=(int)NativeActorRun.Slot.Partner,["expected"]=AppraisalProof(),
@@ -90,11 +101,15 @@ internal sealed partial class NativeWorld
         if(command["itemType"]?.Type!=JTokenType.String || ((string)command["itemType"]).Length>128 ||
             command["allowed"]?.Type!=JTokenType.Boolean) return (ushort)ShopResult.Unavailable;
         var type=AppraisalItemRegistry.Get((string)command["itemType"]);
-        if(type==null || !AppraisalItemRegistry.CanBlock(type,AppraisalRankHelper.GetRank()))
+        // The request is authenticated as Partner. Run only this shop
+        // setting edit in the Host context, where the native pool is owned.
+        using var scope=actorRun?.Enter(NativeActorRun.Slot.Host);
+        int rank=AppraisalRankHelper.GetRank();
+        bool allowed=(bool)command["allowed"];
+        if(type==null || !AppraisalItemRegistry.CanBlock(type,rank) ||
+            !allowed && AppraisalItemRegistry.IsLastAllowed(type,rank))
             return (ushort)ShopResult.Unavailable;
-        // This original method changes only the scoped actor's category list.
-        // The delegate's native rank check remains in force at execution time.
-        AppraisalSetAllowed.Invoke(null,new object[]{type,(bool)command["allowed"]});
+        AppraisalSetAllowed.Invoke(null,new object[]{type,allowed});
         nextCapture=0;
         return (ushort)ShopResult.Applied;
     }
@@ -114,7 +129,7 @@ internal sealed partial class NativeWorld
         if(!appraisalRefresh && proof==appraisalRenderedProof) return;
         // Native Open preserves the existing window's local position. A local
         // close is respected even while a confirmed snapshot is arriving.
-        AppraisalItemsWindow.Open();
+        RenderAppraisal(false);
         appraisalRenderedProof=proof;
         appraisalRefresh=false;
     }
@@ -142,10 +157,46 @@ internal sealed partial class NativeWorld
     [HarmonyPatch(typeof(AppraisalItemsWindow),nameof(AppraisalItemsWindow.Open),new[]{typeof(bool)})]
     private static class KeepHostAppraisalWindow
     {
-        // Rev12 SetAllowed refreshes the native window via Open(false).
-        // The partner receives the updated category through ReconcileAppraisal.
-        private static bool Prefix()=>RemoteUiExecution==null;
+        // Refresh an already open Host window after a Partner edit.
+        // A Partner opening their own window does not open one on the Host.
+        private static bool Prefix()=>RemoteUiExecution==null ||
+            (CustomUIManager.Instance!=null && CustomUIManager.Instance.IsOpen(AppraisalWindowId));
     }
+
+    [HarmonyPatch(typeof(AppraisalRankHelper),nameof(AppraisalRankHelper.GetRank))]
+    private static class AppraisalWindowRank
+    {
+        private static bool Prefix(ref int __result)
+        {
+            if(appraisalRenderSettings==null) return true;
+            __result=appraisalRenderSettings.appraiserLevel;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(AppraisalRankHelper),nameof(AppraisalRankHelper.CanProgress))]
+    private static class AppraisalWindowPromotion
+    {
+        private static bool Prefix(ref bool __result)
+        {
+            if(appraisalRenderSettings==null) return true;
+            __result=appraisalRenderSettings.appraiserLevel<3 && !appraisalRenderSettings.appraisalPromotionDeclined;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(AppraisalItemRegistry),nameof(AppraisalItemRegistry.IsBlocked))]
+    private static class AppraisalWindowCategory
+    {
+        private static bool Prefix(AppraisalItemType type,int rank,ref bool __result)
+        {
+            if(appraisalRenderSettings==null) return true;
+            __result=appraisalRenderSettings.appraisalBlacklist.Contains(type.id) && AppraisalItemRegistry.CanBlock(type,rank);
+            return false;
+        }
+    }
+
+    internal void AppraisalSettingsChanged()=>nextCapture=0;
 }
 
 [HarmonyPatch(typeof(AppraisalRankHelper),nameof(AppraisalRankHelper.InitCertificate))]
@@ -162,5 +213,10 @@ internal static class NativeAppraisalAllowed
         if(!NativeGuest.Active) return true;
         NativeWorld.Guest?.RequestAppraisalAllowed(type,allowed);
         return false;
+    }
+
+    private static void Postfix(bool __runOriginal)
+    {
+        if(__runOriginal) NativeWorld.Host?.AppraisalSettingsChanged();
     }
 }

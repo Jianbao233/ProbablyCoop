@@ -199,6 +199,7 @@ internal sealed partial class NativeBackgroundQa
                 Record("PASS dual-window-pacing", "original option reapply; connected loopback uses 60 Hz with background simulation");
             }
             if (now - started > 900+soakSeconds) throw new InvalidOperationException($"timeout stage={stage}");
+            if(VerifyGuestRoomExit(inMenu,now)) return;
             if(waterMerchantQa) { TickWaterMerchant(room,shop,inMenu,now); return; }
             if(TickBoundaryGuest(room,guest,inMenu,now)) return;
             if (host)
@@ -209,10 +210,13 @@ internal sealed partial class NativeBackgroundQa
                     var checkpoints = CoopRun.ListCheckpoints(onlySlot:profile ? profileCheckpointSlot : (int?)null);
                     if(!freshRun && !profile) checkpoints=checkpoints.Where(CoopRun.CanResume).ToList();
                     if(actorRestoreOnly) checkpoints=new List<CoopRun.Checkpoint> { SelectActorReloadCheckpoint(checkpoints) };
-                    if (checkpoints.Count != 1 || !freshRun && !(profile ? CoopRun.PrepareResume(checkpoints[0]) : CoopRun.CanResume(checkpoints[0])))
-                        throw new InvalidOperationException("expected one registered isolated checkpoint");
+                    if(!freshRun)
+                    {
+                        if(checkpoints.Count!=1 || !(profile ? CoopRun.PrepareResume(checkpoints[0]) : CoopRun.CanResume(checkpoints[0])))
+                            throw new InvalidOperationException("expected one registered isolated checkpoint");
+                        Record("PASS checkpoint-identity",$"slot={checkpoints[0].Slot} day={checkpoints[0].Day}");
+                    }
                     loaded = true;
-                    Record("PASS checkpoint-identity", $"slot={checkpoints[0].Slot} day={checkpoints[0].Day}");
                     if(!profile) NewGameData.HardReset();
                     if(freshRun)
                     {
@@ -430,7 +434,15 @@ internal sealed partial class NativeBackgroundQa
             if(typewriterOnly) { if(RunBubbleQa(room.Session.Native,now)) Finish("PASS guest runtime"); return; }
             if(stripOnly) { if(RunStripFrontends(room.Session.Native,now)) Finish("PASS guest runtime"); return; }
             if(scratchOnly) { if(RunScratchFrontends(room.Session.Native,now)) Finish("PASS guest runtime"); return; }
-            if(freshRun) { if(RunFreshGuest(room.Session,now)) Finish("PASS guest runtime"); return; }
+            if(freshRun)
+            {
+                if(RunFreshGuest(room.Session,now))
+                {
+                    if(boundaryRecovery) Finish("PASS guest runtime");
+                    else BeginGuestRoomExit(room,now);
+                }
+                return;
+            }
             // The input-only Host never runs the actor-gameplay driver.
             if(!resumedQa && Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa-input-only")<0 &&
                 !RunActorGameplayGuest(room.Session,now)) return;
@@ -483,6 +495,7 @@ internal sealed partial class NativeBackgroundQa
                         PlayerStore.Instance.saveSlotId==-1,"normal guest entry depends on a development switch or loaded a save slot");
                     Record("PASS normal-native-join","joined native scene without guest development switch; replica slot=-1");
                     Record("PASS native-projection", detail);
+                    VerifyDragHighlight();
                     chosen = link.View.Items.FirstOrDefault(x => x.Owned && x.Movable && x.Place == 1 &&
                         x.Width <= 2 && x.Height <= 2);
                     if (chosen == null) throw new InvalidOperationException("no movable fixture in saved stock");
@@ -617,7 +630,7 @@ internal sealed partial class NativeBackgroundQa
                     Require(link.View.HeldItem != 0, "missing hold before disconnect");
                     if(!RunGuestEnding(room.Session,now)) return;
                     Record("PASS disconnect-with-active-hold", $"held={link.View.HeldItem}; host checks release");
-                    Finish("PASS guest runtime");
+                    BeginGuestRoomExit(room,now);
                     break;
             }
         }
@@ -724,7 +737,8 @@ internal sealed partial class NativeBackgroundQa
         done = true;
         // Close live native panels while their audio/UI services still exist, before
         // Unity begins destroying scene components in an unspecified order.
-        StoreUIManager.Instance?.CloseAllUI();
+        if(EmporiumEntry.Instance!=null && StoreUIManager.Instance!=null)
+            StoreUIManager.Instance.CloseAllUI();
         QaStopping=true;
         foreach(var registration in UnityEngine.Object.FindObjectsOfType<StoreUI>(true)) registration.enabled=false;
         Record(result,$"Unity {(Application.isBatchMode ? "batch" : "windowed")} target={frameTarget}; native calls and authenticated network; no system input; GPU frames recorded when enabled");

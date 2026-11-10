@@ -9,6 +9,21 @@ using UnityEngine;
 
 namespace ProbablyCoop;
 
+[HarmonyPatch(typeof(DumpingGroundLocation), nameof(DumpingGroundLocation.Arrive))]
+internal static class NativeSharedScavengingArrival
+{
+    private static void Prefix()
+    {
+        var session=NativeActorSession.Current;
+        if(session==null || session.Terminal || session.Faulted || NativeGuest.Active) return;
+        var other=session.Run.CurrentActor==NativeActorRun.Slot.Host
+            ? NativeActorRun.Slot.Partner : NativeActorRun.Slot.Host;
+        // The original arrival resets the initiator and runs the shared
+        // story event once. Only the other character needs a separate reset.
+        using(session.Enter(other)) ScavHelper.ResetScavenging();
+    }
+}
+
 internal sealed partial class NativeWorld
 {
     private string proposedTrip="", drawnTrip="", shownScene="";

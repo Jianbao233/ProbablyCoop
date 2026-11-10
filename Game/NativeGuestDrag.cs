@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection.Emit;
 using HarmonyLib;
 using UnityEngine;
 
@@ -60,6 +61,50 @@ internal static class NativeGuestDragVisual
         rotator.localRotation = __state.Rotation;
         rotator.localScale = __state.Scale;
         __instance.SetCenteredPosition(__state.Center.x, __state.Center.y);
+    }
+}
+
+[HarmonyPatch(typeof(ItemMouseDragHandler), "Drag")]
+internal static class NativeDragTargetHighlight
+{
+    private static readonly AccessTools.FieldRef<ItemMouseDragHandler, HighlightManager> Manager =
+        AccessTools.FieldRefAccess<ItemMouseDragHandler, HighlightManager>("highlightManager");
+    private static readonly AccessTools.FieldRef<HighlightManager, List<TreeNodeRender>> HoverNodes =
+        AccessTools.FieldRefAccess<HighlightManager, List<TreeNodeRender>>("highlightedThisNodes");
+    private static readonly AccessTools.FieldRef<ItemMouseDragHandler, List<TreeNodeRender>> CandidateNodes =
+        AccessTools.FieldRefAccess<ItemMouseDragHandler, List<TreeNodeRender>>("highlightedMayNodes");
+
+    private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+    {
+        var native=AccessTools.Method(typeof(GameInventory), nameof(GameInventory.HighlightSlot));
+        var tracked=AccessTools.Method(typeof(NativeDragTargetHighlight), nameof(Highlight));
+        foreach(var instruction in instructions)
+        {
+            if(instruction.Calls(native))
+            {
+                instruction.opcode=OpCodes.Call;
+                instruction.operand=tracked;
+            }
+            yield return instruction;
+        }
+    }
+
+    private static List<TreeNodeRender> Highlight(GameInventory inventory, SlotMarker slot,
+        RenderHandler.BackgroundColor color, bool replace)
+    {
+        var drag=ItemMouseDragHandler.current;
+        if(drag==null || (!NativeGuest.Active && NativeWorld.Host==null))
+            return inventory.HighlightSlot(slot,color,replace);
+        if(slot?.itemGridShape==null) return null;
+
+        // The native item-target branches draw directly on the inventory.
+        // Register them with the same cleanup as a normal placement preview.
+        var nodes=inventory.HighlightSlot(slot,color,replace);
+        if(nodes==null) return null;
+        var tracked=color==RenderHandler.BackgroundColor.Blue ? CandidateNodes(drag) : HoverNodes(Manager(drag));
+        foreach(var node in nodes)
+            if(!tracked.Contains(node)) tracked.Add(node);
+        return nodes;
     }
 }
 

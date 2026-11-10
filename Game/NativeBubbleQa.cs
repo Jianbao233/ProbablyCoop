@@ -91,7 +91,10 @@ internal sealed partial class NativeBackgroundQa
             // timers, and restore the previous source context after this probe.
             bubblePreviousClient=PlayerStore.Instance.currentClientInstance;
             bubblePreviousArrived=PlayerStore.Instance.isClientArrived;
-            PlayerStore.Instance.currentClientInstance=StoreClientInstance.CreateClientInstance(StoreClientList.CreateSpacerClientFood());
+            var client=StoreClientList.CreateSpacerClientFood();
+            client.bubbleColor="DEFAULT";
+            client.clientFaction="FACTION_UPPER_LEVEL";
+            PlayerStore.Instance.currentClientInstance=StoreClientInstance.CreateClientInstance(client);
             for(int group=0;group<2;group++)
             {
                 int index=group;
@@ -198,6 +201,15 @@ internal sealed partial class NativeBackgroundQa
             case 1:
                 if(!MachineReplica().IsTag(BubbleReady(bubbleGroup))) return false;
                 Require(bubble.gameObject.activeInHierarchy && bubble.typewriter.isShowingText,"guest did not run its own native typewriter after the source finished");
+                if(!phone)
+                {
+                    var palette=StoreUIManager.Instance.dialogBubbleList;
+                    var name=DialogUIManager.Instance.clientNameBubbleImage;
+                    Require(name.sprite!=null && name.sprite==palette.GetSprite("upper") &&
+                        bubble.backgroundImage.sprite!=null && bubble.backgroundImage.sprite==palette.GetSprite("upperp"),
+                        "original guest NPC name/body did not use the upper-level palette");
+                    Record("PASS bug-04-native-dialogue-palette","guest resolved both original upper-level sprites from replicated faction");
+                }
                 bubbleFirstLine=world.BubbleLineIdentity(bubble); bubbleFirstText=bubble.textfield.text;
                 bubbleInitialShows=bubbleShows[bubble.typewriter];
                 bubbleSampleChars=BubbleChars(bubble); bubbleSampleRevision=(ulong)BubbleApplied.GetValue(world); bubbleSampleUntil=now+3;

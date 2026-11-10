@@ -8,6 +8,7 @@ using System.Text;
 using HarmonyLib;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using UnityEngine.SceneManagement;
 
 namespace ProbablyCoop;
 
@@ -209,8 +210,10 @@ internal static class NativeActorPartnerSetup
         if (pending != null || NewGamePerksUI.IsOpen) { reason = "另一个天赋窗口正在使用。"; return false; }
         var data = NewGameData.Instance;
         var ui = CustomUIManager.Instance;
-        if (data == null || !data.isInMainMenu || MainMenuUIController.Instance == null || ui == null || ui.newGamePerksPrefab == null)
-        { reason = "伙伴天赋需在主菜单使用原版天赋窗口；当前场景没有该窗口资源。"; return false; }
+        if (SceneManager.GetActiveScene().name != "EmporiumMenu" || MainMenuUIController.Instance == null)
+        { reason = "原版主菜单尚未就绪。"; return false; }
+        if (data == null || ui == null || ui.newGamePerksPrefab == null)
+        { reason = $"原版天赋窗口尚未就绪（开局数据={data != null}，界面管理器={ui != null}，窗口资源={ui != null && ui.newGamePerksPrefab != null}）。"; return false; }
         var setup = new Pending { Handle = new DraftHandle(data), Accept = accept, Cancel = cancel };
         owner = setup.Handle;
         pending = setup; data.startingPerks = setup.Draft;

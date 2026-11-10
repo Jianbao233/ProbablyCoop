@@ -20,7 +20,7 @@ namespace ProbablyCoop;
 /// can cross back into native business methods; factories and saves never run on a guest.</summary>
 internal sealed partial class NativeWorld
 {
-    private const int WorldSchema=21;
+    private const int WorldSchema=22;
     private int captureCompositionSamples;
     private readonly NativeModelContext model = new NativeModelContext();
     private readonly NativeDeferredFields.StockCache frozenStock=new NativeDeferredFields.StockCache();
@@ -337,6 +337,7 @@ internal sealed partial class NativeWorld
         if(!ShopProtocol.TryDecode(Convert.FromBase64String((string)data["view"]),out var view)) throw new InvalidDataException("Invalid native display metadata");
         if(data["operationContext"]?.Type!=JTokenType.Integer || !ulong.TryParse(data["operationContext"].ToString(),out ulong contextGeneration) || contextGeneration==0)
             throw new InvalidDataException("Invalid native operation context");
+        var shopPresentation=NativeShopPresentation.Read(data["shopPresentation"]);
         var roots=(JArray)data["roots"];
         var projectionRoots=NativeRootProjection.Read(roots,decoded.Index).Roots;
         var actorProjection=PrepareActorProjection(data,out var actorRunIdentity);
@@ -453,7 +454,7 @@ internal sealed partial class NativeWorld
             // to input; it is not claimed to be an in-place rollback.
             applied=snapshotRevision;
             appliedIndex=decoded.Index;
-            appliedRoots=roots; View=view;
+            appliedRoots=roots; View=view; ShopPresentation=shopPresentation;
             // Frozen with this graph on the host. A pre-command encode/decode job
             // may complete after its reply; link.Revision cannot prove causality.
             if(connection.ProjectionApplied(commandThrough,commandResult) && NativeBackgroundQa.Enabled)
@@ -547,6 +548,7 @@ internal sealed partial class NativeWorld
         fields.DeferUpgradeProof((JObject)snapshot["wild"],(JObject)snapshot["business"]["upgrades"],
             store.playerCash,store.wildFavor,HashData,oracle,upgradeProofCache);
         snapshot["shutter"]=CaptureShutter();
+        snapshot["shopPresentation"]=NativeShopPresentation.Capture(bellCue,shutterCue,shutterAnimated);
         using(EnterPartnerOperation())
         using(NativePerformance.Measure("host.target_queries")) snapshot["targets"]=CaptureTargetQueries();
         snapshot["auxiliary"]=CaptureAuxiliary();

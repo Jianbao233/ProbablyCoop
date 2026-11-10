@@ -86,6 +86,7 @@ internal sealed partial class NativeBackgroundQa
             session.Run.Partner.healthData.daysSinceNicotineConsumption = 9;
             if (!session.Run.Partner.startingPerks.Any(perk => perk.id == "nicotine_addiction"))
                 session.Run.Partner.startingPerks.Add(new StartingPerk { id = "nicotine_addiction" });
+            if(saveRoundTrip) VerifyScavengeVisit(session);
             actorGameplayHostBefore = NativeActorState.Capture(session.Store).Serialize();
             actorGameplayPartnerBefore = session.Run.Partner.Serialize();
             actorGameplayItems["PARTNER_BAG"].EnableTag(ActorGameplayReady);

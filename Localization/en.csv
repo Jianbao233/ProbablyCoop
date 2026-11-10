@@ -39,6 +39,8 @@ status_handshake,Checking versions and establishing P2P…
 status_connected,Partner connected.
 status_shop_connected,Connected to the shared shop.
 status_incompatible,Game or mod build mismatch.
+status_partner_picker_unavailable,The native partner perk picker could not open. Return to the main menu and rejoin.
+status_partner_setup_rejected,The host rejected these partner perks. Rejoin to choose again.
 status_peer_timeout,Peer disconnected. Rejoin with the room code.
 status_lobby_timeout,Steam lobby request timed out.
 status_wrong_lobby,This is not an active Probably Coop room.

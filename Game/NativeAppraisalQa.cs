@@ -23,7 +23,7 @@ internal sealed partial class NativeBackgroundQa
     private const string AppraisalQaStage="QA_APPRAISAL_STAGE";
     private const string AppraisalQaNames="QA_APPRAISAL_NATIVE_NAMES";
     private GameItem appraisalQaCertificate,appraisalQaControl;
-    private CustomUIWindow appraisalQaHostWindow;
+    private bool appraisalQaHostBlocked;
     private int appraisalQaHostRank,appraisalQaPartnerRank;
     private List<string> appraisalQaHostBlacklist,appraisalQaPartnerBlacklist;
     private bool appraisalQaHostStarted,appraisalQaHostDone;
@@ -69,12 +69,12 @@ internal sealed partial class NativeBackgroundQa
             appraisalQaPartnerRank=session.Run.Partner.appraiserLevel;
             appraisalQaHostBlacklist=session.Store.appraisalBlacklist;
             appraisalQaPartnerBlacklist=session.Run.Partner.appraisalBlacklist;
-            session.Store.appraiserLevel=0;
+            session.Store.appraiserLevel=2;
             session.Store.appraisalBlacklist=new List<string>();
-            session.Run.Partner.appraiserLevel=2;
+            session.Run.Partner.appraiserLevel=0;
             session.Run.Partner.appraisalBlacklist=new List<string>();
             JArray nativeNames;
-            using(session.Enter(NativeActorRun.Slot.Partner))
+            using(session.Enter(NativeActorRun.Slot.Host))
                 nativeNames=new JArray(AppraisalItemRegistry.GetUnlocked(AppraisalRankHelper.GetRank()).Select(type=>
                     new JObject { ["id"]=type.id,["itemId"]=type.itemId,["name"]=type.GetDisplayName() }));
             Require(nativeNames.Count==3 && nativeNames.Cast<JObject>().All(row=>!string.IsNullOrWhiteSpace((string)row["name"]) &&
@@ -83,23 +83,30 @@ internal sealed partial class NativeBackgroundQa
             appraisalQaControl.ModifyTag(AppraisalQaNames,tag=>tag.Enable().SetString(nativeNames.ToString(Formatting.None)));
             Record("PASS appraisal-native-name-source",nativeNames.ToString(Formatting.None));
             using(session.Enter(NativeActorRun.Slot.Host)) AppraisalItemsWindow.Open();
-            appraisalQaHostWindow=CustomUIManager.Instance.GetWindow("appraisal_items");
-            Require(appraisalQaHostWindow?.IsAlive==true && AppraisalQaToggles().Length==1,"Host original rank-zero appraisal window unavailable");
+            Require(CustomUIManager.Instance.IsOpen("appraisal_items") && AppraisalQaToggles().Length==3,
+                "Host original rank-two appraisal window unavailable");
             appraisalQaWatching=true;
             appraisalQaHostStarted=true;
             appraisalQaControl.EnableTag(AppraisalQaReady);
             return;
         }
-        Require(ReferenceEquals(CustomUIManager.Instance.GetWindow("appraisal_items"),appraisalQaHostWindow) &&
-            appraisalQaHostWindow.IsAlive && AppraisalQaToggles().Length==1,
-            "Guest certificate opening or edit replaced the Host original window");
-        Require(session.Store.appraiserLevel==0 && session.Store.appraisalBlacklist.Count==0,
-            "Partner appraisal edit changed the Host personal fields");
-        Require(appraisalQaOriginalWrites<=1,"appraisal request executed the original write more than once");
-        if(appraisalQaControl.GetTagReadonly(AppraisalQaStage).GetInt()<2) return;
-        Require(appraisalQaOriginalWrites==1 && session.Run.Partner.appraiserLevel==2 &&
-            session.Run.Partner.appraisalBlacklist.SequenceEqual(new[]{AppraisalItemRegistry.HAND}),
-            "original appraisal toggle did not edit exactly the Partner category list once");
+        Require(CustomUIManager.Instance.IsOpen("appraisal_items") && AppraisalQaToggles().Length==3 &&
+            session.Store.appraiserLevel==2 && session.Run.Partner.appraiserLevel==0 && session.Run.Partner.appraisalBlacklist.Count==0,
+            "appraisal panel diverged or changed personal qualifications");
+        Require(appraisalQaOriginalWrites<=2,"an appraisal toggle executed more than once");
+        int phase=appraisalQaControl.GetTagReadonly(AppraisalQaStage).GetInt();
+        if(phase>=2 && !appraisalQaHostBlocked)
+        {
+            AppraisalQaToggles()[0].isOn=false;
+            Require(session.Store.appraisalBlacklist.SequenceEqual(new[]{AppraisalItemRegistry.HAND}) &&
+                !AppraisalItemRegistry.GetPool(2).Any(type=>type.id==AppraisalItemRegistry.HAND),
+                "Host original toggle did not change the shared customer pool");
+            appraisalQaHostBlocked=true;
+        }
+        if(phase<3) return;
+        Require(appraisalQaOriginalWrites==2 && session.Store.appraisalBlacklist.Count==0 && AppraisalQaToggles()[0].isOn &&
+            AppraisalItemRegistry.GetPool(2).Any(type=>type.id==AppraisalItemRegistry.HAND),
+            "Partner toggle did not restore the shared pool and the open Host panel");
         appraisalQaWatching=false;
         CustomUIManager.Instance.CloseWindow("appraisal_items");
         session.Store.appraiserLevel=appraisalQaHostRank;
@@ -108,7 +115,7 @@ internal sealed partial class NativeBackgroundQa
         session.Run.Partner.appraisalBlacklist=appraisalQaPartnerBlacklist;
         appraisalQaControl.EnableTag(AppraisalQaDone);
         appraisalQaHostDone=true;
-        Record("PASS appraisal-host","one original Partner SetAllowed; Host rank/list/window untouched; invalid edits no writes; QA ranks/lists restored");
+        Record("PASS appraisal-host","one original toggle per player; shared category pool and open Host panel updated; distinct personal ranks retained; QA fields restored");
     }
 
     private static Toggle[] AppraisalQaToggles()=>CustomUIManager.Instance.GetWindow("appraisal_items")?.Rect.GetComponentsInChildren<Toggle>(true) ?? Array.Empty<Toggle>();
@@ -134,7 +141,7 @@ internal sealed partial class NativeBackgroundQa
         }
         Record("PASS appraisal-native-name-parity",evidence.ToString(Formatting.None));
     }
-    private static string AppraisalQaProof()=>(string)AccessTools.Method(typeof(NativeWorld),"AppraisalProof").Invoke(null,null);
+    private static string AppraisalQaProof()=>(string)AccessTools.Method(typeof(NativeWorld),"AppraisalProof").Invoke(NativeWorld.Guest,null);
     private static void AppraisalQaClickControl(GameItem control)
     {
         var button=(MachineryButton)((MachineryPanelRow)control.contentWindow.childElement).Panels.Single(panel=>panel.role=="qaAppraisal").content;
@@ -165,24 +172,32 @@ internal sealed partial class NativeBackgroundQa
             case 0:
                 AppraisalQaClickControl(control); appraisalQaStep=1; break;
             case 1:
-                if(!control.IsTag(AppraisalQaReady) || AppraisalRankHelper.GetRank()!=2) return false;
+                if(!control.IsTag(AppraisalQaReady) || world.RemoteHostActor?.appraiserLevel!=2) return false;
+                Require(AppraisalRankHelper.GetRank()==0,"guest personal rank was replaced by the shop rank");
                 certificate.ActivateSlotItem();
                 Require(world.AppraisalFrontendVisible(certificate) && QaWaiting(link),"certificate did not open the original local window in the input frame");
                 appraisalQaStep=2; break;
             case 2:
                 var toggles=AppraisalQaToggles();
-                Require(toggles.Length==3 && toggles[0].interactable && toggles[1].interactable && !toggles[2].interactable,
-                    "Guest original appraisal window did not follow Partner rank/category restrictions");
+                Require(toggles.Length==3 && toggles[0].interactable && toggles[1].interactable && !toggles[2].interactable && toggles[0].isOn,
+                    "Guest native panel did not render the shop qualification and allowed categories");
                 CheckAppraisalRenderedNames(control,toggles);
+                AppraisalQaClickControl(control);
+                appraisalQaStep=11; break;
+            case 11:
+                if(!world.RemoteHostActor.appraisalBlacklist.Contains(AppraisalItemRegistry.HAND)) return false;
+                Require(world.AppraisalFrontendVisible(certificate) && !AppraisalQaToggles()[0].isOn && AppraisalRankHelper.GetRank()==0,
+                    "Host change did not refresh an already open Guest toggle or overwrote the personal rank");
                 NativeOffscreenCapture.Capture("qa-native-appraisal-certificate");
-                Require(!PlayerStore.Instance.appraisalBlacklist.Contains(AppraisalItemRegistry.HAND),"appraisal fixture started blocked");
-                toggles[0].isOn=false;
-                Require(!PlayerStore.Instance.appraisalBlacklist.Contains(AppraisalItemRegistry.HAND) && QaWaiting(link),
-                    "original Guest Toggle wrote the local confirmed actor state before source acknowledgement");
+                Record("PASS bug-09-host-appraisal-refresh","Host native toggle changed the already open Guest original panel");
+                AppraisalQaToggles()[0].isOn=true;
+                Require(world.RemoteHostActor.appraisalBlacklist.Contains(AppraisalItemRegistry.HAND) &&
+                    PlayerStore.Instance.appraisalBlacklist.Count==0 && QaWaiting(link),
+                    "Guest toggle edited confirmed settings before the authoritative result");
                 appraisalQaStep=3; break;
             case 3:
-                if(!PlayerStore.Instance.appraisalBlacklist.Contains(AppraisalItemRegistry.HAND)) return false;
-                Require(appraisalQaFirstCommand!=null && !AppraisalQaToggles()[0].isOn,"confirmed appraisal state did not reach original local Toggle");
+                if(world.RemoteHostActor.appraisalBlacklist.Contains(AppraisalItemRegistry.HAND)) return false;
+                Require(appraisalQaFirstCommand!=null && AppraisalQaToggles()[0].isOn,"confirmed appraisal state did not reach original local Toggle");
                 Replay((JObject)appraisalQaFirstCommand.DeepClone()); appraisalQaStep=4; break;
             case 4:
                 Require(QaResult(link)==(ushort)ShopResult.Stale,"old appraisal proof was accepted");
@@ -205,13 +220,13 @@ internal sealed partial class NativeBackgroundQa
                 Require(world.AppraisalFrontendVisible(certificate),"certificate explicit reopen missing");
                 Replay(CurrentProofCommand()); appraisalQaStep=9; break;
             case 9:
-                Require(QaResult(link)==(ushort)ShopResult.Stale && PlayerStore.Instance.appraisalBlacklist.SequenceEqual(new[]{AppraisalItemRegistry.HAND}),
+                Require(QaResult(link)==(ushort)ShopResult.Stale && world.RemoteHostActor.appraisalBlacklist.Count==0,
                     "obsolete appraisal binding edited a reopened window or wrong category");
                 CustomUIManager.Instance.CloseWindow("appraisal_items");
                 AppraisalQaClickControl(control); appraisalQaStep=10; break;
             case 10:
                 if(!control.IsTag(AppraisalQaDone)) return false;
-                Record("PASS appraisal-guest","native certificate and original rank-two Toggle; no local confirmed write; stale proof/wrong actor/locked category/old view rejected; independent close/reopen");
+                Record("PASS appraisal-guest","native certificate and shop rank-two toggles with personal rank zero; host changes visible live; stale proof/wrong actor/locked category/old view rejected; local close respected");
                 appraisalQaStep=12; return true;
         }
         return false;
@@ -223,7 +238,7 @@ internal sealed partial class NativeBackgroundQa
         private static void Postfix(bool __runOriginal)
         {
             if(!Enabled || !IsHostProduct || !appraisalQaWatching || !__runOriginal || NativeGuest.Active) return;
-            Require(NativeActorSession.Current?.Run.CurrentActor==NativeActorRun.Slot.Partner,"appraisal source callback lost its initiating actor");
+            Require(NativeActorSession.Current?.Run.CurrentActor==NativeActorRun.Slot.Host,"appraisal write did not run in the shop owner context");
             appraisalQaOriginalWrites++;
         }
     }

@@ -9,11 +9,12 @@ internal sealed class NativeGuestTrade
 {
     private static NativeGuestTrade current;
     private ShopLink link;
-    private static readonly AccessTools.FieldRef<StoreShutterButton,bool> DoorClosed =
-        AccessTools.FieldRefAccess<StoreShutterButton,bool>("isClosed");
     private StoreShutterButton shownDoor;
-    private bool observeShutterMotion;
+    private ulong bellCue, shutterCue;
+    private bool cuesInitialized, wasOutside, frontAwaitingClose, closeImpactPending;
     private byte shutter = byte.MaxValue;
+    private bool qaShutterMoving;
+    private float qaPriorFraction;
     private string spriteKey;
     private uint offer;
     private int funds;
@@ -21,50 +22,15 @@ internal sealed class NativeGuestTrade
     private string customer;
     private TabletButton trade;
 
-    internal void Tick(ShopLink connection,ShopView coherentView)
+    internal void Tick(ShopLink connection,ShopView coherentView,NativeShopPresentation presentation)
     {
         current = this;
         link = connection;
         var view = coherentView;
-        var entry = EmporiumEntry.Instance;
-        var door = StoreShutterButton.Instance;
-        if (door != null && (shownDoor != door || shutter != view.Shutter))
-        {
-            bool open = view.Shutter == 1;
-            bool initialize = shownDoor != door;
-            shownDoor = door;
-            shutter = view.Shutter;
-            if (initialize || view.GuestOutside)
-            {
-                DoorClosed(door) = !open;
-                door.shutterGameObject.transform.position = open ? door.endPosition : door.startPosition;
-                door.blockerGameObject.transform.localPosition = open ? door.blockerEndPosition : door.blockerStartPosition;
-                door.blockerMaskObject.gameObject.SetActive(!open);
-            }
-            else if (DoorClosed(door) == open)
-            {
-                door.ToggleShutterDoor(); // Native visual and audio only. No open/close gameplay callback.
-                observeShutterMotion=NativeBackgroundQa.Enabled;
-            }
-            if (open) entry.ShowFrontArea();
-            else entry.HideFrontArea();
-            PlayerStore.Instance.storeState = shutter switch
-            {
-                1 => PlayerStore.StoreState.OPEN,
-                2 => PlayerStore.StoreState.CLOSED,
-                _ => PlayerStore.StoreState.MORNING
-            };
-        }
-
-        if(observeShutterMotion && door!=null)
-        {
-            var y=door.shutterGameObject.transform.position.y;
-            if(y>door.startPosition.y && y<door.endPosition.y)
-            {
-                Debug.Log("[probably_coop QA] PASS native-shutter-intermediate guest displayed a native in-motion frame");
-                observeShutterMotion=false;
-            }
-        }
+        PlayBell(presentation.Bell,view.GuestOutside);
+        PresentShutter(view,presentation);
+        cuesInitialized=true;
+        wasOutside=view.GuestOutside;
 
         var actor = StoreClientMono.Instance;
         string sprite = view.GuestOutside ? "" : view.CustomerSprite;
@@ -93,6 +59,79 @@ internal sealed class NativeGuestTrade
             DrawTablet();
         if (trade != null && trade.Interactable == link.Waiting)
             trade.SetInteractable(!link.Waiting);
+    }
+
+    private void PlayBell(ulong sequence, bool outside)
+    {
+        bool play=cuesInitialized && !outside && !wasOutside && sequence>bellCue;
+        bellCue=sequence;
+        if(!play) return;
+        var source=Object.FindObjectOfType<StoreBell>()?.audioSource;
+        if(source==null) return;
+        source.Play();
+        if(NativeBackgroundQa.Enabled)
+            Debug.Log($"[probably_coop QA] guest bell cue={sequence} playing={source.isPlaying} clip={source.clip!=null}");
+    }
+
+    private void PresentShutter(ShopView view, NativeShopPresentation presentation)
+    {
+        var door=StoreShutterButton.Instance;
+        if(door==null) return;
+        bool changed=shownDoor!=door || shutter!=view.Shutter || wasOutside!=view.GuestOutside;
+        bool newCue=shownDoor!=door || shutterCue!=presentation.Shutter || wasOutside!=view.GuestOutside;
+        if(newCue)
+        {
+            bool play=shownDoor==door && !wasOutside && !view.GuestOutside && presentation.Animated;
+            if(NativeBackgroundQa.Enabled)
+            {
+                qaShutterMoving=play;
+                qaPriorFraction=NativeShopPresentation.Fraction(door);
+            }
+            presentation.ApplyShutter(door,play);
+            closeImpactPending=play && presentation.ShutterClosed;
+            shownDoor=door;
+            shutterCue=presentation.Shutter;
+        }
+
+        float fraction=NativeShopPresentation.Fraction(door);
+        if(qaShutterMoving && fraction>0 && fraction<1 && door.blockerMaskObject.IsActive() &&
+            (presentation.ShutterClosed ? fraction<qaPriorFraction : fraction>qaPriorFraction))
+        {
+            qaShutterMoving=false;
+            Debug.Log($"[probably_coop QA] PASS native-shutter-motion direction={(presentation.ShutterClosed ? "closing" : "opening")} visible-mask=True fraction={fraction:0.000}");
+        }
+        if(!view.GuestOutside)
+        {
+            var entry=EmporiumEntry.Instance;
+            if(view.Shutter==1)
+            {
+                if(changed) entry.ShowFrontArea();
+                frontAwaitingClose=false;
+                if(fraction>=1) door.blockerMaskObject.gameObject.SetActive(false);
+            }
+            else if(changed || frontAwaitingClose)
+            {
+                frontAwaitingClose=fraction>0;
+                if(!frontAwaitingClose) entry.HideFrontArea();
+            }
+            if(closeImpactPending && fraction<=0.08f)
+            {
+                door.audioSourceShutterClosed.Play();
+                closeImpactPending=false;
+            }
+        }
+        else frontAwaitingClose=false;
+
+        if(changed)
+        {
+            shutter=view.Shutter;
+            PlayerStore.Instance.storeState = shutter switch
+            {
+                1 => PlayerStore.StoreState.OPEN,
+                2 => PlayerStore.StoreState.CLOSED,
+                _ => PlayerStore.StoreState.MORNING
+            };
+        }
     }
 
     internal static void Toggle()

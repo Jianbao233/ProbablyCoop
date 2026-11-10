@@ -15,7 +15,8 @@ internal sealed partial class NativeWorld
 
     private CustomerMotion customerMotion;
     private ulong motionSequence;
-    private double motionStarted;
+    private double motionStarted, motionBaselineAge;
+    private ulong motionBaselineSequence, motionBaselinePeer;
     private string motionSprite = "";
     private uint motionCustomer;
     private bool motionObserved;
@@ -51,17 +52,22 @@ internal sealed partial class NativeWorld
             RecordCustomerMotion(store.isClientArrived && store.currentClientInstance != null
                 ? CustomerMotion.AtCounter : CustomerMotion.Hidden);
         }
+        // Seek only when a peer joins mid-path. Established peers play the
+        // original animation from its cue, with no frame-by-frame age updates.
+        if (motionBaselineSequence != motionSequence || motionBaselinePeer != peerGeneration)
+        {
+            motionBaselineSequence = motionSequence;
+            motionBaselinePeer = peerGeneration;
+            motionBaselineAge = customerMotion is CustomerMotion.Approaching or CustomerMotion.Leaving or CustomerMotion.LeavingRight
+                ? Math.Max(0, Time.realtimeSinceStartupAsDouble - motionStarted) : 0;
+        }
         return new JObject
         {
             ["sequence"] = motionSequence,
             ["customer"] = motionCustomer,
             ["phase"] = (int)customerMotion,
             ["sprite"] = motionSprite,
-            // Only an active path needs an elapsed offset for mid-animation
-            // reconnect. Hidden/idle portraits are stable presentation states;
-            // ticking their age would republish the whole world forever.
-            ["age"] = customerMotion is CustomerMotion.Approaching or CustomerMotion.Leaving or CustomerMotion.LeavingRight
-                ? Math.Max(0, Time.realtimeSinceStartupAsDouble - motionStarted) : 0
+            ["age"] = motionBaselineAge
         };
     }
 

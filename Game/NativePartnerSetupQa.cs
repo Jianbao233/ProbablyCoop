@@ -75,6 +75,7 @@ internal static class NativePartnerSetupQa
         watching = false; phase = 3;
         Evidence = new[] {
             "original NewGamePerksUI Canvas rendered across frames with the personal catalog",
+            "missing prefab rejected without creating a picker; actual menu accepted a stale isInMainMenu flag",
             "original WildNetworkSlot.OnPointerClick selected lucky; original Continue button produced draft [lucky]",
             "NewGameData instance, scalar fields, original perk list and entries restored; PlayerStore singleton and scene unchanged",
             "no native OnPerksContinue, new-game, InitialSave, SaveGame or WriteSlotFile entry was invoked during picker activity"
@@ -98,8 +99,24 @@ internal static class NativePartnerSetupQa
         began = Time.realtimeSinceStartup; watching = true;
         try
         {
-            if (!NativeActorPartnerSetup.TryOpenDraft(ids => accepted = ids, () => cancelled = true, out string reason, out pickerOwner))
-                throw new InvalidOperationException("Native partner picker failed to open: " + reason);
+            var ui=CustomUIManager.Instance;
+            Require(ui!=null && ui.newGamePerksPrefab!=null,"QA menu does not have its original picker asset.");
+            var prefab=ui.newGamePerksPrefab;
+            try
+            {
+                ui.newGamePerksPrefab=null;
+                Require(!NativeActorPartnerSetup.TryOpenDraft(ids=>accepted=ids,()=>cancelled=true,out var unavailable,out pickerOwner) &&
+                    !string.IsNullOrEmpty(unavailable) && pickerOwner==null && !NewGamePerksUI.IsOpen &&
+                    ReferenceEquals(data.startingPerks,original),"missing native picker left a partial menu draft.");
+            }
+            finally { ui.newGamePerksPrefab=prefab; }
+            data.isInMainMenu=false;
+            try
+            {
+                if(!NativeActorPartnerSetup.TryOpenDraft(ids=>accepted=ids,()=>cancelled=true,out var reason,out pickerOwner))
+                    throw new InvalidOperationException("Native partner picker failed to open in the active main menu: "+reason);
+            }
+            finally { data.isInMainMenu=true; }
             Require(!ReferenceEquals(original, data.startingPerks), "Partner draft was not isolated from the original menu loadout.");
             phase = 1; frameAt = Time.frameCount;
         }

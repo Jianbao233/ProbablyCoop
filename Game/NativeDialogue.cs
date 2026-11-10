@@ -10,6 +10,8 @@ internal sealed partial class NativeWorld
 {
     private JObject dialogueState;
     private StoreClient remoteDialogueClient;
+    private DialogUIManager dialoguePaletteUi;
+    private string dialogueFaction, dialogueColor;
     internal static bool ExecutingRemoteDialogue;
     internal bool RemoteDialogueOwned=>remoteDialogueClient!=null && ReferenceEquals(remoteDialogueClient,PlayerStore.Instance.currentClientInstance?.GetClientBlueprint());
     internal void MarkDialogueActor() { remoteDialogueClient=ExecutingRemoteDialogue ? PlayerStore.Instance.currentClientInstance?.GetClientBlueprint() : null; }
@@ -37,6 +39,7 @@ internal sealed partial class NativeWorld
         bellToken=(string)data["bellProof"];
         StoreUIManager.Instance.isAboutToStartMainDialog=(bool)data["pendingStart"];
         var ui=DialogUIManager.Instance;
+        ApplyDialoguePalette(ui);
         ApplyPhoneBubble(ui.clientBubble,(JObject)data["client"]); ApplyPhoneBubble(ui.playerBubble,(JObject)data["player"]);
         ApplyPhoneBubble(ui.secBubble,(JObject)data["sec"]);
         ui.clientNameTMP.text=(string)data["name"]; ui.clientNameBubble.SetActive((bool)data["nameVisible"]);
@@ -48,6 +51,22 @@ internal sealed partial class NativeWorld
             b.gameObject.SetActive(visible); if(!visible) continue;
             b.TMP.richText=(bool)choices[i]["rich"]; b.TMP.text=(string)choices[i]["text"]; b.SetInteractable((bool)choices[i]["enabled"]);
         }
+    }
+    private void ApplyDialoguePalette(DialogUIManager ui)
+    {
+        // Resolve both sprites through the original palette using the
+        // customer's replica fields. No textures or rendered UI travel.
+        var client=PlayerStore.Instance.currentClientInstance?.GetClientBlueprint();
+        string faction=client?.clientFaction, color=client?.bubbleColor;
+        if(dialoguePaletteUi==ui && dialogueFaction==faction && dialogueColor==color) return;
+        // Native faction selection calls Equals on this field. Treat an
+        // absent faction in content data as the same unknown faction locally.
+        if(client!=null && faction==null) client.clientFaction="";
+        try { ui.SetClientBubbleColor(); }
+        finally { if(client!=null && faction==null) client.clientFaction=null; }
+        dialoguePaletteUi=ui;
+        dialogueFaction=faction;
+        dialogueColor=color;
     }
     internal bool HasDialogue => dialogueState!=null && (bool)dialogueState["active"];
     internal bool PendingMainDialogue => dialogueState!=null && (bool)dialogueState["pendingStart"];
