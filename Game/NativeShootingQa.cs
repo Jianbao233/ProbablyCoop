@@ -91,6 +91,11 @@ internal sealed partial class NativeBackgroundQa
             shootingQaGuestRound=Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa-shooting-after-fire")>=0 ? 2 : 1;
             shootingQaRecoilOnRejoin=NativeShootingQaEvidence.LocalRecoil;
             shootingQaFlashOnRejoin=NativeShootingQaEvidence.LocalFlash;
+#if PROBABLY_COOP_GRID_QA
+            if (RequireWindowShootingClick)
+                Require(NativeShootingQaEvidence.LocalGunSounds == 0 && NativeShootingQaEvidence.LocalBodySounds == 0,
+                    "restoring an existing incident replayed an old gun or body sound");
+#endif
             shootingQaResumeVerified=true;
             Record("PASS guest-shooting-rejoin", "native camera and retired offer clear; stale pre-disconnect action rejected on new link, boundary " + shootingQaGuestRound);
             return true;
@@ -349,6 +354,14 @@ internal sealed partial class NativeBackgroundQa
                 "replica executed original shared shooting aftermath");
             Require(NativeShootingQaEvidence.LocalRecoil==shootingQaRecoilOnRejoin+1 && NativeShootingQaEvidence.LocalFlash==shootingQaFlashOnRejoin+1,
                 "replica omitted or replayed an accepted shot animation");
+#if PROBABLY_COOP_GRID_QA
+            if (RequireWindowShootingClick)
+            {
+                Require(NativeShootingQaEvidence.LocalGunSounds == 1 && NativeShootingQaEvidence.LocalBodySounds == 1,
+                    "a new live incident did not play the original gun and body sounds exactly once");
+                Record("PASS native-shooting-audio","one original gun and body sound for the live shot; no old shot audio on rejoin");
+            }
+#endif
             Require(store.lockNextBellFlag==0 && !store.isHandlingShootout && !ui.isShootingMode && !ui.isShot && ui.shotClientInstance==null && !ui.body.activeSelf,
                 "shooting left native lock/camera/corpse behind");
             Record("PASS guest-native-shooting","original aiming and recoil/flash/body, real process reconnects, stale operations and Host observer camera; replica world callbacks never ran");
@@ -361,6 +374,9 @@ internal sealed partial class NativeBackgroundQa
 internal static class NativeShootingQaEvidence
 {
     internal static int SourceShots,SourceShootouts,SourceAchievements,GoodKills,BadKills,LocalRecoil,LocalFlash;
+#if PROBABLY_COOP_GRID_QA
+    internal static int LocalGunSounds, LocalBodySounds;
+#endif
     internal static NativeActorRun.Slot GoodActor,BadActor;
     internal sealed class Offer
     {
@@ -446,9 +462,11 @@ internal static class NativeShootingQaAudioObserver
 {
     private static void Postfix(string identifier, bool __result)
     {
-        if (__result && NativeGuest.Active && NativeShootingQaEvidence.Enabled &&
-            identifier is "shotgun_fire" or "body_collapse_floor")
-            Debug.Log("[probably_coop QA] native guest audio " + identifier);
+        if (!__result || !NativeGuest.Active || !NativeShootingQaEvidence.Enabled) return;
+        if (identifier == "shotgun_fire") NativeShootingQaEvidence.LocalGunSounds++;
+        else if (identifier == "body_collapse_floor") NativeShootingQaEvidence.LocalBodySounds++;
+        else return;
+        Debug.Log("[probably_coop QA] native guest audio " + identifier);
     }
 }
 #endif

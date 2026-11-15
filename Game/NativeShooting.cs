@@ -23,12 +23,14 @@ internal sealed partial class NativeWorld
     private NativeActorActivities.Lease shootingActivity;
     private JObject shootingReplica;
     private ulong presentedShootingEpisode;
+    private ulong restoredFiredEpisode;
     private bool guestShootingEntered, guestShootingFired, guestShootingLeaving;
     private ulong fireClickEpisode;
     private uint fireClickCustomer;
     private double fireClickUntil;
     private int shootingPresentationGeneration;
     internal bool ShootingOwnsCustomer => host && shootingPhase is > ShootingPhase.Idle and < ShootingPhase.Complete;
+    internal bool RestoringFiredShot => restoredFiredEpisode != 0 && restoredFiredEpisode == presentedShootingEpisode;
     internal ShootingPhase ShootingState => host ? shootingPhase : shootingReplica==null ? ShootingPhase.Idle : (ShootingPhase)(int)shootingReplica["phase"];
     internal ulong ShootingEpisode => host ? shootingEpisode : (ulong?)shootingReplica?["episode"] ?? 0;
     private NativeActorRun.Slot ShootingCaller => ReferenceEquals(RemoteUiExecution,this)
@@ -238,7 +240,10 @@ internal sealed partial class NativeWorld
             data["customer"]?.Type!=JTokenType.Integer || data["fired"]?.Type!=JTokenType.Boolean ||
             data["body"]?.Type!=JTokenType.Boolean || data["unlocked"]?.Type!=JTokenType.Boolean || data["canPickup"]?.Type!=JTokenType.Boolean)
             throw new InvalidDataException("Invalid shared shooting incident");
-        _=(ulong)data["episode"]; _=(ulong)data["revision"]; _=(uint)data["customer"];
+        ulong episode=(ulong)data["episode"]; _=(ulong)data["revision"]; _=(uint)data["customer"];
+        // On join, keep the native visual sequence to restore the camera and
+        // body. Its shot was already fired before this peer's initial state.
+        if (shootingReplica == null && (bool)data["fired"]) restoredFiredEpisode = episode;
         shootingReplica=data;
         PlayerStore.Instance.isShootingUnlocked=(bool)data["unlocked"];
         Shotgun.LoadShotgun();

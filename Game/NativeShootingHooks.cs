@@ -93,6 +93,14 @@ internal static class NativeShootingAimQuery
     }
 }
 
+[HarmonyPatch(typeof(AudioManager), nameof(AudioManager.Play2))]
+internal static class NativeShootingRestoreAudio
+{
+    private static bool Prefix(string identifier) =>
+        identifier is not ("shotgun_fire" or "body_collapse_floor") ||
+        NativeShootingHooks.Presentation?.RestoringFiredShot != true;
+}
+
 // Preserve the native coroutines and all local frame timing. Only their execution
 // context is restored per MoveNext; no actor scope remains open across a yield.
 [HarmonyPatch]
