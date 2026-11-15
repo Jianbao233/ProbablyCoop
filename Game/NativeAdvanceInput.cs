@@ -46,7 +46,8 @@ internal static class NativeAdvanceInput
         }
         if(front==PhoneUIManager.Instance?.phonePanel)
         {
-            bool busy=NativeGuest.Active ? NativeWorld.Guest?.SharedPhoneBusy==true : NativeWorld.Host?.SharedPhoneBusy==true;
+            bool busy=NativeInventoryPilot.ActiveCampaign?.HasPhoneView ??
+                (NativeGuest.Active ? NativeWorld.Guest?.SharedPhoneBusy==true : NativeWorld.Host?.SharedPhoneBusy==true);
             return busy && NativeWorld.Host?.HostPhoneHidden!=true ? Target.Phone : Target.None;
         }
         bool customer=CustomerAvailable();
@@ -57,7 +58,7 @@ internal static class NativeAdvanceInput
     internal static Target BeginSourceUpdate()
     {
         var previous=sourceScope;
-        if(!NativeGuest.Active && NativeWorld.Host!=null) sourceScope=Target.Unresolved;
+        if(!NativeGuest.Active && (NativeWorld.Host!=null || NativeInventoryPilot.AuthoritativeCampaign)) sourceScope=Target.Unresolved;
         return previous;
     }
     internal static void EndSourceUpdate(Target previous)=>sourceScope=previous;

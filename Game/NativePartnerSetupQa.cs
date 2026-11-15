@@ -36,11 +36,16 @@ internal static class NativePartnerSetupQa
         draft = null;
         if (!NativeBackgroundQa.Enabled || !NativeQaDisplay.IsIsolatedQa || !NativeBackgroundQa.IsGuestProduct)
             throw new InvalidOperationException("Partner picker QA requires the isolated QA guest.");
-        if (phase == 0) Open();
+        if (phase == 0)
+        {
+            if (SceneManager.GetActiveScene().name != "EmporiumMenu" || MainMenuUIController.Instance == null ||
+                CustomUIManager.Instance?.newGamePerksPrefab == null || NewGameData.Instance == null) return false;
+            Open();
+        }
         CheckThread();
         Require(violation == null, "Forbidden native side effect: " + violation);
         Require(!cancelled, "The QA partner picker was cancelled.");
-        Require(ReferenceEquals(NewGameData.Instance, data) && data != null && data.isInMainMenu,
+        Require(ReferenceEquals(NewGameData.Instance, data) && data != null && SceneManager.GetActiveScene().name == "EmporiumMenu",
             "The picker left its original main-menu data instance.");
         Require(SceneManager.GetActiveScene().handle == sceneHandle, "The picker changed the native scene.");
         if (phase == 3) { draft = (string[])accepted.Clone(); return true; }
@@ -91,7 +96,6 @@ internal static class NativePartnerSetupQa
         Require(!NewGamePerksUI.IsOpen, "Another native perk window is already open.");
         thread = Environment.CurrentManagedThreadId;
         data = NewGameData.Instance;
-        Require(data != null && data.isInMainMenu, "Partner picker QA must begin in the original main menu.");
         original = data.startingPerks;
         Require(original != null, "Original menu perk list is missing.");
         originalItems = original.ToArray(); originalFields = Fields(data);
@@ -110,13 +114,14 @@ internal static class NativePartnerSetupQa
                     ReferenceEquals(data.startingPerks,original),"missing native picker left a partial menu draft.");
             }
             finally { ui.newGamePerksPrefab=prefab; }
+            bool originalMenuFlag = data.isInMainMenu;
             data.isInMainMenu=false;
             try
             {
                 if(!NativeActorPartnerSetup.TryOpenDraft(ids=>accepted=ids,()=>cancelled=true,out var reason,out pickerOwner))
                     throw new InvalidOperationException("Native partner picker failed to open in the active main menu: "+reason);
             }
-            finally { data.isInMainMenu=true; }
+            finally { data.isInMainMenu=originalMenuFlag; }
             Require(!ReferenceEquals(original, data.startingPerks), "Partner draft was not isolated from the original menu loadout.");
             phase = 1; frameAt = Time.frameCount;
         }

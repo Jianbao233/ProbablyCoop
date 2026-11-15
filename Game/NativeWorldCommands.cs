@@ -96,7 +96,9 @@ internal sealed partial class NativeWorld
     {
         if(!TryData(button,out var data) || button.isDisabled || button.isHidden) return;
         uint owner=(uint)data["owner"];
-        if(!model.Data.TryGetValue(owner,out var root)) return;
+        if(!model.Data.ContainsKey(owner)) return;
+        if(model.Objects.TryGetValue(owner,out var value) && value is GameItem item &&
+            NativeLocalCassette.TryUseReplicaControl(item,button)) return;
         Submit(new JObject { ["kind"]="control",["id"]=(uint)data["entity"],["owner"]=owner,["token"]=(string)data["controlToken"] });
     }
     internal void RequestRadio(MachineryRadioList radio,int index)
@@ -244,6 +246,8 @@ internal sealed partial class NativeWorld
         if(HandTouches(item)) return (ushort)ShopResult.Busy;
         uint id=(uint)command["id"];
         if(!model.Objects.TryGetValue(id,out obj) || !model.Data.TryGetValue(id,out var control) || (uint)control["owner"]!=owner) return (ushort)ShopResult.Unavailable;
+        if(obj is MachineryButton localButton && NativeLocalCassette.ReadControl(item,localButton)!=NativeLocalCassette.Control.None)
+            return (ushort)ShopResult.Unavailable;
         if(ControlToken(obj,OwnerControlProof(item))!=(string)command["token"]) return (ushort)ShopResult.Stale;
         if(obj is MachinerySlider slider)
         {

@@ -37,7 +37,8 @@ internal sealed class SteamRoom : ICoopRoom
     public bool Busy => creating != null || joining != null;
     public bool IsHost => HasLobby && originalHost == self;
     public bool IsGuest => joining != null || HasLobby && originalHost != self;
-    public bool CanApprove => IsHost && candidate != CSteamID.Nil && peer == CSteamID.Nil;
+    public bool CanApprove => IsHost && peer==candidate && candidate!=CSteamID.Nil && Session?.JoinPending==true;
+    public bool AcceptingJoins => IsHost && Session?.AcceptingJoins==true;
     internal bool FriendsCanJoin => publishedJoin;
     public string Code => HasLobby ? RoomCode.Encode(lobby.m_SteamID) : "";
     public string Status { get; private set; } = "idle";
@@ -95,13 +96,23 @@ internal sealed class SteamRoom : ICoopRoom
         StartOperation("joining");
     }
 
-    internal void Approve()
+    public void Approve()
     {
         if (!CanApprove || !ContainsMember(candidate)) return;
-        AttachPeer(candidate);
-        var identity = Identity(peer);
-        SteamNetworkingMessages.AcceptSessionWithUser(ref identity);
+        Session.ApproveJoin();
         SetStatus("handshake");
+    }
+
+    public void Decline()
+    {
+        if(CanApprove) Session.DeclineJoin(Now);
+    }
+
+    public void SetAcceptingJoins(bool enabled)
+    {
+        if(!IsHost) return;
+        Session.SetAcceptingJoins(enabled,Now);
+        PublishFriendJoin(enabled && candidate==CSteamID.Nil);
     }
 
     public void Leave(string status = "idle")
@@ -149,6 +160,13 @@ internal sealed class SteamRoom : ICoopRoom
 
         if (Session.State == LinkState.Connected && Status != "connected")
             SetStatus("connected");
+        if(Session.JoinPending)
+            SetStatus(IsHost ? "approve" : "await_approval");
+        if(!IsHost && Session.State is LinkState.JoinDeclined or LinkState.JoinClosed)
+        {
+            Leave(Session.State==LinkState.JoinClosed ? "join_closed" : "join_declined");
+            return;
+        }
         if (Session.State == LinkState.Incompatible)
         {
             // Give the reliable rejection a chance to arrive before closing channels.
@@ -252,7 +270,7 @@ internal sealed class SteamRoom : ICoopRoom
 
     private CoopSession MakeSession(bool host)
     {
-        var result = new CoopSession(host, fingerprint, Send);
+        var result = new CoopSession(host, fingerprint, Send,requireApproval:host);
         result.RemoteCursor += packet => RemoteCursor?.Invoke(packet);
         result.Received += kind =>
         {
@@ -286,8 +304,17 @@ internal sealed class SteamRoom : ICoopRoom
             if (peer != CSteamID.Nil && peer != next) ClearPeer();
             candidate = next;
             PartnerName = NameOf(candidate);
-            PublishFriendJoin(candidate == CSteamID.Nil);
-            SetStatus(candidate == CSteamID.Nil ? "waiting" : "approve");
+            PublishFriendJoin(AcceptingJoins && candidate==CSteamID.Nil);
+            SetStatus(candidate == CSteamID.Nil ? "waiting" : "handshake");
+        }
+        if(candidate!=CSteamID.Nil && peer==CSteamID.Nil)
+        {
+            AttachPeer(candidate);
+            // Establish the control channel so the request and refusal can
+            // travel. CoopSession still withholds the gameplay handshake
+            // until the host accepts the applicant.
+            var identity=Identity(peer);
+            SteamNetworkingMessages.AcceptSessionWithUser(ref identity);
         }
     }
 

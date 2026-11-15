@@ -2,12 +2,14 @@ using System;
 
 namespace ProbablyCoop.Core;
 
-internal enum LinkState { Waiting, Handshake, Connected, TimedOut, Incompatible }
+internal enum LinkState { Waiting, Handshake, Connected, TimedOut, Incompatible, JoinDeclined, JoinClosed }
+internal enum JoinRefusal : ushort { Incompatible, Declined, Closed }
 
 /// <summary>Two-party state machine. The adapter authenticates the sender before delivering bytes.</summary>
 internal sealed class CoopSession
 {
     private readonly bool host;
+    private readonly bool requireApproval;
     private readonly byte[] fingerprint;
     private readonly Func<byte[], bool, bool> send;
     private Guid session;
@@ -24,8 +26,11 @@ internal sealed class CoopSession
     private double nextControl;
     private double nextRetry;
     private double phaseStart;
+    private bool admitted;
 
     internal LinkState State { get; private set; }
+    internal bool AcceptingJoins { get; private set; } = true;
+    internal bool JoinPending { get; private set; }
     internal ushort Tiles { get; private set; }
     internal ulong Revision { get; private set; }
     internal bool HasPendingChange => pendingRequest != 0;
@@ -34,10 +39,11 @@ internal sealed class CoopSession
     internal event Action<Packet> RemoteCursor;
     internal event Action<Kind> Received;
 
-    internal CoopSession(bool host, byte[] fingerprint, Func<byte[], bool, bool> send)
+    internal CoopSession(bool host, byte[] fingerprint, Func<byte[], bool, bool> send,bool requireApproval=false)
     {
         if (fingerprint?.Length != Wire.FingerprintSize) throw new ArgumentException("Invalid fingerprint.");
         this.host = host;
+        this.requireApproval=host && requireApproval;
         this.fingerprint = fingerprint;
         this.send = send;
         Shop = new ShopLink(host, (kind, serial, revision, value, payload) =>
@@ -53,6 +59,8 @@ internal sealed class CoopSession
         Shop.Reset();
         Native.Reset();
         epoch = Guid.Empty;
+        admitted=!requireApproval;
+        JoinPending=false;
         challenge = host ? 0 : BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(), 0) | 1UL;
         lastRequest = pendingRequest = cursorSequence = receivedCursorSequence = 0;
         phaseStart = lastReceive = now;
@@ -68,6 +76,8 @@ internal sealed class CoopSession
     internal void DropPeer()
     {
         State = LinkState.Waiting;
+        JoinPending=false;
+        challenge=0;
         pendingRequest = 0;
         Shop.Reset();
         Native.Reset();
@@ -76,6 +86,11 @@ internal sealed class CoopSession
     internal void Tick(double now)
     {
         if (host && State != LinkState.Connected) Shop.Tick(now, false);
+        if(host && (State is LinkState.JoinDeclined or LinkState.JoinClosed) && now-phaseStart>=4)
+        {
+            State=LinkState.TimedOut;
+            return;
+        }
         if (State == LinkState.Handshake)
         {
             if (now - phaseStart >= 60)
@@ -141,16 +156,34 @@ internal sealed class CoopSession
 
     internal bool Receive(ReadOnlySpan<byte> bytes, bool cursorChannel, double now)
     {
-        if (State is not (LinkState.Handshake or LinkState.Connected) ||
+        if (State is not (LinkState.Handshake or LinkState.Connected or LinkState.JoinDeclined or LinkState.JoinClosed) ||
             !Wire.TryDecode(bytes, cursorChannel, out var packet)) return false;
+        if((State is LinkState.JoinDeclined or LinkState.JoinClosed) && (!host || packet.Kind!=Kind.Hello)) return false;
         if (host && packet.Kind == Kind.Hello)
         {
             if (packet.Serial == 0 || packet.Session != Guid.Empty || packet.Epoch != Guid.Empty ||
                 (challenge != 0 && challenge != packet.Serial)) return false;
+            if(State is LinkState.JoinDeclined or LinkState.JoinClosed)
+            {
+                SendRefusal(State==LinkState.JoinClosed ? JoinRefusal.Closed : JoinRefusal.Declined);
+                return true;
+            }
             if (!Compatible(packet.Build))
             {
                 Send(new Packet(Kind.Reject, serial: packet.Serial));
                 State = LinkState.Incompatible;
+                return true;
+            }
+            challenge=packet.Serial;
+            if(!AcceptingJoins && State!=LinkState.Connected)
+            {
+                RefuseJoin(now,JoinRefusal.Closed);
+                return true;
+            }
+            if(!admitted)
+            {
+                JoinPending=true;
+                Send(new Packet(Kind.JoinPending,serial:challenge));
                 return true;
             }
             if (epoch == Guid.Empty)
@@ -164,9 +197,19 @@ internal sealed class CoopSession
         }
         if (!host && State == LinkState.Handshake && packet.Serial == challenge)
         {
+            if(packet.Kind==Kind.JoinPending && epoch==Guid.Empty && packet.Session==Guid.Empty && packet.Epoch==Guid.Empty)
+            {
+                JoinPending=true;
+                return true;
+            }
             if (packet.Kind == Kind.Reject && packet.Session == Guid.Empty && packet.Epoch == Guid.Empty)
             {
-                State = LinkState.Incompatible;
+                JoinPending=false;
+                State = (JoinRefusal)packet.Value switch {
+                    JoinRefusal.Closed=>LinkState.JoinClosed,
+                    JoinRefusal.Declined=>LinkState.JoinDeclined,
+                    _=>LinkState.Incompatible
+                };
                 return true;
             }
             if (packet.Kind == Kind.Welcome && packet.Session != Guid.Empty && packet.Epoch != Guid.Empty)
@@ -179,6 +222,7 @@ internal sealed class CoopSession
                 }
                 session = packet.Session;
                 epoch = packet.Epoch;
+                JoinPending=false;
                 nextControl = now + 1;
                 Send(new Packet(Kind.Ready, session, epoch, challenge));
                 Received?.Invoke(packet.Kind);
@@ -210,7 +254,7 @@ internal sealed class CoopSession
         {
             if (!Shop.Receive(packet)) return false;
         }
-        else if (packet.Kind is Kind.NativeChunk or Kind.NativeAck or Kind.NativeCommand or Kind.NativeReply or Kind.NativePresence or Kind.NativeTooltip or Kind.NativeProgress or Kind.NativeNeedFull)
+        else if (packet.Kind is Kind.NativeChunk or Kind.NativeAck or Kind.NativeCommand or Kind.NativeReply or Kind.NativePresence or Kind.NativeTooltip or Kind.NativeProgress or Kind.NativeNeedFull or Kind.NativeSyncFailed)
         {
             if (!Native.Receive(packet)) return false;
         }
@@ -238,6 +282,37 @@ internal sealed class CoopSession
         Received?.Invoke(packet.Kind);
         return true;
     }
+
+    internal void SetAcceptingJoins(bool enabled,double now)
+    {
+        if(!host || AcceptingJoins==enabled) return;
+        AcceptingJoins=enabled;
+        if(!enabled && State==LinkState.Handshake && challenge!=0) RefuseJoin(now,JoinRefusal.Closed);
+    }
+
+    internal void ApproveJoin()
+    {
+        if(!host || !JoinPending || !AcceptingJoins || State!=LinkState.Handshake) return;
+        JoinPending=false;
+        admitted=true;
+        epoch=Guid.NewGuid();
+        Send(new Packet(Kind.Welcome,session,epoch,challenge,build:fingerprint));
+    }
+
+    internal void DeclineJoin(double now)
+    {
+        if(host && JoinPending && State==LinkState.Handshake) RefuseJoin(now,JoinRefusal.Declined);
+    }
+
+    private void RefuseJoin(double now,JoinRefusal reason)
+    {
+        JoinPending=false;
+        State=reason==JoinRefusal.Closed ? LinkState.JoinClosed : LinkState.JoinDeclined;
+        phaseStart=now;
+        SendRefusal(reason);
+    }
+
+    private void SendRefusal(JoinRefusal reason)=>Send(new Packet(Kind.Reject,serial:challenge,value:(ushort)reason));
 
     private bool Compatible(byte[] other) => fingerprint.AsSpan().SequenceEqual(other);
 

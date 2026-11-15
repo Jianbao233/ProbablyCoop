@@ -89,7 +89,7 @@ internal static class NativeSnapshotCodec
         { cancellation.ThrowIfCancellationRequested(); Count(length); inner.Write(buffer,offset,length); }
         private void Count(int length)
         {
-            if(length>limit-count) throw new InvalidDataException("Native snapshot exceeds byte budget");
+            if(length>limit-count) throw NativeSnapshotBinary.Capacity("Native snapshot exceeds byte budget");
             count+=length;
         }
         public override void Flush() { cancellation.ThrowIfCancellationRequested(); inner.Flush(); }

@@ -21,7 +21,7 @@ internal static class NativeCarryWindowDrag
     private static readonly AccessTools.FieldRef<PixelWindow, TreeNodeRender> Background =
         AccessTools.FieldRefAccess<PixelWindow, TreeNodeRender>("background");
 
-    private static bool Cooperative => NativeGuest.Active || NativeActorSession.Current!=null;
+    private static bool Cooperative => NativeInventoryPilot.HasCampaign || NativeGuest.Active || NativeActorSession.Current!=null;
     private static bool Outside => MapUIManager.Instance!=null && MapUIManager.Instance.IsOutside;
 
     internal static void OnShown(PixelWindow window)

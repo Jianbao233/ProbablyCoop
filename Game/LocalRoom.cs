@@ -18,12 +18,14 @@ internal sealed class LocalRoom : ICoopRoom
     public bool Busy => false;
     public bool IsHost => HasLobby && !guest;
     public bool IsGuest => HasLobby && guest;
-    public bool CanApprove => false;
+    public bool CanApprove => IsHost && Session.JoinPending;
+    public bool AcceptingJoins => IsHost && Session.AcceptingJoins;
     public string Code => link?.Code ?? "";
     internal bool IsLoopback => link != null && !lan;
+    internal IPEndPoint Ipv4HostEndpoint => IsHost && lan ? link.LocalEndpoint : null;
     public string Status { get; private set; } = "local_idle";
     public string Detail { get; private set; } = "";
-    public string PartnerName => guest ? "Host" : "Guest";
+    public string PartnerName => "";
     public int Sent => link?.Sent ?? 0;
     public int Received => link?.Received ?? 0;
     public event Action<Packet> RemoteCursor;
@@ -32,23 +34,44 @@ internal sealed class LocalRoom : ICoopRoom
 
     public void Create() => Open(null, null);
 
-    internal void CreateLan(string address)
+    internal void CreateLan(string address, string port = null)
     {
-        if (!IPAddress.TryParse(address.Trim(), out var ip) || IPAddress.IsLoopback(ip))
+        if (HasLobby) return;
+        if (!DirectRoomEndpoint.TryParseIpv4(address.Trim(), out var ip))
         {
             Status = "bad_address";
             Detail = "";
             return;
         }
-        Open(null, ip);
+        int listenPort = 0;
+        if (!string.IsNullOrWhiteSpace(port) && !DirectRoomEndpoint.TryParsePort(port.Trim(), out listenPort))
+        {
+            Status = "bad_udp_port";
+            Detail = "";
+            return;
+        }
+        Open(null, ip, listenPort);
     }
 
-    internal void Join(string code) => Open(code.Trim(), null);
-
-    private void Open(string code, IPAddress address)
+    internal void Join(string code, string mappedAddress = null)
     {
         if (HasLobby) return;
-        try { link = new LoopbackLink(fingerprint, Time.realtimeSinceStartupAsDouble, code, address); }
+        IPEndPoint mappedEndpoint = null;
+        if (code.StartsWith("PSI-", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(mappedAddress) &&
+            !DirectRoomEndpoint.TryParseMappedEndpoint(mappedAddress.Trim(), out mappedEndpoint))
+        {
+            Status = "bad_mapping_address";
+            Detail = "";
+            return;
+        }
+        Open(code.Trim(), null, mappedEndpoint: mappedEndpoint);
+    }
+
+    private void Open(string code, IPAddress address, int listenPort = 0, IPEndPoint mappedEndpoint = null)
+    {
+        if (HasLobby) return;
+        try { link = new LoopbackLink(fingerprint, Time.realtimeSinceStartupAsDouble, code, address, listenPort,
+            mappedEndpoint,requireApproval:!NativeBackgroundQa.Enabled); }
         catch (FormatException)
         {
             Detail = "";
@@ -57,6 +80,12 @@ internal sealed class LocalRoom : ICoopRoom
         }
         catch (SocketException ex)
         {
+            if (listenPort != 0 && ex.SocketErrorCode == SocketError.AddressAlreadyInUse)
+            {
+                Status = "udp_port_in_use";
+                Detail = "";
+                return;
+            }
             Detail = ex.SocketErrorCode.ToString();
             Status = code != null ? "join_failed" : "create_failed";
             return;
@@ -76,9 +105,15 @@ internal sealed class LocalRoom : ICoopRoom
     {
         if (!HasLobby) return;
         link.Tick(Time.realtimeSinceStartupAsDouble,beforeSessionTick);
+        if(guest && Session.State is LinkState.JoinDeclined or LinkState.JoinClosed)
+        {
+            Leave(Session.State==LinkState.JoinClosed ? "join_closed" : "join_declined");
+            return;
+        }
         string status = Session.State switch
         {
             LinkState.Connected => lan ? "lan_connected" : "local_connected",
+            LinkState.Handshake when Session.JoinPending => guest ? "await_approval" : "approve",
             LinkState.Handshake => "handshake",
             LinkState.TimedOut => "peer_timeout",
             LinkState.Incompatible => "incompatible",
@@ -88,6 +123,11 @@ internal sealed class LocalRoom : ICoopRoom
             Debug.Log($"[probably_coop] {status}, tx={Sent}, rx={Received}");
         Status = status;
     }
+
+    public void Approve() { if(IsHost) Session.ApproveJoin(); }
+    public void Decline() { if(IsHost) Session.DeclineJoin(Time.realtimeSinceStartupAsDouble); }
+    public void SetAcceptingJoins(bool enabled)
+    { if(IsHost) Session.SetAcceptingJoins(enabled,Time.realtimeSinceStartupAsDouble); }
 
     public void Leave(string status = "idle")
     {

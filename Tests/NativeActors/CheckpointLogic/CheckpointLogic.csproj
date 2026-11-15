@@ -15,6 +15,7 @@
     <Compile Include="Logic.cs" />
     <Compile Include="Entry.cs" />
     <Compile Include="..\..\..\Game\NativeActorCheckpoint.cs" Link="NativeActorCheckpoint.cs" />
+    <Compile Include="..\..\..\Sync\EffectItemIds.cs" Link="EffectItemIds.cs" />
   </ItemGroup>
   <Target Name="RecordReferencePath" AfterTargets="Build">
     <WriteLinesToFile File="$(OutDir)native-managed-path.txt" Lines="$(GameManaged)" Overwrite="true" />

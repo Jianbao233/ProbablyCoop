@@ -189,7 +189,7 @@ internal sealed partial class NativeWorld
             NativeLogisticsUi.Refresh(kind,item,true);
         nextCapture=0; return (ushort)ShopResult.Applied;
     }
-    private static List<MachineStorageCoordinator.Preset> ParsePresets(string json)
+    internal static List<MachineStorageCoordinator.Preset> ParsePresets(string json)
     {
         if(string.IsNullOrEmpty(json)) return new List<MachineStorageCoordinator.Preset>();
         var value=JObject.Parse(json);

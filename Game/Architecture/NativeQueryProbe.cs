@@ -29,11 +29,12 @@ internal static class NativeQueryProbe
     internal static bool TryGet(BarterOffer offer, out BarterView view)
     {
         view = null;
-        return (NativeArchitectureQa.Active || NativeGuest.Active) && offer != null && replicas.TryGetValue(offer, out view);
+        return (NativeArchitectureQa.Active || NativeGuest.Active || NativeInventoryPilot.CampaignReplica) &&
+            offer != null && replicas.TryGetValue(offer, out view);
     }
     internal static void BindReplica(BarterOffer offer, BarterView view)
     {
-        if (!NativeGuest.Active) throw new InvalidOperationException("Replica only");
+        if (!NativeGuest.Active && !NativeInventoryPilot.CampaignReplica) throw new InvalidOperationException("Replica only");
         replicas.Remove(offer); replicas.Add(offer, view);
     }
 }

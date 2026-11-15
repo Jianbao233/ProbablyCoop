@@ -20,7 +20,7 @@ internal static class NativePerformance
         internal readonly int TargetMs;
         internal long AboveTarget;
         internal Samples(string name)
-        { TargetMs=name=="host.capture" ? 4 : name=="guest.command_to_projection" ? 100 : 0; }
+        { TargetMs=name is "host.capture" or "host.effect_sync_frame" or "host.effect_capture" ? 4 : name=="guest.command_to_projection" ? 100 : 0; }
         internal double Total, Maximum;
         internal double Next;
     }
@@ -29,9 +29,13 @@ internal static class NativePerformance
     [Flags] internal enum FrameWork { None=0, Capture=1, Apply=2, QaRender=4, Tooltip=8 }
     private static FrameWork lastWork;
     private static bool previouslyConnected;
+    private static int effectDepth;
+    private static long effectTicks, effectStarted;
+    private static bool effectFrame;
     private static bool Keep(string name) => Enabled && (!Coarse || name is
         "host.capture" or "host.pack_worker" or "guest.apply" or "guest.unpack_worker" or
-        "guest.command_to_projection" or "guest.command_reply_applied" or "runtime.update" or "qa.render");
+        "guest.command_to_projection" or "guest.command_reply_applied" or "runtime.update" or "qa.render" or
+        "host.effect_capture" or "host.effect_sync_frame" or "host.effect_inventory");
     internal static Scope Measure(string name) => new Scope(Keep(name) ? name : null);
     internal static Scope Measure(string name,FrameWork work)
     {
@@ -55,6 +59,7 @@ internal static class NativePerformance
             Record("frame.interval",interval,true);
             if(connected && previouslyConnected)
             {
+                if (effectFrame) Record("host.effect_sync_frame", effectTicks * 1000d / Stopwatch.Frequency);
                 NativeCaptureComparison.Current?.Frame(interval,lastWork);
                 string category=(lastWork&FrameWork.QaRender)!=0 ? "frame.qa_render" :
                     (lastWork&FrameWork.Capture)!=0 ? "frame.with_capture" :
@@ -66,6 +71,25 @@ internal static class NativePerformance
         previouslyConnected=connected;
         lastWork=FrameWork.None;
         previousFrame = now;
+        effectTicks = 0;
+        effectFrame = false;
+    }
+    internal static EffectScope MeasureHostEffectFrame(bool host)
+    {
+        if (!Enabled || !host) return default;
+        effectFrame = true;
+        if (effectDepth++ == 0) effectStarted = Stopwatch.GetTimestamp();
+        return new EffectScope(true);
+    }
+
+    internal readonly struct EffectScope : IDisposable
+    {
+        private readonly bool sampled;
+        internal EffectScope(bool sampled) => this.sampled = sampled;
+        public void Dispose()
+        {
+            if (sampled && --effectDepth == 0) effectTicks += Stopwatch.GetTimestamp() - effectStarted;
+        }
     }
     private static void Record(string name, double milliseconds,bool frame=false)
     {

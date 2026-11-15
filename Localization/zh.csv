@@ -6,7 +6,21 @@ open,打开（F7）
 prototype,原型 · 共享测试格子
 code_hint,输入房间码或房主本机 IPv4
 join_code_hint,粘贴房间码
-host_address_hint,本机虚拟局域网或内网 IPv4
+join_room_heading,加入房间
+host_room_heading,创建房间
+join_from_menu,要加入好友，请回到主菜单粘贴房间码。
+host_address_hint,本机 IPv4
+pause_entry,联机
+hide_nutrifruit_launcher,隐藏小营养果浮窗
+perk_mixed_coop,个人效果按当前角色生效。开局赠品和自动发生的全店事件由房主的天赋决定。
+perk_gambling_coop,赌博成瘾不会随天数解除。{0}可随机解除一种成瘾，{1}可指定移除。彩票提前开放和自动购票按房主的天赋结算。
+ipv4_mapping_hint,内网映射请选择 UDP，并转发到房主的监听端口。
+udp_port_hint,UDP 端口（留空自动）
+mapped_address_hint,映射后的 IPv4:端口（可选）
+udp_listening,IPv4 监听 {0}（UDP）
+status_bad_udp_port,请输入 1–65535 的 UDP 端口，或留空自动分配。
+status_udp_port_in_use,该 UDP 端口已被占用，请换一个端口。
+status_bad_mapping_address,请填写有效的映射 IPv4:端口，或留空使用房间码中的地址。
 steam_friend_hint,让合伙人在 Steam 好友列表右键你并选择「加入游戏」。
 status_steam_join_busy,当前已有房间。退出后可从 Steam 好友列表重新加入。
 room_code,房间码
@@ -18,6 +32,10 @@ confirm_leave_room,确定离开房间并返回主菜单？
 host_start_hint,新建或继续合作档后即可一起开店。
 create,Steam 建房
 local_create,开启本机测试
+local_return_to_menu,返回主菜单
+local_return_and_create,返回主菜单并建房
+confirm_local_return,要返回主菜单加入本机测试房间吗？
+confirm_local_return_and_create,要返回主菜单并创建新的合作测试店铺吗？
 join,加入
 copy,复制房间码
 leave,退出
@@ -27,6 +45,10 @@ status_idle,创建房间或粘贴房间码。
 status_local_idle,开启一个仅供本机副机加入的测试房间。
 status_local_waiting,本机房间已创建，复制 PSL 房间码给副机。
 status_local_connected,本机副机已连接。
+status_local_join_idle,粘贴房主的 PSL 房间码，连接后会自动进入测试店铺。
+status_local_loading_shop,已连接，正在载入合作测试店铺…
+status_local_start_from_menu,请返回主菜单进入合作测试店铺。
+status_local_code_required,此测试入口使用房主生成的 PSL 房间码。
 status_creating,正在创建 Steam 大厅…
 status_joining,正在加入 Steam 大厅…
 status_bad_code,房间码无效。
@@ -35,13 +57,33 @@ status_join_failed,无法加入房间。
 status_waiting,房间已创建。复制房间码给合伙人。
 status_approve,合伙人正在等待确认。
 status_await_approval,等待房主确认。
+status_join_declined,房主拒绝了本次加入申请。
+status_join_closed,房主已暂停加入。
+pause_joins,暂停客机加入
+resume_joins,开放客机申请
+joins_paused,已暂停客机加入。
+decline_join,拒绝
+join_request_notification,有客机申请加入。按 F7 打开联机面板处理。
 status_handshake,正在核对版本并建立 P2P 连接…
 status_connected,合伙人已连接。
 status_shop_connected,已连接共享店铺。
 status_incompatible,游戏或模组版本不一致。
+status_session_error,本次联机同步出错。可以重新加入房间。
 status_partner_picker_unavailable,原版伙伴天赋窗口未能打开。可返回主菜单后重新加入。
 status_partner_setup_rejected,房主未接受该天赋组合。请重新加入并选择。
 status_peer_timeout,对端已断线，请通过房间码重进。
+status_sync_failed,同步未完成。请用原房间码重新加入。
+status_sync_host_failed,客机同步失败。店铺继续开放，客机可以重新加入。
+sync_connecting,正在连接房间
+sync_preparing,等候房主准备店铺数据
+sync_receiving,正在接收店铺数据
+sync_checking,已收齐数据，正在核对入房资料
+sync_installing,正在加载原版店铺
+sync_ready,店铺已加载
+sync_failed,同步未完成
+sync_show_log,展开加载记录
+sync_hide_log,收起加载记录
+sync_batches_received,已收齐 {0}/{1} 批 · {2} KiB
 status_lobby_timeout,Steam 大厅请求超时。
 status_wrong_lobby,该房间并非有效的双人合伙店房间。
 status_metadata_failed,无法发布房间信息。
@@ -76,7 +118,7 @@ result_NoSpace,没有容纳整件货物的空位
 result_Busy,主机正在处理其他操作
 result_Failed,操作失败
 shop_header,共享经营 · 点击可移动货物
-lan_create,局域网建房
+lan_create,IPv4 建房
 status_bad_address,请填写房主电脑的局域网或虚拟局域网 IPv4 地址。
 status_lan_waiting,局域网房间已创建。复制 PSI 房间码给合伙人。
 status_lan_connected,局域网合伙人已连接。
@@ -105,6 +147,10 @@ cursor_surface_52,日报
 cursor_surface_53,查看物品或机器面板
 cursor_carrying,搬运中
 history_checkpoint,历史检查点
+recover_checkpoint,可恢复旧合作档
+recover_checkpoint_history,历史检查点将恢复到独立新槽，保留当前存档与历史原文件。
+recover_checkpoint_copy,文件槽位与内部身份不一致。选择后验证并另建合作恢复副本，保留原文件。
+recover_checkpoint_register,合作数据完整，但本机缺少合作登记。选择后校验并补登记，不重写原文件。
 incompatible_checkpoint,此文件未通过当前双角色存档校验，原文件已保留。
 personal_carry,打开／关闭随身物品
 party_ready_status,你：{0}  合伙人：{1}
@@ -113,7 +159,34 @@ party_pending,待准备
 party_host_finish,请确认结算
 trip_confirm,同意并准备
 trip_refresh,更新出行准备
+transition_depart,一起前往 {0}
+transition_return,一起返回当铺
+transition_sleep,一起结束今天的营业
+transition_no_bag,不带背包
+transition_bag_selected,已选背包
+transition_peer_bag,合伙人的行装：{0}
+transition_both_ready,双方已确认。请先放下正在拖动的物品。
+transition_choose_bag,选行装并同意
+transition_confirm_return,确认回店
+transition_open_night,查看日结
+transition_cancel,取消这次安排
+transition_Busy,请等当前操作完成后再试。
+transition_Unavailable,当前无法执行这项安排。请检查营业状态和今晚的出行条件。
+transition_OtherProposal,合伙人有一项待确认的安排。请先确认或取消。
+transition_BackpackUnavailable,所选行装已不可用。请重新选择。
+transition_BackpackTaken,合伙人已选这个背包。请换一个或不带背包出门。
+transition_Stale,这次安排已变化，请重新选择。
 drop_full,目标没有足够空间，物品留在原处。
 drop_busy,物品或目标正被占用，物品留在原处。
 drop_unavailable,物品无法放到或用于该目标，物品留在原处。
 drop_stale,物品或目标已变化，已恢复未确认的移动。
+allow_mod_differences,允许模组不同的合伙人加入
+decline_protocol,双方的联机模组版本相差太大，无法连接。
+decline_game,双方的游戏版本不同。
+decline_mods,双方启用的模组不一致。
+mods_differ,已连接，但双方模组不同：
+diff_host_only,{0} {1}：仅房主启用
+diff_guest_only,{0} {1}：仅合伙人启用
+diff_version,{0}：房主 {1}，合伙人 {2}
+diff_adapter,{0} 的联机适配声明不一致，房主 {1}，合伙人 {2}
+diff_more,另有 {0} 项

@@ -39,6 +39,12 @@ internal sealed partial class NativeBackgroundQa
     }
     private readonly bool host;
     private int profileCheckpointSlot = -1;
+    internal static bool SynchronizationProfile { get; private set; }
+#if PROBABLY_COOP_GRID_QA
+    private static int failFirstSynchronization;
+    internal static bool TakeSynchronizationFailure() =>
+        System.Threading.Interlocked.Exchange(ref failFirstSynchronization,0)!=0;
+#endif
     private double profileReadyAt;
     private bool profileTooltipObserved;
     private bool profilePointerObserved;
@@ -111,6 +117,18 @@ internal sealed partial class NativeBackgroundQa
         if(index>=0 && (index+1>=args.Length || !int.TryParse(args[index+1],out seconds) || seconds is <1 or >1200))
             throw new ArgumentException("Invalid isolated QA duration");
         var runner = new NativeBackgroundQa(host,seconds);
+        SynchronizationProfile=Array.IndexOf(args,"--probably-coop-qa-join-sync")>=0;
+#if PROBABLY_COOP_GRID_QA
+        if(host && SynchronizationProfile && Array.IndexOf(args,"--probably-coop-qa-fail-first-sync")>=0)
+            failFirstSynchronization=1;
+        if (runner.localTraitsQa) AudioListener.volume = 0f;
+        if (Array.IndexOf(args,"-noaudio")>=0)
+        {
+            AudioListener.volume = 0f;
+            AudioListener.pause = true;
+            Debug.Log("[probably_coop QA] audio listener muted and paused");
+        }
+#endif
         int profile = Array.IndexOf(args,"--probably-coop-qa-profile-checkpoint");
         if(profile>=0 && (Application.isBatchMode || !NativePerformance.Profiling || seconds<30 ||
             profile+1>=args.Length || !int.TryParse(args[profile+1],out runner.profileCheckpointSlot) || runner.profileCheckpointSlot<0))
@@ -199,6 +217,9 @@ internal sealed partial class NativeBackgroundQa
                 Record("PASS dual-window-pacing", "original option reapply; connected loopback uses 60 Hz with background simulation");
             }
             if (now - started > 900+soakSeconds) throw new InvalidOperationException($"timeout stage={stage}");
+#if PROBABLY_COOP_GRID_QA
+            if (localTraitsQa) { TickLocalTraits(room, shop, inMenu, now); return; }
+#endif
             if(VerifyGuestRoomExit(room,inMenu,now)) return;
             if(waterMerchantQa) { TickWaterMerchant(room,shop,inMenu,now); return; }
             if(TickBoundaryGuest(room,guest,inMenu,now)) return;
@@ -234,8 +255,14 @@ internal sealed partial class NativeBackgroundQa
                     return;
                 }
                 if (shop == null) return;
+#if PROBABLY_COOP_GRID_QA
+                if (requestedAppraisalQa) { TickRequestedAppraisalHost(room,now); return; }
+                if (requestedUiQa) { TickRequestedUiHost(room); return; }
+                if (requestedShootingQa) { TickRequestedShootingHost(room,now); return; }
+#endif
                 if(profileCheckpointSlot>=0)
                 {
+                    if(SynchronizationProfile) { CheckSynchronizationStock(room,true); return; }
                     ProfileCheckpoint(room,now,room.Session?.Native?.Revision>=2 && NativeWorld.Host?.PartnerSetupRequiredForQa==false);
                     return;
                 }
@@ -427,6 +454,12 @@ internal sealed partial class NativeBackgroundQa
             var link = room.Session?.Shop;
             if (guest == null || link?.View.Active != true || now < next) return;
             if (NativeWorld.Guest?.Ready != true) return;
+#if PROBABLY_COOP_GRID_QA
+            if (requestedAppraisalQa) { if(TickRequestedAppraisalGuest(room.Session.Native,now)) Finish("PASS requested-appraisal guest"); return; }
+            if (requestedUiQa) { if(TickRequestedUiGuest(room.Session.Native,now)) Finish("PASS requested-ui guest"); return; }
+            if (requestedShootingQa) { if(TickRequestedShootingGuest(room.Session.Native,now)) Finish("PASS requested-shooting guest"); return; }
+#endif
+            if(SynchronizationProfile) { CheckSynchronizationStock(room,false); return; }
             if(profileCheckpointSlot>=0) { ProfileCheckpoint(room,now,true); return; }
             if(actorRestoreOnly) { if(RunActorReloadGuest(room.Session)) Finish("PASS guest runtime"); return; }
             if(mechanismsOnly) { if(RunMechanismsGuest(room.Session.Native,now)) Finish("PASS guest runtime"); return; }
@@ -687,6 +720,19 @@ internal sealed partial class NativeBackgroundQa
         evidence.Add(line);
         Debug.Log("[probably_coop QA] " + line);
         ModHelper.WriteModDataFileText("probably_coop", "qa-results.txt", string.Join("\n", evidence));
+    }
+
+    private void CheckSynchronizationStock(RoomSelector room,bool authority)
+    {
+        if(room.Session?.State!=LinkState.Connected || room.Session.Native.FullRevision==0)
+        { profileReadyAt=0; return; }
+        if(profileReadyAt!=0) return;
+        var stock=EmporiumEntry.Instance.invElement;
+        int total=GraphUtils.FindAllChildrenType<GameItem>(stock).Count();
+        if(!authority) Require(NativeWorld.Guest.AuditProjection(out var detail),detail);
+        Record("PASS join-stock",$"day={StoreStation.Instance.dayCounter} stock={total} top={stock.childItems.Count} " +
+            $"pages={room.Session.Native.FullSnapshot.Count} bytes={room.Session.Native.FullSnapshot.Bytes}");
+        profileReadyAt=Time.realtimeSinceStartupAsDouble;
     }
 
     private void ProfileCheckpoint(RoomSelector room,double now,bool ready)

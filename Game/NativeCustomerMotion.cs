@@ -160,7 +160,7 @@ internal static class NativeCustomerTransitions
     private static bool Prefix(StoreClientMono __instance, MethodBase __originalMethod)
     {
         string method = __originalMethod.Name;
-        if (NativeGuest.Active)
+        if (NativeGuest.Active || NativeInventoryPilot.CampaignReplica)
         {
             if (method == nameof(StoreClientMono.OnArrived))
                 Walking.SetValue(__instance, false);
@@ -182,6 +182,7 @@ internal static class NativeCustomerTransitions
             _ => NativeWorld.CustomerMotion.Hidden
         };
         NativeWorld.Host?.RecordCustomerMotion(phase);
+        NativeInventoryPilot.RecordCustomerMotion(phase);
         return true;
     }
 }

@@ -105,7 +105,11 @@ internal sealed partial class NativeBackgroundQa
 
     private void SeedShootingQa()
     {
-        Require(Enabled && mechanismsOnly,"shooting fixtures require explicit isolated mechanism QA");
+        bool permitted=mechanismsOnly;
+#if PROBABLY_COOP_GRID_QA
+        permitted|=requestedShootingQa;
+#endif
+        Require(Enabled && permitted,"shooting fixtures require explicit isolated mechanism QA");
         shootingQaLedger=SeedFrontendItem("red_beer",ShootingLedger);
         Require(shootingQaLedger.identifier=="red_beer","shooting ledger factory returned a fallback item");
         shootingQaLedger.ModifyTag(ShootingLedger,t=>t.Enable().SetInt(0));
@@ -130,7 +134,13 @@ internal sealed partial class NativeBackgroundQa
                 int round=i;
                 var client=new StoreClient {identifier="QA_SHOOTING_"+i,displayName="QA shotgun "+i,
                     spriteName=SpriteDict.GetRandomScavSpriteName(),clientIntent=StoreClient.ClientIntent.SELL,mainDialogue=null,
-                    isIntroduced=true,isAug=i==1,arrestable=true,dismissable=true,clientFaction=StoreClient.FACTION_LOWER};
+                    isIntroduced=true,arrestable=true,dismissable=true,clientFaction=StoreClient.FACTION_LOWER};
+                if (i == 1)
+                {
+                    AugHelper.MakeDisguisedAug(client, 1);
+                    Require(client.isAug && client.augTier == 1, "original disguised aug factory did not tag the customer");
+                    Record("FIXTURE disguised-aug", "original MakeDisguisedAug created a tier-1 concealed customer");
+                }
                 Require(SpriteDict.Instance.spriteDictionary.ContainsKey(client.spriteName),"shooting fixture portrait absent from original sprite pool");
                 client.OnArrival=()=>
                 {
@@ -340,7 +350,9 @@ internal static class NativeShootingQaEvidence
     {internal ulong Episode;internal GameItemElement[] Items;}
     private static readonly Dictionary<GameItemElement,Offer> offers=new();
     private static readonly Dictionary<ulong,int> removalCalls=new();
-    internal static bool Enabled=>NativeBackgroundQa.Enabled && Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa-mechanisms-only")>=0;
+    internal static bool Enabled=>NativeBackgroundQa.Enabled &&
+        (Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa-mechanisms-only")>=0 ||
+         Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa-requested-shooting")>=0);
     internal static void Reset(){SourceShots=SourceShootouts=SourceAchievements=GoodKills=BadKills=LocalRecoil=LocalFlash=0;offers.Clear();removalCalls.Clear();}
     internal static void TrackOffer(GameItemElement item,int round)=>offers.Add(item,new Offer {Round=round});
     internal static Offer OfferRemoval(GameItemElement item)=>item!=null && offers.TryGetValue(item,out var result) ? result : new Offer {Round=-1};

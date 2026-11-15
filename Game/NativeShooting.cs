@@ -109,7 +109,7 @@ internal sealed partial class NativeWorld
         if(!host || closed || action is not ("enter" or "exit" or "fire")) return (ushort)ShopResult.Unavailable;
         ObserveShooting();
         var store=PlayerStore.Instance; var ui=StoreUIManager.Instance; var session=NativeActorSession.Current;
-        if(shop?.Settling==true || EndingActive || session?.Faulted==true || session?.Terminal==true ||
+        if(shop?.BlocksWorldCommands==true || EndingActive || session?.Faulted==true || session?.Terminal==true ||
             MapUIManager.Instance.IsOutside || store.storeState!=PlayerStore.StoreState.OPEN ||
             (bool)AccessTools.Field(typeof(MapUIManager),"inTransit").GetValue(MapUIManager.Instance)) return (ushort)ShopResult.Busy;
         if(store.currentClientInstance==null || !store.isClientArrived || !store.isShootingUnlocked) return (ushort)ShopResult.Unavailable;
@@ -156,6 +156,7 @@ internal sealed partial class NativeWorld
     }
     internal bool CanPickupShooting()
     {
+        if(host && shop?.BlocksWorldCommands==true) return false;
         if(host) return !ShootingOwnsCustomer || CanUseShootingInput(false);
         return Ready && shootingReplica!=null && (bool)shootingReplica["unlocked"] &&
             (ShootingState is ShootingPhase.Idle or ShootingPhase.Complete ? (bool)shootingReplica["canPickup"] : CanUseShootingInput(false));
@@ -251,7 +252,7 @@ internal sealed partial class NativeWorld
             RestoreShootingCamera(ui);
         guestShootingEntered=guestShootingFired=guestShootingLeaving=false;
     }
-    private static void RestoreShootingCamera(StoreUIManager ui)
+    internal static void RestoreShootingCamera(StoreUIManager ui)
     {
         ui.isShootingMode=false; ui.isShot=false; ui.shotClientInstance=null;
         ui.mainCamera.SetActive(true); ui.shootingCamera.SetActive(false); ui.arm.SetActive(false);

@@ -27,7 +27,7 @@ internal sealed partial class NativeWorld
     internal int PartnerHandCount => partnerLease.Items.Count;
     private static double HandClock => Time.realtimeSinceStartupAsDouble;
     private static string HandScene => MapUIManager.Instance.Current?.Id ?? "";
-    private bool HandBusinessOpen => !shop.Settling && !EndingActive &&
+    private bool HandBusinessOpen => !shop.BlocksWorldCommands && !EndingActive &&
         !(bool)HarmonyLib.AccessTools.Field(typeof(MapUIManager),"inTransit").GetValue(MapUIManager.Instance);
 
     private void ClearPartnerRecords()

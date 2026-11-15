@@ -189,9 +189,11 @@ internal sealed partial class NativeWorld
             if(reputationChanged) ReplicaReputationView.Refresh();
         };
     }
-    private static JObject CaptureEvent(StoreEvent value,NativeDeferredFields deferred) => new JObject { ["fields"]=deferred.CaptureBusinessFields(value,EventFields),
-        ["negotiation"]=new JArray((value.negociationDatas ?? new List<NegociationData>()).Select(n=>deferred.CaptureBusinessFields(n,NegoFields))) };
-    private static StoreEvent ReadEvent(JObject data)
+    internal static JObject CaptureEvent(StoreEvent value,NativeDeferredFields deferred=null) => new JObject {
+        ["fields"]=deferred?.CaptureBusinessFields(value,EventFields) ?? BusinessFields(value,EventFields),
+        ["negotiation"]=new JArray((value.negociationDatas ?? new List<NegociationData>()).Select(n=>
+            deferred?.CaptureBusinessFields(n,NegoFields) ?? BusinessFields(n,NegoFields))) };
+    internal static StoreEvent ReadEvent(JObject data)
     {
         var value=new StoreEvent(); ReadBusinessFields(value,EventFields,(JObject)data["fields"]);
         foreach(JObject n in (JArray)data["negotiation"]) { var modifier=new NegociationData("",0,"",""); ReadBusinessFields(modifier,NegoFields,n); value.negociationDatas.Add(modifier); }

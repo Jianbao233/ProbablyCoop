@@ -5,22 +5,33 @@ namespace ProbablyCoop;
 public sealed class ModEntry : IMod
 {
     private CoopRuntime runtime;
+    private RoomRuntime next;
 
     public void Init(ModManifest manifest) { }
 
     public void OnEnable()
     {
-        if (runtime != null) return;
+        if (runtime != null || next != null) return;
         var root = new GameObject("ProbablyCoop");
         Object.DontDestroyOnLoad(root);
-        runtime = root.AddComponent<CoopRuntime>();
+        // The rebuilt stack is opt-in until it can carry a shared shop.
+        if (RoomRuntime.Selected) next = root.AddComponent<RoomRuntime>();
+        else runtime = root.AddComponent<CoopRuntime>();
     }
 
     public void OnDisable()
     {
-        if (runtime == null) return;
-        runtime.Stop();
-        Object.Destroy(runtime.gameObject);
-        runtime = null;
+        if (runtime != null)
+        {
+            runtime.Stop();
+            Object.Destroy(runtime.gameObject);
+            runtime = null;
+        }
+        if (next != null)
+        {
+            next.Stop();
+            Object.Destroy(next.gameObject);
+            next = null;
+        }
     }
 }

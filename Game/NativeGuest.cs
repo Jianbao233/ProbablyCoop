@@ -11,6 +11,9 @@ namespace ProbablyCoop;
 internal sealed class NativeGuest
 {
     internal static bool Active { get; private set; }
+    private static bool DisposableScene => Active ||
+        NativeInventoryPilot.OwnsScene && !NativeInventoryPilot.AuthoritativeCampaign;
+    private static bool DragHandlersReady => NativeInventoryPilot.Interactive || NativeWorld.Guest?.Ready == true;
     internal static bool MenuExitRequested { get; private set; }
     internal bool EnteredShop { get; private set; }
     private readonly Dictionary<uint, GameItemElement> replicas = new Dictionary<uint, GameItemElement>();
@@ -102,6 +105,12 @@ internal sealed class NativeGuest
     {
         private static bool Prefix(EscapeUIManager __instance)
         {
+            if (NativeInventoryPilot.Current is NativeInventoryPilot pilot)
+            {
+                __instance.OnAnyClick();
+                pilot.RequestExit();
+                return false;
+            }
             if (!Active) return true;
             if (!MenuExitRequested) __instance.OnAnyClick();
             // Keep the scene alive until the runtime has released the replica
@@ -133,7 +142,7 @@ internal sealed class NativeGuest
             yield return AccessTools.Method(typeof(StoreService), nameof(StoreService.UpdateCost));
         }
 
-        private static bool Prefix() => !Active;
+        private static bool Prefix() => !DisposableScene;
     }
 
     [HarmonyPatch(typeof(Interactable), nameof(Interactable.OnClick))]
@@ -141,6 +150,21 @@ internal sealed class NativeGuest
     {
         private static bool Prefix(Interactable __instance)
         {
+            if (NativeInventoryPilot.OwnsScene)
+                return NativeInventoryPilot.HasCampaign && NativeInventoryPilot.Interactive &&
+                    (NativeInventoryPilot.AuthoritativeCampaign || __instance.GetComponent<StoreDoor>() != null ||
+                        __instance.GetComponent<StoreBedroll>() != null || __instance.GetComponent<StoreBell>() != null ||
+                        __instance.GetComponent<StoreDismissButton>() != null || __instance.GetComponent<StoreClientMono>() != null ||
+                        __instance.GetComponent<StoreTablet>() != null || __instance.GetComponent<Shotgun>() != null ||
+                        __instance.GetComponent<StoreSecButton>() != null ||
+                        __instance.GetComponent<StorePhoneObject>() != null || __instance.GetComponent<StorePC>() != null ||
+                        __instance.GetComponent<StoreShutterButton>() != null || __instance.GetComponent<FeedbackBox>() != null ||
+                        __instance.GetComponent<NewsPaper>() != null ||
+                        __instance.GetComponent<StoreCalendar>() != null || __instance.GetComponent<StoreRecorder>() != null ||
+                        __instance.GetComponent<StoreNotebook>() != null || __instance.GetComponent<StorePoster>() != null ||
+                        __instance.GetComponent<StoreClienteleDisplay>() != null ||
+                        __instance.GetComponent<StoreVendingMachine>() != null && EmporiumEntry.Instance.vendingMachineElement.childItem != null ||
+                        __instance.GetComponent<StoreVendingFountain>() != null && EmporiumEntry.Instance.vendingFountainElement.childItem != null);
             if (!Active) return true;
             if(NativeWorld.Guest?.Ready!=true) return false;
             if(__instance.GetComponent<StoreCalendar>()!=null || __instance.GetComponent<StoreCreditDisplay>()!=null ||
@@ -167,7 +191,7 @@ internal sealed class NativeGuest
     {
         private static bool Prefix(ref PlayerStore __result)
         {
-            if (!Active) return true;
+            if (!DisposableScene && (!NativeInventoryPilot.OwnsScene || NativeInventoryPilot.ResumingCampaign)) return true;
             __result = null;
             return false;
         }
@@ -178,11 +202,14 @@ internal sealed class NativeGuest
     {
         private static bool Prefix(PlayerStore __instance)
         {
-            if (!Active) return true;
+            if (!DisposableScene) return true;
             __instance.tutorialEnable = false;
             __instance.networkUpgrade = NetworkUpgrade.InitUpgradeDict();
             __instance.storeService = StoreService.InitService();
             __instance.storeClientData = new StoreClientData();
+            __instance.healthData ??= new HealthData();
+            if (NativeInventoryPilot.HasCampaign)
+                __instance.dialogHistory ??= new System.Collections.Generic.Queue<string>();
             __instance.saveVersion = PlayerStore.VERSION;
             StoreReputation.InitReputation();
             EmporiumOption.Instance.OnArriveGameScene();
@@ -197,9 +224,9 @@ internal sealed class NativeGuest
     {
         private static bool Prefix(EmporiumEntry __instance)
         {
-            if (!Active) return true;
+            if (!DisposableScene) return true;
             __instance.Validate(force: false);
-            if (NativeWorld.Guest?.Ready == true)
+            if (DragHandlersReady)
             {
                 StoreUIManager.Instance.CheckRaycast();
                 if (StoreUIManager.Instance.hoveringStoreUI) __instance.DisableAllHandlersExceptDrag();
@@ -217,7 +244,7 @@ internal sealed class NativeGuest
             // The native setup also disables automatic tool selection on left
             // press. Without that policy, selectable items can capture the
             // press before ItemMouseDragHandler can start its gesture.
-            if (!Active || NativeWorld.Guest?.Ready == true) return true;
+            if (!DisposableScene || DragHandlersReady) return true;
             ItemTooltipHandler.current.Enable();
             return false;
         }

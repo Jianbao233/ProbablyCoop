@@ -51,14 +51,14 @@ internal static class PartnerSetupTests
         var prepared = NativeActorPartnerSetup.Prepare(run, draft, null);
         Check(!prepared.AlreadyComplete && run.Partner.startingPerks.Count == 0 && health.luck == 0, "prepare has no live effects");
         string receipt = prepared.Commit();
-        Check(run.Partner.startingPerks.Count == 2 && health.luck == 5 && health.daysSinceNicotineConsumption == 3, "only exact personal initializers apply");
+        Check(run.Partner.startingPerks.Count == 2 && health.luck == 15 && health.daysSinceNicotineConsumption == 3, "match original Lucky and withdrawal initializers");
         Check(ReferenceEquals(health, run.Partner.healthData) && ReferenceEquals(perks, run.Partner.startingPerks), "personal field identities stable");
         Check(JToken.DeepEquals(originalHost, NativeActorState.Capture(store).Serialize()) && store.playerCash == 900, "host personal state and shared cash unchanged");
-        Check(prepared.Commit() == receipt && health.luck == 5, "repeat prepared commit is idempotent");
+        Check(prepared.Commit() == receipt && health.luck == 15, "repeat prepared commit is idempotent");
         Check(NativeActorPartnerSetup.IsComplete(receipt, run.Run), "explicit persisted completion verifies");
         run.Partner.startingPerks.RemoveAt(0); // A native cure/removal after creation is valid.
         var again = NativeActorPartnerSetup.Prepare(run, draft, receipt);
-        Check(again.AlreadyComplete && again.Commit() == receipt && perks.Count == 1 && health.luck == 5, "reconnect does not replay creation or cure perks");
+        Check(again.AlreadyComplete && again.Commit() == receipt && perks.Count == 1 && health.luck == 15, "reconnect does not replay creation or cure perks");
         Reject<InvalidDataException>(() => NativeActorPartnerSetup.Prepare(run, NativeActorPartnerSetup.CreateDraft(run.Run, Array.Empty<string>()), receipt), "different second selection refused");
         Reject<InvalidDataException>(() => NativeActorPartnerSetup.IsComplete(receipt, Guid.NewGuid()), "receipt belongs to exact run");
         var invalid = (JObject)draft.DeepClone(); invalid["schema"] = "1";
@@ -72,6 +72,15 @@ internal static class PartnerSetupTests
         pendingRun.Partner.healthData.luck = 2;
         Reject<InvalidDataException>(() => pending.Commit(), "stale prepared target refused");
         Check(pendingRun.Partner.startingPerks.Count == 0 && pendingRun.Partner.healthData.luck == 2, "stale target failure has no write");
+        var unluckyDraft = NativeActorPartnerSetup.CreateDraft(pendingRun.Run, new[] { "unlucky", "gambling_addiction" });
+        var unlucky = NativeActorPartnerSetup.Prepare(pendingRun, unluckyDraft, null);
+        string unluckyReceipt = unlucky.Commit();
+        Check(pendingRun.Partner.healthData.luck == -13, "original Unlucky applies minus fifteen to the current baseline");
+        pendingRun.Partner.startingPerks.RemoveAll(perk => perk.id == "gambling_addiction");
+        var restored = NativeActorPartnerSetup.Prepare(pendingRun, unluckyDraft, unluckyReceipt);
+        Check(restored.AlreadyComplete && restored.Commit() == unluckyReceipt &&
+            pendingRun.Partner.startingPerks.All(perk => perk.id != "gambling_addiction") &&
+            pendingRun.Partner.healthData.luck == -13, "persisted creation does not re-add cured gambling addiction");
         using var defaults = new NativeActorRun(Store(), NativeActorState.CreateDefault());
         var empty = NativeActorPartnerSetup.Prepare(defaults, NativeActorPartnerSetup.CreateDraft(defaults.Run, Array.Empty<string>()), null);
         Check(NativeActorPartnerSetup.IsComplete(empty.Commit(), defaults.Run) && defaults.Partner.startingPerks.Count == 0, "empty draft is a persistent completed choice");
@@ -89,6 +98,10 @@ internal static class PartnerSetupTests
         NativeWorld.Guest = new NativeWorld { HasActorProjection = true, RemoteHostActor = NativeActorState.Capture(store) };
         Check(NativeActorPerkQueries.TryShared("working_pipes", out var replica) && replica.id == "working_pipes" && !ReferenceEquals(replica, shared), "guest reads host shared configuration replica");
         NativeWorld.Guest = null;
+        NativeInventoryPilot.RemoteHostActor = NativeActorState.Capture(store);
+        Check(NativeActorPerkQueries.TryShared("working_pipes", out replica) && replica.id == "working_pipes" &&
+            !NativeActorPerkQueries.TryShared("gambling_addiction", out _), "effect guest reads shared host perks and keeps personal addiction queries");
+        NativeInventoryPilot.RemoteHostActor = null;
         Check(!NativeActorPerkQueries.TryShared("working_pipes", out _), "single player shared query remains original");
         session.Activities.Dispose(); session.PersonalUi.Dispose();
         Console.WriteLine($"PASS {checks} partner perk classification, budget, typed initialization and receipt checks; native menu rendering and click flow NOT_RUN.");

@@ -6,7 +6,21 @@ open,Open (F7)
 prototype,Prototype · shared test tiles
 code_hint,Enter a room code or host IPv4
 join_code_hint,Paste a room code
-host_address_hint,Host's virtual LAN or local IPv4
+join_room_heading,Join a room
+host_room_heading,Host a room
+join_from_menu,Return to the main menu to join with a room code.
+host_address_hint,Host's local IPv4
+pause_entry,Multiplayer
+hide_nutrifruit_launcher,Hide floating Nutrifruit button
+perk_mixed_coop,Personal effects apply to your character. The host's perks govern starting gifts and automatic shop events.
+perk_gambling_coop,Gambling addiction persists over time. {0} removes one random addiction. {1} can remove this perk directly. The host's perks govern early lottery access and automatic purchases.
+ipv4_mapping_hint,For port forwarding use UDP and target the host's listening port.
+udp_port_hint,UDP port (blank for auto)
+mapped_address_hint,Mapped IPv4:port (optional)
+udp_listening,IPv4 listening on {0} (UDP)
+status_bad_udp_port,Enter a UDP port from 1 to 65535 or leave it blank for automatic assignment.
+status_udp_port_in_use,That UDP port is already in use. Try a different port.
+status_bad_mapping_address,Enter a valid mapped IPv4:port or leave it blank to use the address from the room code.
 steam_friend_hint,Your partner can right-click you in Steam Friends and choose Join Game.
 status_steam_join_busy,Leave your current room before joining from Steam Friends again.
 room_code,Room code
@@ -18,6 +32,10 @@ confirm_leave_room,Leave the room and return to the main menu?
 host_start_hint,Start or resume a co-op save to open your shared shop.
 create,Host on Steam
 local_create,Host local test
+local_return_to_menu,Return to main menu
+local_return_and_create,Return to menu and host
+confirm_local_return,Return to the main menu to join the local test?
+confirm_local_return_and_create,Return to the main menu and start a new co-op test shop?
 join,Join
 copy,Copy code
 leave,Leave
@@ -27,6 +45,10 @@ status_idle,Create a room or paste a room code.
 status_local_idle,Start a room for a local test guest.
 status_local_waiting,Local room ready. Copy the PSL code for the guest.
 status_local_connected,Local test guest connected.
+status_local_join_idle,Paste the host's PSL room code to enter the test shop.
+status_local_loading_shop,Connected. Loading the co-op test shop…
+status_local_start_from_menu,Return to the main menu to enter the co-op test shop.
+status_local_code_required,Enter the PSL room code shown in the host test window.
 status_creating,Creating a Steam lobby…
 status_joining,Joining a Steam lobby…
 status_bad_code,Invalid room code.
@@ -35,13 +57,33 @@ status_join_failed,Could not join the room.
 status_waiting,Room ready. Copy the code for your partner.
 status_approve,A partner is waiting for your approval.
 status_await_approval,Waiting for the host to approve.
+status_join_declined,The host declined your request to join.
+status_join_closed,The host has paused joining.
+pause_joins,Pause guest joins
+resume_joins,Allow join requests
+joins_paused,Guest joins are paused.
+decline_join,Decline
+join_request_notification,A guest requested to join. Open room controls with F7 to respond.
 status_handshake,Checking versions and establishing P2P…
 status_connected,Partner connected.
 status_shop_connected,Connected to the shared shop.
 status_incompatible,Game or mod build mismatch.
+status_session_error,This co-op session encountered a sync error. You can join again.
 status_partner_picker_unavailable,The native partner perk picker could not open. Return to the main menu and rejoin.
 status_partner_setup_rejected,The host rejected these partner perks. Rejoin to choose again.
 status_peer_timeout,Peer disconnected. Rejoin with the room code.
+status_sync_failed,Sync did not finish. Rejoin using the same room code.
+status_sync_host_failed,Guest sync failed. Your shop stays open and the guest can rejoin.
+sync_connecting,Connecting to the room
+sync_preparing,Waiting for the host to prepare shop data
+sync_receiving,Receiving shop data
+sync_checking,Data received. Checking join details
+sync_installing,Loading the shop
+sync_ready,Shop ready
+sync_failed,Sync did not finish
+sync_show_log,Show loading log
+sync_hide_log,Hide loading log
+sync_batches_received,Received {0}/{1} batches · {2} KiB
 status_lobby_timeout,Steam lobby request timed out.
 status_wrong_lobby,This is not an active Probably Coop room.
 status_metadata_failed,Could not publish room details.
@@ -76,7 +118,7 @@ result_NoSpace,No empty slot for entire stack
 result_Busy,Host busy
 result_Failed,Operation failed
 shop_header,Shared shop · Click to move goods
-lan_create,Host on LAN
+lan_create,Host via IPv4
 status_bad_address,Enter the host PC LAN or VPN IPv4 address.
 status_lan_waiting,LAN room ready. Copy the PSI room code for your partner.
 status_lan_connected,LAN partner connected.
@@ -105,6 +147,10 @@ cursor_surface_52,Morning report
 cursor_surface_53,Viewing an item or machine panel
 cursor_carrying,Carrying
 history_checkpoint,Earlier checkpoint
+recover_checkpoint,Recoverable co-op save
+recover_checkpoint_history,This earlier checkpoint will be restored to a separate slot while preserving the current save and original history file.
+recover_checkpoint_copy,The file slot differs from its stored identity. Selecting it validates and creates a separate co-op recovery copy while preserving the original.
+recover_checkpoint_register,The co-op data is complete but its local registration is missing. Selecting it validates and restores registration without rewriting the original file.
 incompatible_checkpoint,This file does not pass the current two-character save checks. The original file is preserved.
 personal_carry,Open / close personal inventory
 party_ready_status,You: {0}  Partner: {1}
@@ -113,7 +159,34 @@ party_pending,Waiting
 party_host_finish,Confirm to settle
 trip_confirm,Ready to travel
 trip_refresh,Update travel readiness
+transition_depart,Travel together to {0}
+transition_return,Return to the shop together
+transition_sleep,End the day together
+transition_no_bag,No backpack
+transition_bag_selected,Backpack selected
+transition_peer_bag,Partner's gear: {0}
+transition_both_ready,Both ready. Put down any items you are holding.
+transition_choose_bag,Choose gear and join
+transition_confirm_return,Confirm return
+transition_open_night,Review end of day
+transition_cancel,Cancel this plan
+transition_Busy,Wait for the current action to finish and try again.
+transition_Unavailable,This plan is unavailable. Check whether the shop is closed and whether you can go out tonight.
+transition_OtherProposal,Your partner has a pending plan. Confirm or cancel it first.
+transition_BackpackUnavailable,The selected gear is unavailable. Choose again.
+transition_BackpackTaken,Your partner picked this backpack. Choose another or go without one.
+transition_Stale,This plan has changed. Choose again.
 drop_full,The destination is full. The item stays where it was.
 drop_busy,The item or target is busy. The item stays where it was.
 drop_unavailable,This item cannot be placed on or used with that target.
 drop_stale,The item or target changed. The unconfirmed move was restored.
+allow_mod_differences,Let a partner with different mods join
+decline_protocol,The two copies of this mod are too far apart to connect.
+decline_game,The two games are different versions.
+decline_mods,The enabled mods do not match.
+mods_differ,Connected with different mods:
+diff_host_only,{0} {1}: host only
+diff_guest_only,{0} {1}: partner only
+diff_version,"{0}: host {1}, partner {2}"
+diff_adapter,"{0} adapter protocol: host {1}, partner {2}"
+diff_more,and {0} more

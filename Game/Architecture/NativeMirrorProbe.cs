@@ -67,15 +67,16 @@ internal static partial class NativeMirrorProbe
             field.SetValue(obj, value.Type == JTokenType.Null ? null : value.ToObject(field.FieldType, Serializer));
         }
     }
-    private static JObject Tags(TagSystem tags,JObject basis=null)
+    private static JObject Tags(TagSystem tags,JObject basis=null,bool localCassette=false)
     {
+        var source=localCassette ? NativeLocalCassette.SharedTags(tags) : tags.dict;
         if(Context?.Deferred!=null)
         {
             using var timing=NativePerformance.Measure(TagLayout!=null ? "host.tags_typed" : "host.tags_reflection");
-            return TagLayout!=null ? Context.Deferred.CaptureTags(tags.dict,FreezeTag,TagLayout,basis) : Context.Deferred.CaptureMap(tags.dict,TagFields);
+            return TagLayout!=null ? Context.Deferred.CaptureTags(source,FreezeTag,TagLayout,basis) : Context.Deferred.CaptureMap(source,TagFields);
         }
         var data = new JObject();
-        foreach (var pair in tags.dict) data[pair.Key] = FieldData(pair.Value, TagFields);
+        foreach (var pair in source) data[pair.Key] = FieldData(pair.Value, TagFields);
         return data;
     }
     private static TagSystem ReadTags(JObject data,JObject basis=null)
@@ -151,7 +152,7 @@ internal static partial class NativeMirrorProbe
         }
         return data;
     }
-    private static ItemFeature ReadFeature(JObject data)
+    internal static ItemFeature ReadFeature(JObject data)
     {
         if(FindUnchanged(data) is ItemFeature same) return same;
         var feature=FindExisting(data) as ItemFeature ?? new ItemFeature();
@@ -163,6 +164,55 @@ internal static partial class NativeMirrorProbe
         return feature;
     }
     internal static JObject FeatureData(ItemFeature feature,NativeModelContext identities) => Feature(feature,identities,false);
+
+    internal static bool FeatureMatches(ItemFeature current, ItemFeature expected)
+    {
+        if (current == null || expected == null) return ReferenceEquals(current, expected);
+        return SameFields(current, expected, FeatureFields) &&
+            SameFields(current.realCondition, expected.realCondition, ConditionFields) &&
+            SameFields(current.fakeCondition, expected.fakeCondition, ConditionFields);
+    }
+
+    private static bool SameFields(object current, object expected, FieldInfo[] contract)
+    {
+        if (ReferenceEquals(current, expected)) return true;
+        if (current == null || expected == null) return false;
+        foreach (var field in contract)
+            if (!Equals(field.GetValue(current), field.GetValue(expected))) return false;
+        return true;
+    }
+
+    internal static ItemFeature CopyFeature(ItemFeature source, ItemFeature target)
+    {
+        target ??= new ItemFeature();
+        foreach (var field in FeatureFields) field.SetValue(target, field.GetValue(source));
+        target.realCondition = CopyCondition(source.realCondition);
+        target.fakeCondition = CopyCondition(source.fakeCondition);
+        return target;
+    }
+
+    private static ItemCondition CopyCondition(ItemCondition source)
+    {
+        if (source == null) return null;
+        var target = new ItemCondition();
+        foreach (var field in ConditionFields) field.SetValue(target, field.GetValue(source));
+        return target;
+    }
+
+#if PROBABLY_COOP_GRID_QA
+    internal static ItemFeature ReadArchivedFeature(JObject source)
+    {
+        var fields = new JObject();
+        var defaults = new ItemFeature();
+        foreach (var field in FeatureFields)
+        {
+            string name = field.Name[0] == '<' ? field.Name.Substring(1, field.Name.IndexOf('>') - 1) : field.Name;
+            fields[field.Name] = source[name]?.DeepClone() ?? NativeSnapshotCodec.Scalar(field.GetValue(defaults));
+        }
+        return ReadFeature(new JObject { ["fields"] = fields, ["real"] = source["realCondition"]?.DeepClone(),
+            ["fake"] = source["fakeCondition"]?.DeepClone() });
+    }
+#endif
     internal static JObject Capture(GameItem item)
     {
         // Controls belong to the nearest item in the data graph, including
@@ -190,7 +240,8 @@ internal static partial class NativeMirrorProbe
         JArray types,features;
         using(NativePerformance.Detailed ? NativePerformance.Measure("host.item_scalars") : default)
         {
-            state=Tags(item.state); modified=Tags(item.modifiedState,state);
+            bool localCassette=NativeLocalCassette.IsDeck(item);
+            state=Tags(item.state,localCassette:localCassette); modified=Tags(item.modifiedState,state,localCassette);
             shape=Shape(item.shape); placed=Shape(item.modifiedShape,shape);
             values=CaptureItemFields(item);
             types=fields?.CaptureStrings(item.itemTypes) ?? JArray.FromObject(item.itemTypes,Serializer);
@@ -200,11 +251,11 @@ internal static partial class NativeMirrorProbe
         // Inclusive: nested inventories recursively capture their own items.
         using(NativePerformance.Detailed ? NativePerformance.Measure("host.item_windows") : default)
         { content=CaptureWindow(item.contentWindow); examine=CaptureWindow(item.examineWindow); }
-        var spriteModifiers=CaptureSpriteModifiers(item);
         if(fields?.WorkerItems==true)
             return Annotate(item,fields.StageItem(new NativeDeferredFields.ItemRow {
                 Fields=values,State=state,Modified=modified,Shape=shape,ModifiedShape=placed,
-                Types=types,Features=features,Content=content,Examine=examine,SpriteModifiers=spriteModifiers }));
+                Types=types,Features=features,Content=content,Examine=examine,FrozenSpriteModifiers=FreezeSpriteModifiers(item) }));
+        var spriteModifiers=CaptureSpriteModifiers(item);
         var data = new JObject {
             ["fields"]=values, ["state"]=state, ["modified"]=modified,
             ["shape"]=shape, ["modifiedShape"]=placed, ["types"]=types,
@@ -260,17 +311,17 @@ internal static partial class NativeMirrorProbe
             case GameGridScrollableInventory scroll:
                 data=new JObject { ["kind"]="scrollGrid",["fields"]=FieldData(scroll,InventoryFields),
                     ["w"]=scroll.width,["h"]=scroll.height,["displayH"]=scroll.heightPixels,
-                    ["stack"]=scroll.alwaysStack,["overflow"]=(float)AccessTools.Field(typeof(GameGridScrollableInventory),"scrollOverflow").GetValue(scroll),
+                    ["stack"]=scroll.alwaysStack,["overflow"]=(float)ControlFields.ScrollOverflow.GetValue(scroll),
                     ["items"]=new JArray(scroll.childItems.Select(Capture)) }; break;
             case GameGridInventory grid:
                 data = new JObject { ["kind"] = "grid", ["fields"] = FieldData(grid, InventoryFields),
                     ["shape"] = Shape(grid.inventoryShape), ["items"] = new JArray(grid.childItems.Select(Capture)),
                     ["machinery"] = grid.isMachineryStyle }; break;
             case GameSlotInventory slot:
-                var slotImage = (TreeNodeRender)AccessTools.Field(typeof(GameSlotInventory), "backgroundImage").GetValue(slot);
+                var slotImage = (TreeNodeRender)ControlFields.SlotBackgroundImage.GetValue(slot);
                 data = new JObject { ["kind"] = "slot", ["fields"] = FieldData(slot, InventoryFields),
-                    ["w"] = (int)AccessTools.Field(typeof(GameSlotInventory), "defaultGridWidth").GetValue(slot),
-                    ["h"] = (int)AccessTools.Field(typeof(GameSlotInventory), "defaultGridHeight").GetValue(slot),
+                    ["w"] = (int)ControlFields.SlotWidth.GetValue(slot),
+                    ["h"] = (int)ControlFields.SlotHeight.GetValue(slot),
                     ["steal"] = slot.stealUI, ["down"] = slot.isUIDown, ["machinery"] = slot.isMachineryStyle,
                     ["image"] = SpriteKey(slotImage?.image.sprite),
                     ["color"] = slotImage == null ? null : new JArray(slotImage.image.color.r, slotImage.image.color.g, slotImage.image.color.b, slotImage.image.color.a),
@@ -278,23 +329,23 @@ internal static partial class NativeMirrorProbe
                     ["items"] = new JArray(slot.childItems.Select(Capture)) }; break;
             case MachineryPanelRow row:
                 data = new JObject { ["kind"] = "row", ["columns"] = row.columns,
-                    ["order"] = JToken.FromObject((int[])AccessTools.Field(typeof(MachineryPanelRow), "displayOrder").GetValue(row) ?? Array.Empty<int>()),
+                    ["order"] = JToken.FromObject((int[])ControlFields.RowDisplayOrder.GetValue(row) ?? Array.Empty<int>()),
                     ["priority"] = row.searchUsingPriority, ["panels"] = new JArray(row.Panels.Select(CaptureElement)) }; break;
             case MachineryPanel panel:
                 data = new JObject { ["kind"] = "panel", ["role"] = panel.role, ["label"] = CaptureElement(panel.label),
-                    ["requestedW"] = (int)AccessTools.Field(typeof(MachineryPanel), "requestedWidth").GetValue(panel),
-                    ["requestedH"] = (int)AccessTools.Field(typeof(MachineryPanel), "requestedHeight").GetValue(panel),
-                    ["minW"] = (int)AccessTools.Field(typeof(MachineryPanel), "minWidth").GetValue(panel),
+                    ["requestedW"] = (int)ControlFields.PanelRequestedWidth.GetValue(panel),
+                    ["requestedH"] = (int)ControlFields.PanelRequestedHeight.GetValue(panel),
+                    ["minW"] = (int)ControlFields.PanelMinWidth.GetValue(panel),
                     ["hidden"] = panel.isHidden, ["content"] = CaptureElement(panel.content) }; break;
             case MachineryText text:
-                var textNode = (TreeNodeRender)AccessTools.Field(typeof(MachineryText), "textNode").GetValue(text);
+                var textNode = (TreeNodeRender)ControlFields.TextNode.GetValue(text);
                 data = new JObject { ["kind"] = "text", ["text"] = text.GetText(), ["fill"] = text.fillWidth,
                     ["size"] = textNode.text.fontSize, ["style"] = (int)textNode.text.fontStyle,
                     ["align"] = (int)textNode.text.horizontalAlignment,
-                    ["minHeight"] = (int)AccessTools.Field(typeof(MachineryText), "minHeight").GetValue(text) }; break;
+                    ["minHeight"] = (int)ControlFields.TextMinHeight.GetValue(text) }; break;
             case MachineryIntake intake:
                 data = new JObject { ["kind"] = "intake", ["vents"] = intake.vents,
-                    ["style"] = (bool)AccessTools.Field(typeof(MachineryIntake), "styleInventories").GetValue(intake),
+                    ["style"] = (bool)ControlFields.IntakeStyleInventories.GetValue(intake),
                     ["content"] = CaptureElement(intake.content) }; break;
             case MachineryRadioList radios:
                 data = new JObject { ["kind"] = "radio", ["selected"] = radios.selected,
@@ -307,10 +358,10 @@ internal static partial class NativeMirrorProbe
                 data = new JObject { ["kind"] = "button", ["text"] = button.text, ["description"] = button.description,
                     ["audio"] = button.onClickAudio,
                     ["icon"] = SpriteKey(button.icon),
-                    ["faces"] = new JArray(new[] { "faceNormal", "faceHover", "facePressed", "faceDisabled" }
-                        .Select(n => SpriteKey((Sprite)AccessTools.Field(typeof(MachineryButton), n).GetValue(button)))),
-                    ["fill"] = button.fillWidth, ["w"] = (int)AccessTools.Field(typeof(MachineryButton), "forceWidth").GetValue(button),
-                    ["h"] = (int)AccessTools.Field(typeof(MachineryButton), "forceHeight").GetValue(button),
+                    ["faces"] = new JArray(ControlFields.ButtonFaces
+                        .Select(field => SpriteKey((Sprite)field.GetValue(button)))),
+                    ["fill"] = button.fillWidth, ["w"] = (int)ControlFields.ButtonWidth.GetValue(button),
+                    ["h"] = (int)ControlFields.ButtonHeight.GetValue(button),
                     ["disabled"] = button.isDisabled, ["hidden"] = button.isHidden }; break;
             default: return Annotate(element, CaptureExtraLayout(element));
         }
@@ -415,8 +466,20 @@ internal static partial class NativeMirrorProbe
                 if (data["image"] is JObject slotImage)
                 {
                     var color = (JArray)data["color"];
-                    slot.SetBackgroundSprite((string)slotImage["atlas"], (string)slotImage["sprite"],
-                        new Color((float)color[0], (float)color[1], (float)color[2], (float)color[3]));
+                    var tint=new Color((float)color[0], (float)color[1], (float)color[2], (float)color[3]);
+                    if(slotImage["inline"]==null)
+                        slot.SetBackgroundSprite((string)slotImage["atlas"], (string)slotImage["sprite"],tint);
+                    else
+                    {
+                        var background=(TreeNodeRender)ControlFields.SlotBackgroundImage.GetValue(slot);
+                        if(background==null)
+                        {
+                            background=TreeNodeRender.Instantiate().SetParent((TreeNodeRender)ControlFields.SlotHighlight.GetValue(slot));
+                            ControlFields.SlotBackgroundImage.SetValue(slot,background);
+                        }
+                        background.image.sprite=ReadSprite(slotImage); background.image.color=tint;
+                        background.image.SetNativeSize(); background.image.enabled=true; slot.Validate();
+                    }
                 }
                 slot.SetTransparency((float)data["transparency"]);
                 if (slot.isHidden!=(bool)data["hidden"]) { if((bool)data["hidden"]) slot.Hide(); else slot.Show(); }
@@ -461,7 +524,7 @@ internal static partial class NativeMirrorProbe
                 return nativePanel;
             case "text":
                 var text = FindExisting(data) as MachineryText ?? new MachineryText();
-                var node = (TreeNodeRender)AccessTools.Field(typeof(MachineryText), "textNode").GetValue(text);
+                var node = (TreeNodeRender)ControlFields.TextNode.GetValue(text);
                 if(PropertyChanged(data,"style")) node.text.fontStyle=(FontStyles)(int)data["style"];
                 if(PropertyChanged(data,"size")) node.text.fontSize=(float)data["size"];
                 if(PropertyChanged(data,"align")) text.SetAlignment((HorizontalAlignmentOptions)(int)data["align"]);
@@ -528,10 +591,18 @@ internal static partial class NativeMirrorProbe
             ApplyFields(item, ItemFields, values);
             AccessTools.Property(typeof(GameItem), "spriteChanged").SetValue(item, true);
         }
-        if(stateChanged) item.state=ReadTags((JObject)data["state"]);
+        bool localCassette=NativeLocalCassette.IsDeck(item);
+        if(stateChanged)
+        {
+            var next=ReadTags((JObject)data["state"]);
+            if(localCassette) NativeLocalCassette.PreservePlaybackTags(item.state,next);
+            item.state=next;
+        }
         if(modifiedChanged || stateChanged)
         {
-            item.modifiedState=ReadTags((JObject)data["modified"],(JObject)data["state"]);
+            var next=ReadTags((JObject)data["modified"],(JObject)data["state"]);
+            if(localCassette) NativeLocalCassette.PreservePlaybackTags(item.modifiedState,next);
+            item.modifiedState=next;
             if(NativeBackgroundQa.Enabled && verifiedInheritedTags<64)
                 foreach(var tag in ((JObject)data["modified"]).Properties())
                 {

@@ -71,6 +71,7 @@ internal static class NativeDeferredFieldsTests
         CheckShapeRows();
         CheckTypeList();
         CheckStagedItem();
+        CheckFrozenSpriteModifiers();
         CheckPlainReferences();
         var directSource=new Source();
         var direct=new NativeDeferredFields();
@@ -163,9 +164,101 @@ internal static class NativeDeferredFieldsTests
         invalid.Seal();
         Reject(()=>invalid.Pack(new JObject {["item"]=changed}),"item placeholder metadata changed before assembly");
     }
+    private sealed class SpriteLayerSource
+    {
+        internal string Sprite="large_blue_100";
+        internal float X=-1.25f,Y=2.5f,R=0.125f,G=0.25f,B=0.5f,A=0.75f;
+        internal int Rotation=3,Priority=-7;
+        internal bool Flip=true,Mask=true;
+    }
+    private static JObject LayerImage(string sprite) => new JObject { ["atlas"]="Items/water_container3",["sprite"]=sprite };
+    private static NativeDeferredFields.SpriteLayer FreezeLayer(SpriteLayerSource source) =>
+        new NativeDeferredFields.SpriteLayer(LayerImage(source.Sprite),source.X,source.Y,source.Rotation,source.Flip,source.Priority,source.Mask,
+            source.R,source.G,source.B,source.A);
+    private static JObject ImmediateLayer(SpriteLayerSource source) => new JObject {
+        ["image"]=LayerImage(source.Sprite),["x"]=source.X,["y"]=source.Y,["rotation"]=source.Rotation,["flip"]=source.Flip,
+        ["priority"]=source.Priority,["mask"]=source.Mask,["color"]=new JArray(source.R,source.G,source.B,source.A) };
+    private static NativeDeferredFields.ItemRow SpriteItem(NativeDeferredFields.SpriteLayer[] layers=null,JArray legacy=null) =>
+        new NativeDeferredFields.ItemRow { Fields=new JObject(),State=new JObject(),Modified=new JObject(),
+            Shape=new JObject(),ModifiedShape=new JObject(),Types=new JArray("liquid"),Features=new JArray(),
+            FrozenSpriteModifiers=layers,SpriteModifiers=legacy,Tooltip=new JObject(),Advanced=false };
+    private static (NativeDeferredFields Fields,JObject World) StageSpriteItem(NativeDeferredFields.ItemRow row)
+    {
+        var fields=new NativeDeferredFields(workerItems:true);
+        var target=fields.StageItem(row); target["entity"]=7u;
+        var world=new JObject { ["item"]=target }; fields.Seal();
+        return (fields,world);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (NativeDeferredFields Fields,JObject World) FreezeSpriteSources(out WeakReference[] weak,out JObject expected)
+    {
+        var sources=new[]{new SpriteLayerSource(),new SpriteLayerSource { Sprite="large_blue_50",X=6.75f,Y=-4.5f,
+            Rotation=1,Priority=9,Flip=false,Mask=false,R=1f,G=0f,B=0.375f,A=1f }};
+        weak=sources.Select(source=>new WeakReference(source)).ToArray();
+        var legacy=SpriteItem(legacy:new JArray(sources.Select(ImmediateLayer)));
+        legacy.Target["entity"]=7u; legacy.Assemble(); expected=new JObject { ["item"]=legacy.Target };
+        var row=SpriteItem(sources.Select(FreezeLayer).ToArray());
+        foreach(var source in sources)
+        {
+            source.Sprite="mutated"; source.X=source.Y=source.R=source.G=source.B=source.A=99f;
+            source.Rotation=source.Priority=99; source.Flip=!source.Flip; source.Mask=!source.Mask;
+        }
+        return StageSpriteItem(row);
+    }
+    private static void CheckFrozenSpriteModifiers()
+    {
+        foreach(bool materialize in new[]{false,true})
+        {
+            var frozen=FreezeSpriteSources(out var weak,out var expected);
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            Check(weak.All(source=>!source.IsAlive),"frozen sprite layers retained mutable capture sources");
+            Check(((JObject)frozen.World["item"]).Count==1,"sprite layer JSON was assembled during capture");
+            var bytes=Task.Run(()=> {
+                if(!materialize) return frozen.Fields.Pack(frozen.World);
+                frozen.Fields.Materialize(frozen.World);
+                Check(JToken.DeepEquals(frozen.World,expected),"materialized sprite layer values, order or types differ");
+                return NativeSnapshotBinary.Pack(frozen.World);
+            }).GetAwaiter().GetResult();
+            Check(bytes.SequenceEqual(NativeSnapshotBinary.Pack(expected)),"frozen sprite layers changed ordered native wire bytes");
+            var layer=NativeSnapshotBinary.Unpack(bytes)["item"]["spriteModifiers"][0];
+            Check(layer["x"].Type==JTokenType.Float && layer["rotation"].Type==JTokenType.Integer &&
+                layer["flip"].Type==JTokenType.Boolean && layer["color"].All(value=>value.Type==JTokenType.Float),
+                "sprite layer numeric or boolean wire types changed");
+        }
+        foreach(bool empty in new[]{false,true})
+        {
+            var frame=StageSpriteItem(SpriteItem(empty ? Array.Empty<NativeDeferredFields.SpriteLayer>() : null));
+            var item=NativeSnapshotBinary.Unpack(Task.Run(()=>frame.Fields.Pack(frame.World)).GetAwaiter().GetResult())["item"];
+            Check(empty ? item["spriteModifiers"] is JArray layers && layers.Count==0 : item["spriteModifiers"]==null,
+                "absent and present-but-empty sprite layers were conflated");
+        }
+        foreach(int count in new[]{128,129})
+        {
+            var row=SpriteItem(Enumerable.Range(0,count).Select(_=>FreezeLayer(new SpriteLayerSource())).ToArray());
+            var frame=StageSpriteItem(row);
+            if(count>128) Reject(()=>frame.Fields.Pack(frame.World),"129 frozen sprite layers");
+            else Check(NativeSnapshotBinary.Unpack(frame.Fields.Pack(frame.World))["item"]["spriteModifiers"].Count()==128,
+                "valid 128-layer native output was refused");
+        }
+        var consumed=FreezeLayer(new SpriteLayerSource()); consumed.Materialize();
+        Reject(()=>consumed.Materialize(),"a sprite layer consumed twice");
+        var duplicate=FreezeLayer(new SpriteLayerSource());
+        var duplicateFrame=StageSpriteItem(SpriteItem(new[]{duplicate,duplicate}));
+        Reject(()=>duplicateFrame.Fields.Pack(duplicateFrame.World),"one frozen sprite layer shared by two layer slots");
+        var invalid=StageSpriteItem(SpriteItem(new NativeDeferredFields.SpriteLayer[]{null}));
+        Reject(()=>invalid.Fields.Pack(invalid.World),"a null frozen sprite layer");
+        var both=StageSpriteItem(SpriteItem(Array.Empty<NativeDeferredFields.SpriteLayer>(),new JArray()));
+        Reject(()=>both.Fields.Pack(both.World),"legacy and frozen sprite layers assigned together");
+        var assembled=SpriteItem(new[]{FreezeLayer(new SpriteLayerSource())}); assembled.Target["entity"]=7u; assembled.Assemble();
+        Reject(()=>assembled.Assemble(),"a frozen item assembled twice");
+        var attached=LayerImage("large_blue_100"); var parent=new JArray(attached);
+        Reject(()=>new NativeDeferredFields.SpriteLayer(attached,0,0,0,false,0,false,1,1,1,1),"a sprite identity with another owner");
+        Reject(()=>new NativeDeferredFields.SpriteLayer(null,0,0,0,false,0,false,1,1,1,1),"a missing sprite identity");
+        Console.WriteLine("PASS frozen sprite layers: worker pack/materialize exact bytes, scalar/source lifetime, empty/absent fields, 128-layer limit and single ownership");
+    }
     private static void CheckPlainReferences()
     {
-        (NativeDeferredFields Fields,JObject World) Frame(string type,bool duplicate=false,NativeDeferredFields.MarkerPool pool=null,int frontend=0,string overlay=null)
+        (NativeDeferredFields Fields,JObject World) Frame(string type,bool duplicate=false,NativeDeferredFields.MarkerPool pool=null,int frontend=0,string overlay=null,bool frozen=false,float layerX=0)
         {
             var fields=new NativeDeferredFields(workerItems:true){Markers=pool};
             var items=new JArray();
@@ -176,7 +269,9 @@ internal static class NativeDeferredFieldsTests
                     Types=fields.CaptureStrings(new List<string>{id==1 ? type : "unchanged"}),
                     Features=new JArray(),Tooltip=fields.CaptureTooltip("title",null,"","","",4,5,false),
                     Advanced=false,Owner=id,Contents="bag",Move="slot",FrontendKind=id==1 ? frontend : 0,
-                    SpriteModifiers=id==1 && overlay!=null ? new JArray(new JObject {
+                    FrozenSpriteModifiers=id==1 && overlay!=null && frozen ? overlay.Length==0 ?
+                        Array.Empty<NativeDeferredFields.SpriteLayer>() : new[]{FreezeLayer(new SpriteLayerSource { Sprite=overlay,X=layerX })} : null,
+                    SpriteModifiers=id==1 && overlay!=null && !frozen ? new JArray(new JObject {
                         ["image"]=new JObject { ["atlas"]="Items/water_container3",["sprite"]=overlay }
                     }) : null
                 };
@@ -211,6 +306,31 @@ internal static class NativeDeferredFieldsTests
             var record=NativeSnapshotBinary.Unpack(expanded)["roots"][0]["items"][0]["data"];
             Check(refs==1 && (string)record["spriteModifiers"]?[0]["image"]["sprite"]==transition.Item2,
                 "item layer appeared, changed, or cleared without invalidating its old record");
+        }
+        foreach(var transition in new[]{((string)null,"large_blue_100"),("large_blue_100","large_blue_50"),
+            ("large_blue_50",string.Empty),(string.Empty,(string)null)})
+        {
+            var original=Frame("old",overlay:transition.Item1,frozen:true);
+            var source=Task.Run(()=>original.Fields.Pack(original.World,default,true,null,0,out var _,out var _)).GetAwaiter().GetResult();
+            // Use a fresh, unconsumed capture for the retained full-frame basis.
+            var retained=Frame("old",overlay:transition.Item1,frozen:true);
+            retained.Fields.Pack(retained.World,default,true,null,0,out var oldBasis,out _);
+            var updated=Frame("old",overlay:transition.Item2,frozen:true);
+            var delta=Task.Run(()=>updated.Fields.Pack(updated.World,default,true,oldBasis,8,out var _,out var _)).GetAwaiter().GetResult();
+            Check(updated.Fields.ElidedRows==1,"frozen layer edit reused its stale plain item record");
+            var expected=Frame("old",overlay:transition.Item2,frozen:true);
+            var expanded=NativeRecordBasis.ExpandForAudit(ProbablyCoop.Core.NativeRecordFrame.Body(delta,8),source);
+            Check(expanded.AsSpan().SequenceEqual(expected.Fields.Pack(expected.World)),
+                "frozen layer appearance, edit, empty output or removal changed expanded full-frame bytes");
+        }
+        {
+            var original=Frame("old",overlay:"large_blue_100",frozen:true,layerX:1.25f);
+            var source=original.Fields.Pack(original.World,default,true,null,0,out var oldBasis,out _);
+            var updated=Frame("old",overlay:"large_blue_100",frozen:true,layerX:2.5f);
+            var delta=updated.Fields.Pack(updated.World,default,true,oldBasis,8,out _,out int refs);
+            var expected=Frame("old",overlay:"large_blue_100",frozen:true,layerX:2.5f);
+            Check(refs==1 && NativeRecordBasis.ExpandForAudit(ProbablyCoop.Core.NativeRecordFrame.Body(delta,8),source).AsSpan()
+                .SequenceEqual(expected.Fields.Pack(expected.World)),"same-sprite layer scalar edit reused the old item record");
         }
         foreach(bool duplicate in new[]{false,true})
         foreach(string type in new[]{"old","edited"})

@@ -6,6 +6,7 @@ using System.Collections;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using ProbablyCoop;
+using ProbablyCoop.Sync;
 
 // Native/ES3 test doubles. This suite tests our lifecycle, codec, graph checks
 // and actual bounded file I/O; it does NOT prove Unity ES3 runtime behavior.
@@ -90,6 +91,7 @@ static class CheckpointLogicTests
         Fail(()=>Make(selected:new JArray(9,null)),"dangling selected backpack");
         e = Make(roots); bad=Receipt(e); bad.CurrentUniqueId=0; Fail(()=>NativeActorCheckpoint.VerifyReceipt(e,bad),"ID generator cannot regress");
         bad=Receipt(e); bad.NativeInventories.Add("mainInvJSON",Save(Node(1)).ToString()); Fail(()=>NativeActorCheckpoint.VerifyReceipt(e,bad),"readback rechecks carry/shared ownership");
+        CheckEffectAllocations();
         e=Make(); store=Store();
         Fail(()=>new NativeActorCheckpoint.Pending(store,7,e,()=>false),"singleplayer or unsettled rejected before staging");
         Check(store.modData.Count==0,"rejected stage leaves metadata untouched");
@@ -189,6 +191,44 @@ static class CheckpointLogicTests
         using(var reader=ES3Reader.Create(Encoding.UTF8.GetBytes(file.ToString()),new ES3Settings(false)))
             Fail(()=>NativeActorCheckpoint.ReadReceipt(reader),"present null setup marker is not silently treated as unselected");
         Console.WriteLine("PASS "+count+" isolated checkpoint assertions; ES3 runtime NOT_RUN.");
+    }
+
+    static void CheckEffectAllocations()
+    {
+        int hostId = EffectItemIds.HostStart + 5;
+        int guestId = EffectItemIds.GuestStart + 8;
+        var roots = Roots();
+        roots[3]["save"] = Save(Node(guestId));
+        var envelope = Make(roots, shared: new[] { hostId, 99 });
+        var file = Slot(envelope);
+        var store = (JObject)file["playerStore"]["value"];
+        store["mainInvJSON"] = Save(Node(hostId), Node(99, 1)).ToString();
+        var mod = (JObject)store["modData"];
+        mod[EffectItemIds.RunKey] = EffectItemIds.RunSchema;
+        mod[EffectItemIds.SaveKey] = new EffectItemIds(hostId, guestId + 10).Encode();
+
+        NativeActorCheckpoint.Receipt Read()
+        {
+            using var reader = ES3Reader.Create(Encoding.UTF8.GetBytes(file.ToString()), new ES3Settings(false));
+            return NativeActorCheckpoint.ReadReceipt(reader);
+        }
+
+        var receipt = Read();
+        NativeActorCheckpoint.VerifyReceipt(envelope, receipt);
+        Check(receipt.EffectWatermarks?.Guest == guestId + 10, "reserved item counters restore even after the newest items are removed");
+        receipt.CurrentUniqueId = 98;
+        Fail(() => NativeActorCheckpoint.VerifyReceipt(envelope, receipt), "effect runs still verify the vanilla counter");
+        mod[EffectItemIds.SaveKey] = new EffectItemIds(hostId, guestId - 1).Encode();
+        receipt = Read();
+        Fail(() => NativeActorCheckpoint.VerifyReceipt(envelope, receipt), "reserved counter cannot fall below a saved item");
+        mod[EffectItemIds.SaveKey] = new EffectItemIds(hostId, EffectItemIds.End).Encode();
+        Fail(() => Read(), "reserved counter cannot cross its partition boundary");
+        mod[EffectItemIds.SaveKey] = new EffectItemIds(hostId, guestId).Encode();
+        mod.Remove(EffectItemIds.RunKey);
+        Fail(() => Read(), "only effect runs may use reserved item counters");
+        mod.Remove(EffectItemIds.SaveKey);
+        receipt = Read();
+        Fail(() => NativeActorCheckpoint.VerifyReceipt(envelope, receipt), "legacy receipts cannot silently adopt reserved item IDs");
     }
 }
 

@@ -18,8 +18,9 @@ internal static class NativeActorPerkQueries
         else
         {
             var guest = NativeWorld.Guest;
-            if (guest?.HasActorProjection != true || guest.RemoteHostActor == null) return false;
-            source = guest.RemoteHostActor.startingPerks;
+            var remote = guest?.HasActorProjection == true ? guest.RemoteHostActor : NativeInventoryPilot.RemoteHostActor;
+            if (remote == null) return false;
+            source = remote.startingPerks;
         }
         foreach (var candidate in source)
             if (candidate.id == perkId) { perk = candidate; break; }

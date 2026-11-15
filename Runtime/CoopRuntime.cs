@@ -129,11 +129,17 @@ internal sealed class CoopRuntime : MonoBehaviour
                 world.UpdatePeerConnection(room.Session.State==LinkState.Connected,room.Session.Native);
                 world.BindHost(shop, room.Session.Native);
             }
-            NativeShop.Gate = shop != null && (shop.Settling || shop.GuestOutside || room.IsHost)
+            NativeShop.Gate = shop != null && (shop.BlocksWorldCommands || shop.GuestOutside || room.IsHost)
                 ? shop : null;
             captureAfterReceive ??= CaptureHostAfterReceive;
             room.Tick(captureAfterReceive);
             var connection = room.Session;
+            panel.ObserveJoin(guest!=null,NativeWorld.Guest?.Ready==true);
+            if(room.IsGuest && connection?.Native.SynchronizationFailed==true)
+            {
+                FailGuestSynchronization();
+                return;
+            }
             partnerJoin.ObserveConnection(room.IsGuest && connection?.State==LinkState.Connected && connection.Shop.View.Active);
             // Transport callbacks may replace/drop the peer during room.Tick.
             // Clear consent/ownership now, before later UI callbacks in this frame.
@@ -151,13 +157,18 @@ internal sealed class CoopRuntime : MonoBehaviour
                     LeaveGuest();
                     return;
                 }
-                guest.Tick(connection);
+                try { guest.Tick(connection); }
+                catch(Exception error) { FailGuestSynchronization(error); return; }
             }
             else if (inMenu && room.IsGuest && connection?.State == LinkState.Connected &&
                 connection.Shop.View.Active)
             {
-                if(!partnerJoin.Ready(room)) { panel.Tick(); return; }
-                guest = NativeGuest.Enter(connection);
+                try
+                {
+                    if(!partnerJoin.Ready(room)) { panel.Tick(); return; }
+                    guest = NativeGuest.Enter(connection);
+                }
+                catch(Exception error) { FailGuestSynchronization(error); return; }
                 if (guest != null) return;
             }
             dayUi.Tick((shop != null || guest != null) && connection?.State == LinkState.Connected
@@ -182,13 +193,22 @@ internal sealed class CoopRuntime : MonoBehaviour
         }
     }
 
-    private void LeaveGuest()
+    private void FailGuestSynchronization(Exception error=null)
+    {
+        Debug.LogWarning("[probably_coop] guest synchronization failed; room can be rejoined. "+error);
+        panel.JoinFailed();
+        partnerJoin.Dispose();
+        if(guest!=null || NativeGuest.Active) LeaveGuest("sync_failed");
+        else room.Leave("sync_failed");
+    }
+
+    private void LeaveGuest(string status="idle")
     {
         guest = null;
         returningGuest = true;
         dayUi.Reset();
         NativeActorCarryUi.Reset();
-        room.Leave();
+        room.Leave(status);
         NativeGuest.ReturnToMenu();
     }
 

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutDir>bin\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The replication core must build and run without any game assembly. -->
+    <Reference Remove="@(Reference)" />
+    <Compile Include="Program.cs" />
+    <Compile Include="NetTests.cs" />
+    <Compile Include="SessionTests.cs" />
+    <Compile Include="RoomTests.cs" />
+    <Compile Include="PackTests.cs" />
+    <Compile Include="WorldSessionTests.cs" />
+    <Compile Include="InventoryLayoutTests.cs" />
+    <Compile Include="..\..\Session\WorldSession.cs" Link="Session\WorldSession.cs" />
+    <Compile Include="..\..\Sync\*.cs" Link="Sync\%(Filename)%(Extension)" />
+    <Compile Include="..\..\Net\*.cs" Link="Net\%(Filename)%(Extension)" />
+    <!-- The 0.1.0 room code, only to prove the new one keeps its format. -->
+    <Compile Include="..\..\Core\RoomCode.cs" Link="Legacy\RoomCode.cs" />
+    <Compile Include="..\..\Core\DirectRoomEndpoint.cs" Link="Core\DirectRoomEndpoint.cs" />
+  </ItemGroup>
+</Project>

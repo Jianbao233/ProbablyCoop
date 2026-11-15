@@ -10,7 +10,7 @@ internal sealed partial class NativeBackgroundQa
     private int wildStep,wildCash,wildFavor,wildCost,wildTab;
     private string wildId;
     private double wildNext,wildUntil;
-    private bool RunWildQa(ReplicaLink link,double now)
+    private bool RunWildQa(ReplicaLink link,double now,string requiredUpgrade=null)
     {
         if(wildStep==5) return true;
         if(now<wildNext || QaWaiting(link)) return false;
@@ -31,7 +31,8 @@ internal sealed partial class NativeBackgroundQa
         {
             if(!WildNetworkUI.IsOpen) return false;
             var store=PlayerStore.Instance;
-            var slot=UnityEngine.Object.FindObjectsOfType<WildNetworkSlot>().FirstOrDefault(s=>store.networkUpgrade.TryGetValue(s.id,out var u) &&
+            var slot=UnityEngine.Object.FindObjectsOfType<WildNetworkSlot>().FirstOrDefault(s=>(requiredUpgrade==null || s.id==requiredUpgrade) &&
+                store.networkUpgrade.TryGetValue(s.id,out var u) &&
                 u.IsReady() && !u.IsUnlocked() && !u.isRepeatable && u.GetCost()>0 && u.GetCost()<=200);
             if(slot==null)
             {

@@ -111,7 +111,7 @@ internal sealed partial class NativeWorld
     private ushort TravelRequest(string destination,byte actor,string expected=null,uint backpack=0,string backpackProof="")
     {
         if(HasActorProjection) return ActorTravelRequest(destination,actor,expected,backpack,backpackProof);
-        if(EndingActive || shop.Settling || string.IsNullOrEmpty(destination)) return (ushort)ShopResult.Busy;
+        if(EndingActive || shop.BlocksWorldCommands || string.IsNullOrEmpty(destination)) return (ushort)ShopResult.Busy;
         var map=MapUIManager.Instance; var store=PlayerStore.Instance;
         if(map.IsInTransit) return (ushort)ShopResult.Busy;
         if(destination=="cancel") { ResetActorTrip(); return (ushort)ShopResult.Applied; }
@@ -153,7 +153,7 @@ internal sealed partial class NativeWorld
 
     private ushort ActorTravelRequest(string destination,byte actor,string expected,uint backpack,string backpackProof)
     {
-        if(actor is not (1 or 2) || EndingActive || shop.Settling || string.IsNullOrEmpty(destination)) return (ushort)ShopResult.Busy;
+        if(actor is not (1 or 2) || EndingActive || shop.BlocksWorldCommands || string.IsNullOrEmpty(destination)) return (ushort)ShopResult.Busy;
         var map=MapUIManager.Instance;
         var session=NativeActorSession.Current;
         if(session==null || map.IsInTransit) return (ushort)ShopResult.Busy;
@@ -407,27 +407,45 @@ internal static class SharedConfirmedReturn
 internal static class LocalTransitView
 {
     private static bool Prefix(MapUIManager __instance)
-    { if(NativeWorld.Host==null && !NativeGuest.Active) return true; TransitUI.Open(__instance.transitPrefab); return false; }
+    {
+        if (!NativeInventoryPilot.HasCampaign && NativeWorld.Host == null && !NativeGuest.Active) return true;
+        if (NativeInventoryPilot.ActiveCampaign?.FinishInvitedBackpackSelection() == true) return false;
+        // Choosing a route opens a local view. Only confirmed travel runs
+        // OnLeaveStore, which clears the counter and fires gameplay hooks.
+        TransitUI.Open(__instance.transitPrefab);
+        return false;
+    }
 }
 [HarmonyPatch(typeof(MapUIManager),nameof(MapUIManager.CloseUI))]
 internal static class CloseLocalTransitView
 {
     private static bool Prefix()
-    { if(NativeWorld.NativeTravelExecution || NativeWorld.Host==null && !NativeGuest.Active) return true; TransitUI.Close(); return false; }
+    {
+        if (NativeInventoryPilot.ActiveCampaign is NativeEffectCampaign campaign)
+        {
+            if (campaign.Busy) return true;
+            if (TransitUI.IsOpen) campaign.WithdrawDeparture();
+        }
+        else if (NativeWorld.NativeTravelExecution || NativeWorld.Host == null && !NativeGuest.Active)
+            return true;
+        TransitUI.Close();
+        return false;
+    }
 }
 [HarmonyPatch(typeof(MapUIManager),"Update")]
 internal static class ReplicaLocationTick
 {
     private static bool Prefix()
     {
-        if(!NativeGuest.Active) return true;
+        if(!NativeGuest.Active && !(NativeInventoryPilot.HasCampaign &&
+            (!NativeInventoryPilot.AuthoritativeCampaign || !PlayerStore.HasInstance))) return true;
         if(MapUIManager.Instance.Current?.Id==AfterhourLocation.DUMPING_GROUND) MapUIManager.Instance.UpdateScavUI();
         return false;
     }
 }
 [HarmonyPatch(typeof(ScavHelper),nameof(ScavHelper.ScavengeDumpingGrounds))]
 internal static class ReplicaScavengeRequest
-{ private static bool Prefix() { if(!NativeGuest.Active) return true; NativeWorld.Guest?.RequestScavenge(); return false; } }
+{ private static bool Prefix() { if(!NativeGuest.Active) return NativeShop.Gate?.BlocksWorldCommands != true; NativeWorld.Guest?.RequestScavenge(); return false; } }
 [HarmonyPatch(typeof(ScavHelper),nameof(ScavHelper.GetScavTimeLeft))]
 internal static class ReplicaScavCount
 { private static bool Prefix(ref int __result) { if(!NativeGuest.Active || NativeWorld.Guest?.Ready!=true || NativeWorld.Guest.HasActorProjection) return true; __result=NativeWorld.Guest.GuestScavLeft; return false; } }

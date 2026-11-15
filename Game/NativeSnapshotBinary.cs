@@ -17,11 +17,24 @@ internal static class NativeSnapshotBinary
     private const uint Magic=0x31425350; // PSB1, little endian
     private const int MaxNodes=500001,MaxDepth=64;
     private static readonly Encoding Utf8=new UTF8Encoding(false,true);
-    private enum Kind : byte { Null,Object,Array,String,Integer,Unsigned,Double,Decimal,False,True,Single,NullString }
+    private enum Kind : byte { Null,Object,Array,String,Integer,Unsigned,Double,Decimal,False,True,Single,NullString,ItemReference }
+    private const string CapacityKey = "ProbablyCoop.SnapshotCapacity";
+    internal static InvalidDataException Capacity(string message)
+    {
+        var error=new InvalidDataException(message);
+        error.Data[CapacityKey]=true;
+        return error;
+    }
+    internal static bool IsCapacity(InvalidDataException error)=>error.Data.Contains(CapacityKey);
     internal static bool Matches(byte[] data)=>data.Length>=4 && data[0]==0x50 && data[1]==0x53 && data[2]==0x42 && data[3]==0x31;
 
     internal static byte[] Pack(JObject data,CancellationToken cancellation=default,
-        IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields=null)
+        IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields=null) =>
+        Pack(data,cancellation,fields,out _);
+
+    internal static byte[] Pack(JObject data,CancellationToken cancellation,
+        IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields,out (int Nodes,int Bytes) cost,
+        IReadOnlyDictionary<JToken,int> references=null)
     {
         cancellation.ThrowIfCancellationRequested();
         using var output=new MemoryStream();
@@ -32,12 +45,18 @@ internal static class NativeSnapshotBinary
             using var plain=new NativeSnapshotCodec.LimitedStream(gzip,NativeSnapshotCodec.MaxPlainBytes,cancellation);
             using var buffered=new BufferedStream(plain,8192);
             using var writer=new BinaryWriter(buffered,Utf8,true);
-            new Encoder(writer,cancellation,fields).Write(data,0);
+            var encoder=new Encoder(writer,cancellation,fields,references);
+            encoder.Write(data,0);
+            cost=encoder.Cost;
         }
         cancellation.ThrowIfCancellationRequested();
         return output.ToArray();
     }
-    internal static JObject Unpack(byte[] bytes,CancellationToken cancellation=default)
+    internal static JObject Unpack(byte[] bytes,CancellationToken cancellation=default) =>
+        Unpack(bytes,cancellation,out _);
+
+    internal static JObject Unpack(byte[] bytes,CancellationToken cancellation,out (int Nodes,int Bytes) cost,
+        List<(JObject Marker,int Index)> references=null)
     {
         cancellation.ThrowIfCancellationRequested();
         if(bytes==null || bytes.Length>NativeSnapshotCodec.MaxPackedBytes || !Matches(bytes)) throw new InvalidDataException("Invalid binary snapshot header");
@@ -48,7 +67,9 @@ internal static class NativeSnapshotBinary
             using var plain=new NativeSnapshotCodec.LimitedStream(gzip,NativeSnapshotCodec.MaxPlainBytes,cancellation);
             using var buffered=new BufferedStream(plain,8192);
             using var reader=new BinaryReader(buffered,Utf8,true);
-            var value=new Decoder(reader,cancellation).Read(0);
+            var decoder=new Decoder(reader,cancellation,references);
+            var value=decoder.Read(0);
+            cost=decoder.Cost;
             if(value is not JObject data || buffered.ReadByte()!=-1) throw new InvalidDataException("Invalid binary snapshot root or trailing data");
             cancellation.ThrowIfCancellationRequested();
             return data;
@@ -61,21 +82,23 @@ internal static class NativeSnapshotBinary
         private readonly CancellationToken cancellation;
         protected int Nodes;
         private int expanded;
+        internal (int Nodes,int Bytes) Cost=>(Nodes,expanded);
         protected Budget(CancellationToken cancellation) { this.cancellation=cancellation; }
         protected void Node(int depth)
         {
-            if(depth>MaxDepth || ++Nodes>MaxNodes) throw new InvalidDataException("Binary snapshot depth/node budget exceeded");
+            if(depth>MaxDepth || ++Nodes>MaxNodes) throw Capacity("Binary snapshot depth/node budget exceeded");
             if((Nodes & 127)==0) cancellation.ThrowIfCancellationRequested();
             Charge(1);
         }
         protected void Charge(int bytes)
         {
-            if(bytes<0 || bytes>NativeSnapshotCodec.MaxPlainBytes-expanded) throw new InvalidDataException("Expanded binary snapshot exceeds byte budget");
+            if(bytes<0 || bytes>NativeSnapshotCodec.MaxPlainBytes-expanded) throw Capacity("Expanded binary snapshot exceeds byte budget");
             expanded+=bytes;
         }
         protected void Count(int count,int multiplier=1)
         {
-            if(count<0 || count>(MaxNodes-Nodes)/multiplier) throw new InvalidDataException("Invalid binary snapshot container count");
+            if(count<0) throw new InvalidDataException("Invalid binary snapshot container count");
+            if(count>(MaxNodes-Nodes)/multiplier) throw Capacity("Invalid binary snapshot container count");
             Charge(4);
         }
     }
@@ -83,9 +106,11 @@ internal static class NativeSnapshotBinary
     {
         private readonly BinaryWriter writer;
         private readonly IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields;
+        private readonly IReadOnlyDictionary<JToken,int> references;
         private readonly Dictionary<string,(int Id,int Bytes)> strings=new Dictionary<string,(int,int)>(StringComparer.Ordinal);
-        internal Encoder(BinaryWriter writer,CancellationToken cancellation,IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields):base(cancellation)
-        { this.writer=writer; this.fields=fields; }
+        internal Encoder(BinaryWriter writer,CancellationToken cancellation,IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields,
+            IReadOnlyDictionary<JToken,int> references):base(cancellation)
+        { this.writer=writer; this.fields=fields; this.references=references; }
         private void Text(string value)
         {
             if(strings.TryGetValue(value,out var old)) { Charge(4+old.Bytes); writer.Write(~old.Id); return; }
@@ -96,6 +121,13 @@ internal static class NativeSnapshotBinary
         internal void Write(JToken value,int depth)
         {
             Node(depth);
+            if(references!=null && value is JObject && references.TryGetValue(value,out int index))
+            {
+                Charge(4);
+                writer.Write((byte)Kind.ItemReference);
+                writer.Write(index);
+                return;
+            }
             switch(value.Type)
             {
                 case JTokenType.Object:
@@ -226,7 +258,9 @@ internal static class NativeSnapshotBinary
     {
         private readonly BinaryReader reader;
         private readonly List<(string Value,int Bytes)> strings=new List<(string,int)>();
-        internal Decoder(BinaryReader reader,CancellationToken cancellation):base(cancellation) { this.reader=reader; }
+        private readonly List<(JObject Marker,int Index)> references;
+        internal Decoder(BinaryReader reader,CancellationToken cancellation,List<(JObject Marker,int Index)> references):base(cancellation)
+        { this.reader=reader; this.references=references; }
         private string Text()
         {
             int code=reader.ReadInt32();
@@ -270,6 +304,11 @@ internal static class NativeSnapshotBinary
                 case Kind.Double: Charge(8); return new JValue(reader.ReadDouble());
                 case Kind.Single: Charge(4); return new JValue(reader.ReadSingle());
                 case Kind.Decimal: Charge(16); return new JValue(reader.ReadDecimal());
+                case Kind.ItemReference when references!=null:
+                    Charge(4);
+                    var marker=new JObject();
+                    references.Add((marker,reader.ReadInt32()));
+                    return marker;
                 default: throw new InvalidDataException("Unknown binary snapshot token");
             }
         }

@@ -60,7 +60,7 @@ internal static class NativeClientItemQueries
     internal static bool Read(StoreClient client,GameItem item,out byte mask)
     {
         mask=12;
-        if(!NativeGuest.Active || client==null || !views.TryGetValue(client,out var values)) return false;
+        if(client==null || !views.TryGetValue(client,out var values)) return false;
         if(item!=null && values.TryGetValue(item,out byte found)) mask=found;
         return true;
     }

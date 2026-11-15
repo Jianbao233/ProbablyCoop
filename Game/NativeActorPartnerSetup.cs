@@ -17,7 +17,7 @@ namespace ProbablyCoop;
 internal static class NativeActorPartnerSetup
 {
     internal const string SaveKey = "probably_coop.partner_setup.v1";
-    internal const string MixedNote = "合作：仅此角色的个人效果，店铺初始赠品/设施以开店配置为准，不重复发放";
+    private const int StartingLuckBonus = 15;
     internal enum PerkScope { Unknown, Personal, Mixed, SharedShop, RetiredDefinition }
     private static readonly Dictionary<string, PerkScope> Scope = BuildScopes();
     private static readonly FieldInfo Sorted = AccessTools.Field(typeof(NewGamePerksUI), "sorted");
@@ -27,6 +27,7 @@ internal static class NativeActorPartnerSetup
     private static readonly FieldInfo StartingGame = AccessTools.Field(typeof(NewGamePerksUI), "startingGame");
     private static readonly MethodInfo Rebuild = AccessTools.Method(typeof(NewGamePerksUI), "Rebuild");
     private static Pending pending;
+    internal static bool SelectingPartnerPerks => pending != null;
 
     private static Dictionary<string, PerkScope> BuildScopes()
     {
@@ -133,6 +134,7 @@ internal static class NativeActorPartnerSetup
         private readonly string before;
         private readonly HealthData health;
         private readonly List<StartingPerk> perkList;
+        private readonly int startingLuck;
         private readonly int thread = Environment.CurrentManagedThreadId;
         private bool committed;
         internal readonly string Receipt;
@@ -141,11 +143,10 @@ internal static class NativeActorPartnerSetup
         {
             this.target = target; this.perks = perks; Receipt = receipt;
             before = target.Serialize().ToString(Formatting.None); health = target.healthData; perkList = target.startingPerks;
-            if (perks != null)
-            {
-                // Check every arithmetic operation before touching live fields.
-                _ = checked(health.luck + (perks.Any(perk => perk.id == "lucky") ? 5 : 0) - (perks.Any(perk => perk.id == "unlucky") ? 5 : 0));
-            }
+            // Match the original StartingPerkContent.HandleNewGamePerk bonus.
+            startingLuck = checked(health.luck +
+                (perks?.Any(perk => perk.id == "lucky") == true ? StartingLuckBonus : 0) -
+                (perks?.Any(perk => perk.id == "unlucky") == true ? StartingLuckBonus : 0));
         }
         // Caller persists Receipt in the SAME verified native checkpoint as the
         // mutated partner state. Returning this value is not a save-success claim.
@@ -163,13 +164,12 @@ internal static class NativeActorPartnerSetup
                 // StartingPerkContent. Shared money/items/services never run.
                 switch (perk.id)
                 {
-                    case "lucky": health.luck += 5; break;
-                    case "unlucky": health.luck -= 5; break;
                     case "nicotine_addiction": health.daysSinceNicotineConsumption = 3; break;
                     case "alcohol_addiction": health.daysSinceAlcoholConsumption = 3; break;
                     case "narcotic_addiction": health.daysSinceNarcoticConsumption = 3; break;
                 }
             }
+            health.luck = startingLuck;
             committed = true;
             return Receipt;
         }
@@ -199,7 +199,6 @@ internal static class NativeActorPartnerSetup
         internal Action<string[]> Accept;
         internal Action Cancel;
         internal bool Ready, Submitted;
-        internal readonly HashSet<StartingPerk> MixedViews = new HashSet<StartingPerk>();
     }
     internal static bool TryOpenDraft(Action<string[]> accept, Action cancel, out string reason)
         => TryOpenDraft(accept, cancel, out reason, out _);
@@ -226,7 +225,6 @@ internal static class NativeActorPartnerSetup
             var sorted = (List<StartingPerk>)Sorted.GetValue(null);
             sorted.Clear();
             sorted.AddRange(Catalog().Values.OrderByDescending(perk => perk.cost).ThenBy(perk => perk.id, StringComparer.Ordinal));
-            foreach (var perk in sorted) if (Classify(perk.id) == PerkScope.Mixed) setup.MixedViews.Add(perk);
             // The native first-run lock belongs to the single-player tutorial.
             // This is an independent partner draft; no index/save value changes.
             FirstRun.SetValue(null, false);
@@ -293,7 +291,6 @@ internal static class NativeActorPartnerSetup
         Restore(setup);
         if (setup.Ready && !setup.Submitted) setup.Cancel?.Invoke();
     }
-    internal static string Description(StartingPerk perk, string original) => pending?.MixedViews.Contains(perk) == true ? original + "\n\n" + MixedNote : original;
 }
 
 [HarmonyPatch(typeof(NewGamePerksUI), "OnContinueClicked")]
@@ -305,6 +302,3 @@ internal static class NativeActorPartnerPerksClosed
     private static void Prefix(out NativeActorPartnerSetup.DraftHandle __state) => __state = NativeActorPartnerSetup.BeforeClosed();
     private static void Postfix(NativeActorPartnerSetup.DraftHandle __state) => NativeActorPartnerSetup.AfterClosed(__state);
 }
-[HarmonyPatch(typeof(StartingPerk), nameof(StartingPerk.GetLocalizedDescription))]
-internal static class NativeActorPartnerPerkDescription
-{ private static void Postfix(StartingPerk __instance, ref string __result) => __result = NativeActorPartnerSetup.Description(__instance, __result); }

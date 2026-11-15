@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using ProbablyCoop.Core;
 using Steamworks;
 
@@ -23,11 +24,13 @@ internal sealed class RoomSelector : ICoopRoom
     public bool IsHost => active?.IsHost == true;
     public bool IsGuest => active?.IsGuest == true;
     public bool CanApprove => active?.CanApprove == true;
+    public bool AcceptingJoins => active?.AcceptingJoins == true;
     public string Code => active?.Code ?? "";
     public string Status => active?.Status ?? selectionStatus;
     public string Detail => active?.Detail ?? "";
     public string PartnerName => active?.PartnerName ?? "";
     internal bool IsLoopback => active is LocalRoom local && local.IsLoopback;
+    internal IPEndPoint Ipv4HostEndpoint => (active as LocalRoom)?.Ipv4HostEndpoint;
     internal bool FriendsCanJoin => active is SteamRoom steam && steam.FriendsCanJoin;
     public int Sent => active?.Sent ?? 0;
     public int Received => active?.Received ?? 0;
@@ -39,20 +42,20 @@ internal sealed class RoomSelector : ICoopRoom
         NativeRoomPacing.Update(this);
     }
 
-    internal void CreateLan(string address)
+    internal void CreateLan(string address, string port = null)
     {
-        if (Select(direct: true)) ((LocalRoom)active).CreateLan(address);
+        if (Select(direct: true)) ((LocalRoom)active).CreateLan(address, port);
         NativeRoomPacing.Update(this);
     }
 
-    internal void Join(string input)
+    internal void Join(string input, string mappedAddress = null)
     {
         string code = (input ?? "").Trim();
         bool direct = code.StartsWith("PSL-", StringComparison.Ordinal) ||
             code.StartsWith("PSI-", StringComparison.Ordinal);
         if (direct)
         {
-            if (Select(true)) ((LocalRoom)active).Join(code);
+            if (Select(true)) ((LocalRoom)active).Join(code, mappedAddress);
             NativeRoomPacing.Update(this);
             return;
         }
@@ -75,7 +78,9 @@ internal sealed class RoomSelector : ICoopRoom
         NativeRoomPacing.Update(this);
     }
 
-    internal void Approve() => (active as SteamRoom)?.Approve();
+    public void Approve() => active?.Approve();
+    public void Decline() => active?.Decline();
+    public void SetAcceptingJoins(bool enabled) => active?.SetAcceptingJoins(enabled);
 
     private bool Select(bool direct)
     {

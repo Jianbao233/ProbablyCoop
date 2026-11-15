@@ -11,6 +11,7 @@ internal interface ICoopRoom : IDisposable
     bool IsHost { get; }
     bool IsGuest { get; }
     bool CanApprove { get; }
+    bool AcceptingJoins { get; }
     string Code { get; }
     string Status { get; }
     string Detail { get; }
@@ -19,6 +20,9 @@ internal interface ICoopRoom : IDisposable
     int Received { get; }
     event Action<Packet> RemoteCursor;
     void Create();
+    void Approve();
+    void Decline();
+    void SetAcceptingJoins(bool enabled);
     void Leave(string status = "idle");
     void Tick(Action beforeSessionTick = null);
 }

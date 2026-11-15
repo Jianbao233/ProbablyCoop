@@ -41,7 +41,7 @@ internal sealed partial class NativeWorld
     private ulong authorityBaseRevision;
     private EncodedSnapshot awaitingFull;
     private NativeSnapshotIndex guestBasis;
-    private byte[] guestBaseBytes;
+    private NativeSnapshotFrame guestBaseBytes;
     private ulong guestBaseRevision;
     private NativeSnapshotIndex appliedIndex;
     private readonly CancellationTokenSource decodeLifetime=new CancellationTokenSource();
@@ -49,11 +49,12 @@ internal sealed partial class NativeWorld
     private ReplicaLink.Stamp decodingStamp, encodingStamp;
     private bool closed;
     private bool peerConnected;
+    private bool pagedCheckpoint;
     private ulong peerGeneration,encodingGeneration;
     private NativeCaptureComparison.Bucket encodingComparison;
     private sealed class EncodedSnapshot
     {
-        internal byte[] Bytes;
+        internal NativeSnapshotFrame Frame;
         internal NativeRecordBasis Checkpoint;
         internal int Referenced;
         internal int Elided;
@@ -69,7 +70,7 @@ internal sealed partial class NativeWorld
         internal NativeSnapshotIndex Index;
         internal NativeSnapshotIndex Basis;
         internal bool Delta;
-        internal byte[] BasisBytes;
+        internal NativeSnapshotFrame BasisBytes;
         internal ulong BasisRevision;
         internal Exception Error;
         internal double Milliseconds;
@@ -164,6 +165,7 @@ internal sealed partial class NativeWorld
             if(link.AcceptTooltip==ReceiveFastTooltip) link.AcceptTooltip=null;
         }
         tripUi?.Close(); tripUi=null;
+        if(Host==null && Guest==null) NativeSpriteTransfer.Clear();
     }
 
     internal void TickHost(NativeShop authority, ReplicaLink connection,ShopLink shopLink)
@@ -175,6 +177,7 @@ internal sealed partial class NativeWorld
         if(peerConnected) NativeCaptureComparison.Current?.Advance(Time.realtimeSinceStartupAsDouble);
         ValidateTripReadiness(); TickTripUi();
         if(peerConnected) PublishFastTooltip();
+        if(connection.SynchronizationFailed) return;
         if(encoding!=null)
         {
             if(!encoding.IsCompleted)
@@ -185,7 +188,11 @@ internal sealed partial class NativeWorld
             var packed=encoding.GetAwaiter().GetResult(); encoding=null;
             if(peerConnected && encodingGeneration==peerGeneration && encodingStamp.IsCurrent(connection))
             {
-                if(packed.Error!=null) throw new InvalidDataException("Native snapshot encode failed",packed.Error);
+                if(packed.Error!=null)
+                {
+                    FailHostSynchronization(connection,"encode",packed.Error);
+                    return;
+                }
                 NativePerformance.Sample("host.pack_worker",packed.Milliseconds);
                 encodingComparison?.worker.Add(packed.Milliseconds);
                 if(packed.Markers!=null) availableMarkers=packed.Markers;
@@ -199,14 +206,17 @@ internal sealed partial class NativeWorld
                     using var publishTiming=NativePerformance.Measure("host.publish");
                     if(packed.Checkpoint!=null)
                     {
-                        packed.MinimumRevision=link.PublishCheckpoint(packed.Bytes);
+                        packed.MinimumRevision=link.PublishCheckpoint(packed.Frame);
+                        pagedCheckpoint=packed.Frame.Count>1;
+                        if(pagedCheckpoint)
+                            Debug.Log($"[probably_coop] checkpoint pages={packed.Frame.Count} packedBytes={packed.Frame.Bytes}");
                         awaitingFull=packed;
                     }
-                    else link.Publish(packed.Bytes);
+                    else link.Publish(packed.Frame);
                     if(NativeBackgroundQa.Enabled && verifiedRecordPublish<3 && packed.Referenced>0)
                     {
                         verifiedRecordPublish++;
-                        Debug.Log($"[probably_coop QA] PASS native-record-publish base={authorityBaseRevision} references={packed.Referenced} bytes={packed.Bytes.Length}");
+                        Debug.Log($"[probably_coop QA] PASS native-record-publish base={authorityBaseRevision} references={packed.Referenced} bytes={packed.Frame.Bytes}");
                     }
                 }
             }
@@ -216,8 +226,8 @@ internal sealed partial class NativeWorld
         if(!peerConnected) { nextCapture=0; return; }
         if(awaitingFull!=null)
         {
-            if(connection.FullRevision<awaitingFull.MinimumRevision || connection.FullState==null ||
-                !connection.FullState.AsSpan().SequenceEqual(awaitingFull.Bytes)) return;
+            if(connection.FullRevision<awaitingFull.MinimumRevision ||
+                !awaitingFull.Frame.SameContent(connection.FullSnapshot)) return;
             authorityBasis=awaitingFull.Checkpoint;
             authorityBaseRevision=connection.FullRevision;
             awaitingFull=null;
@@ -229,7 +239,7 @@ internal sealed partial class NativeWorld
         var comparison=NativeCaptureComparison.Current;
         var fields=new NativeDeferredFields(comparison?.UseRows ?? true,
             (comparison?.ReuseTags ?? denseTooltips) ? frozenStock : null, comparison?.ReuseShapes==false ? null : frozenStock,
-            comparison?.WorkerItems ?? true,(comparison?.ReuseItemFields ?? denseTooltips) ? frozenStock : null);
+            comparison?.WorkerItems ?? true,(comparison?.ReuseItemFields ?? denseTooltips) ? frozenStock : null,pagedSnapshots:true);
         encodingComparison=comparison?.Measuring;
         fields.EarlyPlain=comparison?.EarlyPlain ?? true;
         if(comparison?.PoolMarkers!=false)
@@ -249,6 +259,11 @@ internal sealed partial class NativeWorld
                     " uniqueItems="+model.Objects.Values.Count(value=>value is GameItem)+" uniqueNodes="+model.Objects.Count+
                     " "+TooltipScheduleSummary());
         }
+        catch(Exception error)
+        {
+            FailHostSynchronization(connection,"capture",error);
+            return;
+        }
         finally { captureTooltips.Clear(); prefetched.Clear(); capturedControlOwner=null; capturedControlOwnerProof=null; }
         snapshot["commandThrough"]=connection.CompletedRequest;
         snapshot["commandResult"]=connection.CompletedResult;
@@ -267,7 +282,13 @@ internal sealed partial class NativeWorld
         var basis=connection.NeedsFull || connection.Revision-authorityBaseRevision>=96 ? null : authorityBasis;
         ulong baseRevision=authorityBaseRevision;
         var auditBasis=NativeBackgroundQa.Enabled && verifiedRecordPublish<3 ? connection.FullState : null;
-        encoding=Task.Run(()=>EncodeSnapshot(snapshot,fields,cancellation,basis,baseRevision,auditBasis));
+        bool preferPages=pagedCheckpoint;
+        encoding=Task.Run(()=>EncodeSnapshot(snapshot,fields,cancellation,basis,baseRevision,auditBasis,preferPages));
+    }
+    private static void FailHostSynchronization(ReplicaLink connection,string phase,Exception error)
+    {
+        Debug.LogWarning($"[probably_coop] guest synchronization failed during host {phase}. Host shop and room retained. {error}");
+        connection.FailSynchronization();
     }
     // Install command handlers before transport polling. Full capture runs
     // after polling, so it observes those commands in this same Unity tick.
@@ -290,14 +311,14 @@ internal sealed partial class NativeWorld
         PublishViews();
         if(decoding==null)
         {
-            if(connection.State==null || applied==connection.Revision) return Ready;
-            if(NativeRecordFrame.IsDelta(connection.State) && connection.FullState==null) return Ready;
-            // ReplicaLink publishes an immutable, complete byte[] only. Never
+            if(connection.Snapshot==null || applied==connection.Revision) return Ready;
+            if(connection.Snapshot.Delta && connection.FullSnapshot==null) return Ready;
+            // ReplicaLink publishes an immutable, complete frame only. Never
             // pass Unity objects or the mutable native model to the worker.
-            var bytes=connection.State;
+            var bytes=connection.Snapshot;
             var cancellation=decodeLifetime.Token;
             var previous=appliedIndex;
-            var checkpointBytes=connection.FullState;
+            var checkpointBytes=connection.FullSnapshot;
             ulong basisRevision=connection.FullRevision;
             var knownBasis=guestBaseRevision==basisRevision && ReferenceEquals(checkpointBytes,guestBaseBytes) ? guestBasis : null;
             decodingRevision=connection.Revision;
@@ -386,7 +407,10 @@ internal sealed partial class NativeWorld
                 model.Objects[root.Entity]=inventory; model.Seen.Add(root.Entity);
                 NativeMirrorProbe.ApplyInventoryState(inventory,(JObject)root.Data["inventoryState"]);
                 if(inventory is GameGridInventory grid && decoded.Index.RootGrids.TryGetValue(root.Key,out var shape))
+                {
+                    if(ReferenceEquals(grid,EmporiumEntry.Instance.showcaseElement)) ApplyShowcaseAppearance(shape);
                     ApplyRootGrid(grid,shape);
+                }
                 foreach(var row in root.Items)
                 {
                     using var itemTiming=NativePerformance.Measure("guest.hydrate_item");
@@ -646,6 +670,7 @@ internal sealed partial class NativeWorld
         var e=EmporiumEntry.Instance;
         e.dossier=e.docInvElement.childItem; e.trashcan=e.trashInvElement.childItem;
         e.drain=e.drainInvElement.childItem; e.faucet=e.faucetElement.childItem; e.cassettePlayer=e.cassettePlayerElement.childItem;
+        NativeLocalCassette.RefreshReplica(e.cassettePlayer);
         e.trashcanInvElement=e.trashcan?.contentWindow?.childElement as GameGridInventory;
         bool inStore=!MapUIManager.Instance.IsOutside;
         // Presentation derived from authoritative upgrades must be refreshed
@@ -665,6 +690,18 @@ internal sealed partial class NativeWorld
     {
         var cells=NativeMirrorProbe.ShapeCells(shape,deferred);
         return new JObject { ["w"]=shape.width,["h"]=shape.height,["outside"]=shape.GetOutsideBounds(),["cells"]=cells };
+    }
+    private static void ApplyShowcaseAppearance(NativeSnapshotIndex.RootGrid shape)
+    {
+        var ui=StoreUIManager.Instance;
+        if(ui?.showcaseRenderer==null) return;
+        var entry=EmporiumEntry.Instance;
+        // Native save loading would change both the fixture artwork and
+        // its anchor. A replica starts with a blank local shop instead.
+        if(shape.Width==8 && shape.Height==6 && ui.showcaseRenderer.sprite!=ui.showcaseMedium)
+            entry.UpgradeDisplayCaseI();
+        else if(shape.Width==9 && shape.Height==7 && ui.showcaseRenderer.sprite!=ui.showcaseLarge)
+            entry.UpgradeDisplayCaseII();
     }
     private static bool MatchesRootGrid(GridShape live,NativeSnapshotIndex.RootGrid shape)
     {
@@ -812,7 +849,7 @@ internal sealed partial class NativeWorld
         (string)d["richTextUnderline"],(string)d["richTextForeground"],(string)d["richTextBackground"],
         (int)d["recommendedWidth"],(int)d["recommendedHeight"],(bool)d["isTruncated"]);
 
-    private static JObject CaptureClient(StoreClient source)
+    internal static JObject CaptureClient(StoreClient source)
     {
         if(source==null) return null;
         var data=new JObject();
@@ -831,6 +868,14 @@ internal sealed partial class NativeWorld
         return data;
     }
     private StoreClient ReadClient(JObject data,bool includeItemQueries=false,StoreClient existing=null,HashSet<string> changes=null)
+    {
+        var client=RestoreClient(data,includeItemQueries,existing,changes);
+        if(includeItemQueries && (changes==null || changes.Contains("itemQueries"))) BindClientItemQueries(client,(JObject)data["itemQueries"]);
+        return client;
+    }
+
+    internal static StoreClient RestoreClient(JObject data, bool includeItemQueries = false, StoreClient existing = null,
+        HashSet<string> changes = null)
     {
         if(data.Count!=ClientFields.Length+(includeItemQueries ? 3 : 2)) throw new InvalidDataException("Client contract mismatch");
         var client=existing ?? new StoreClient();
@@ -855,7 +900,6 @@ internal sealed partial class NativeWorld
             mandatoryRequirements=((JArray)g["mandatory"]).Cast<JObject>().Select(ReadRequirement).ToList(),
             bonusRequirements=((JArray)g["bonus"]).Cast<JObject>().Select(ReadRequirement).ToList() };
         else if(data["gun"] is not JObject) client.gunOrderData=null;
-        if(includeItemQueries && (changes==null || changes.Contains("itemQueries"))) BindClientItemQueries(client,(JObject)data["itemQueries"]);
         return client;
     }
     private static JObject CaptureRequirement(GunOrderRequirement r)=>new JObject { ["id"]=r.id,["value"]=r.value,["reward"]=r.reward,["larger"]=r.isMustBeLargerThan,["caliber"]=r.isCaliber };
@@ -915,6 +959,10 @@ internal sealed partial class NativeWorld
             // Native group placement temporarily borrows selectedItems. Freeze
             // the actual local hand before entering any such UI execution scope.
             string kind=(string)command["kind"];
+            // Timeout is still the same native night in flight. Do not admit a
+            // new hand/action between its save and morning receipts.
+            if(shop.BlocksWorldCommands && kind is not ("ending" or "handRelease"))
+                return (ushort)ShopResult.Busy;
             if(kind=="partnerSetup") return ExecutePartnerSetup(command);
             if(kind is not ("ending" or "handRelease") && !EndingActive && !ValidOperationContext(command))
                 return (ushort)ShopResult.Stale;
@@ -1055,12 +1103,16 @@ internal sealed partial class NativeWorld
         nextCapture=0; return (ushort)ShopResult.Applied;
     }
     private int verifiedRecordPublish;
-    private static EncodedSnapshot EncodeSnapshot(JObject snapshot,NativeDeferredFields fields,CancellationToken cancellation,NativeRecordBasis basis,ulong baseRevision,byte[] auditBasis)
+    private static EncodedSnapshot EncodeSnapshot(JObject snapshot,NativeDeferredFields fields,CancellationToken cancellation,NativeRecordBasis basis,ulong baseRevision,byte[] auditBasis,bool preferPages)
     {
         var result=new EncodedSnapshot(); var timer=System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            result.Bytes=fields.Pack(snapshot,cancellation,true,basis,baseRevision,out result.Checkpoint,out result.Referenced,auditBasis);
+#if PROBABLY_COOP_GRID_QA
+            if(NativeBackgroundQa.TakeSynchronizationFailure())
+                throw new InvalidDataException("Isolated QA injected first checkpoint encode failure");
+#endif
+            result.Frame=fields.PackFrame(snapshot,cancellation,true,basis,baseRevision,out result.Checkpoint,out result.Referenced,auditBasis,preferPages:preferPages);
             result.Elided=fields.ElidedRows;
             result.Markers=fields.Markers;
             result.ReusedMarkers=fields.ReusedMarkers;
@@ -1069,21 +1121,22 @@ internal sealed partial class NativeWorld
         result.Milliseconds=timer.Elapsed.TotalMilliseconds;
         return result;
     }
-    private static DecodedSnapshot DecodeSnapshot(byte[] compressed,NativeSnapshotIndex previous,CancellationToken cancellation,
-        byte[] full,ulong fullRevision,NativeSnapshotIndex knownBasis)
+    private static DecodedSnapshot DecodeSnapshot(NativeSnapshotFrame compressed,NativeSnapshotIndex previous,CancellationToken cancellation,
+        NativeSnapshotFrame full,ulong fullRevision,NativeSnapshotIndex knownBasis)
     {
         var result=new DecodedSnapshot(); var timer=System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            bool delta=NativeRecordFrame.IsDelta(compressed);
+            bool delta=compressed.Delta;
             result.Delta=delta;
             result.BasisRevision=fullRevision;
             if(delta && knownBasis==null)
             {
-                if(full==null || !NativeRecordFrame.HasBase(compressed,fullRevision)) throw new InvalidDataException("Missing native full checkpoint");
-                knownBasis=NativeSnapshotIndex.Build(NativeSnapshotCodec.Unpack(full,cancellation),null,cancellation,separateRecords:true);
+                if(full==null || !NativeRecordFrame.HasBase(compressed.Single,fullRevision)) throw new InvalidDataException("Missing native full checkpoint");
+                knownBasis=NativeSnapshotIndex.Build(NativeSnapshotPages.Unpack(full,cancellation),null,cancellation,separateRecords:true);
             }
-            result.Data=NativeSnapshotCodec.Unpack(delta ? NativeRecordFrame.Body(compressed,fullRevision) : compressed,cancellation);
+            result.Data=delta ? NativeSnapshotCodec.Unpack(NativeRecordFrame.Body(compressed.Single,fullRevision),cancellation) :
+                NativeSnapshotPages.Unpack(compressed,cancellation);
             result.DecodeMilliseconds=timer.Elapsed.TotalMilliseconds;
             result.Index=NativeSnapshotIndex.Build(result.Data,previous,cancellation,separateRecords:true,basis:delta ? knownBasis : null);
             result.Basis=delta ? knownBasis : result.Index;

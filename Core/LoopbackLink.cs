@@ -21,12 +21,14 @@ internal sealed class LoopbackLink : IDisposable
     private ulong nextFragmentSequence;
     internal CoopSession Session { get; }
     internal string Code { get; }
+    internal IPEndPoint LocalEndpoint { get; }
     internal int Sent { get; private set; }
     internal int Received { get; private set; }
     internal int PeakDrain { get; private set; }
     internal int ExtendedDrains { get; private set; }
 
-    internal LoopbackLink(byte[] fingerprint, double now, string code = null, IPAddress bindAddress = null)
+    internal LoopbackLink(byte[] fingerprint, double now, string code = null, IPAddress bindAddress = null,
+        int listenPort = 0, IPEndPoint mappedEndpoint = null, bool requireApproval=false)
     {
         if (fingerprint?.Length != Wire.FingerprintSize)
             throw new ArgumentException("Invalid fingerprint.", nameof(fingerprint));
@@ -40,9 +42,9 @@ internal sealed class LoopbackLink : IDisposable
         bindAddress = host ? bindAddress ?? IPAddress.Loopback :
             IPAddress.IsLoopback(remote) ? IPAddress.Loopback : IPAddress.Any;
         bool lan = !IPAddress.IsLoopback(host ? bindAddress : remote);
-        if (host && !ValidHostAddress(bindAddress))
+        if (host && !DirectRoomEndpoint.ValidHostAddress(bindAddress))
             throw new FormatException("Enter the IPv4 address of a LAN or VPN adapter.");
-        socket = new UdpClient(new IPEndPoint(bindAddress, 0));
+        socket = new UdpClient(new IPEndPoint(bindAddress, host ? listenPort : 0));
         if (lan)
         {
             // Four native state chunks plus authentication/fragment headers
@@ -51,19 +53,16 @@ internal sealed class LoopbackLink : IDisposable
             catch(SocketException) { /* The OS queue remains usable at its current size. */ }
             mac = new HMACSHA256(token);
         }
-        if (host) port = ((IPEndPoint)socket.Client.LocalEndPoint).Port;
-        else peer = new IPEndPoint(remote, port);
+        if (host)
+        {
+            LocalEndpoint = (IPEndPoint)socket.Client.LocalEndPoint;
+            port = LocalEndpoint.Port;
+        }
+        else peer = lan && mappedEndpoint != null ? mappedEndpoint : new IPEndPoint(remote, port);
         string prefix = lan ? $"PSI-{(host ? bindAddress : remote)}" : "PSL";
         Code = $"{prefix}-{port.ToString(CultureInfo.InvariantCulture)}-{id:N}";
-        Session = new CoopSession(host, fingerprint, Send);
+        Session = new CoopSession(host, fingerprint, Send, requireApproval);
         if (!host) Session.Connect(now);
-    }
-
-    private static bool ValidHostAddress(IPAddress address)
-    {
-        if (address.AddressFamily != AddressFamily.InterNetwork) return false;
-        byte firstOctet = address.GetAddressBytes()[0];
-        return firstOctet is > 0 and < 224;
     }
 
     private static bool TryParseCode(string code, out IPAddress address, out int port, out Guid token)
@@ -78,15 +77,13 @@ internal sealed class LoopbackLink : IDisposable
         {
             portIndex = 1;
         }
-        else if (parts.Length == 4 && parts[0] == "PSI" &&
-            IPAddress.TryParse(parts[1], out address) && ValidHostAddress(address) &&
-            !IPAddress.IsLoopback(address) && address.ToString() == parts[1])
+        else if (parts.Length == 4 && parts[0] == "PSI" && DirectRoomEndpoint.TryParseIpv4(parts[1], out address))
         {
             portIndex = 2;
         }
         else return false;
-        return int.TryParse(parts[portIndex], NumberStyles.None, CultureInfo.InvariantCulture, out port) &&
-            port is > 0 and <= 65535 && Guid.TryParseExact(parts[portIndex + 1], "N", out token) &&
+        return DirectRoomEndpoint.TryParsePort(parts[portIndex], out port) &&
+            Guid.TryParseExact(parts[portIndex + 1], "N", out token) &&
             token != Guid.Empty;
     }
 

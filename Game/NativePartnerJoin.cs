@@ -1,6 +1,8 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using ProbablyCoop.Core;
 using UnityEngine;
@@ -20,6 +22,9 @@ internal sealed class NativePartnerJoin : IDisposable
     private string[] draft;
     private double retry, pickerDeadline;
     private string pickerFailure;
+    private Task<(Guid Run,bool Required)> reading;
+    private CancellationTokenSource readLifetime;
+    private ulong readingRevision;
 
     internal void ObserveConnection(bool valid)
     {
@@ -34,14 +39,30 @@ internal sealed class NativePartnerJoin : IDisposable
         {
             Dispose(); link=connection; stamp=connection.CaptureStamp();
         }
-        if(connection.State==null || connection.Revision==0) return false;
+        if(connection.Snapshot==null || connection.Revision==0) return false;
         if(observed!=connection.Revision)
         {
-            if(NativeRecordFrame.IsDelta(connection.State) && connection.FullState==null) return false;
-            var metadata=NativeJoinSnapshot.Read(connection.State,connection.FullState,connection.FullRevision);
+            if(reading==null)
+            {
+                var snapshot=connection.Snapshot;
+                var full=connection.FullSnapshot;
+                if(snapshot.Delta && full==null) return false;
+                ulong baseRevision=connection.FullRevision;
+                readingRevision=connection.Revision;
+                readLifetime=new CancellationTokenSource();
+                var cancellation=readLifetime.Token;
+                reading=Task.Run(()=>NativeJoinSnapshot.Read(snapshot,full,baseRevision,cancellation));
+                return false;
+            }
+            if(!reading.IsCompleted) return false;
+            var completed=reading;
+            reading=null;
+            readLifetime.Dispose();
+            readLifetime=null;
+            var metadata=completed.GetAwaiter().GetResult();
             var incoming=metadata.Run;
             if(run!=Guid.Empty && run!=incoming) throw new InvalidDataException("Cooperative character run changed during join");
-            run=incoming; required=metadata.Required; observed=connection.Revision;
+            run=incoming; required=metadata.Required; observed=readingRevision;
         }
         if(!required) return true;
         if(sent)
@@ -133,7 +154,15 @@ internal sealed class NativePartnerJoin : IDisposable
             NativeActorPartnerSetup.CancelDraft(pickerOwner);
         }
         finally
-        { link=null; observed=0; run=Guid.Empty; required=picker=sent=false; pickerOwner=null; draft=null; retry=pickerDeadline=0; pickerFailure=null; disposing=false; }
+        {
+            readLifetime?.Cancel();
+            readLifetime?.Dispose();
+            // A task from a departed epoch cannot update this join.
+            if(reading!=null)
+                _=reading.ContinueWith(task=>{ _=task.Exception; },TaskContinuationOptions.OnlyOnFaulted);
+            reading=null; readLifetime=null;
+            link=null; observed=0; run=Guid.Empty; required=picker=sent=false; pickerOwner=null; draft=null; retry=pickerDeadline=0; pickerFailure=null; disposing=false;
+        }
     }
 }
 

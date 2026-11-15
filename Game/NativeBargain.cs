@@ -14,7 +14,7 @@ internal sealed partial class NativeWorld
         "markupOffered","markupPercent","markupApplied","blackmailOffered","blackmailApplied","buyingMarkupOffered",
         "buyingMarkupPercent","buyingDiscountOffered","buyingDiscountPercent","buyingDiscountApplied","threatenOffered","threatenApplied"}
         .Select(n=>AccessTools.Field(typeof(BargainUIManager),n)).ToArray();
-    private static JObject CaptureBargain()
+    internal static JObject CaptureBargain()
     {
         var ui=BargainUIManager.Instance;
         // Same refresh the original CanOffer queries use; never perform a bargain here.
@@ -22,7 +22,7 @@ internal sealed partial class NativeWorld
         var data=new JObject(); foreach(var f in BargainFields) data[f.Name]=JToken.FromObject(f.GetValue(ui));
         return data;
     }
-    private static void ApplyBargain(JObject data)
+    internal static void ApplyBargain(JObject data)
     {
         var ui=BargainUIManager.Instance;
         AccessTools.Field(typeof(BargainUIManager),"trackedClient").SetValue(ui,PlayerStore.Instance.currentClientInstance?.GetClientBlueprint());

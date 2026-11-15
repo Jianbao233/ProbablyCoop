@@ -6,7 +6,7 @@ namespace ProbablyCoop.Core;
 internal enum Kind : byte
 {
     Hello = 1, Welcome, Ready, State, ChangeTile, Ping, Pong, Cursor, Reject, ShopState, ShopCommand, ShopAck,
-    NativeChunk, NativeAck, NativeCommand, NativeReply, NativePresence, NativeTooltip, NativeProgress, NativeNeedFull
+    NativeChunk, NativeAck, NativeCommand, NativeReply, NativePresence, NativeTooltip, NativeProgress, NativeNeedFull, NativeSyncFailed, JoinPending
 }
 
 internal readonly struct Packet
@@ -43,7 +43,7 @@ internal readonly struct Packet
 
 internal static class Wire
 {
-    internal const byte Version = 22;
+    internal const byte Version = 24;
     internal const int FingerprintSize = 64; // SHA-256 of game DLL followed by SHA-256 of this mod DLL.
     internal const int HeaderSize = 60;
     internal const int MaxSize = 20 * 1024;
@@ -77,7 +77,7 @@ internal static class Wire
         packet = default;
         if (bytes.Length < HeaderSize || bytes.Length > MaxSize ||
             BinaryPrimitives.ReadUInt32LittleEndian(bytes) != Magic || bytes[4] != Version ||
-            bytes[7] != 0 || bytes[5] < (byte)Kind.Hello || bytes[5] > (byte)Kind.NativeNeedFull) return false;
+            bytes[7] != 0 || bytes[5] < (byte)Kind.Hello || bytes[5] > (byte)Kind.JoinPending) return false;
         var kind = (Kind)bytes[5];
         bool handshake = kind is Kind.Hello or Kind.Welcome;
         int bodyLength = bytes.Length - HeaderSize;
@@ -100,6 +100,11 @@ internal static class Wire
         var serial = BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(40));
         if (kind == Kind.Cursor ? flags > 3 || serial == 0 : flags != 0 || b != 0) return false;
         if (kind == Kind.ChangeTile && (serial == 0 || a >= 16)) return false;
+        if (kind is Kind.JoinPending or Kind.Reject)
+        {
+            if(serial==0 || a>(kind==Kind.JoinPending ? 0 : (ushort)JoinRefusal.Closed) ||
+                BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48))!=0) return false;
+        }
         if (kind == Kind.ShopCommand)
         {
             if (serial == 0 || a < 1 || a > (ushort)ShopAction.ChooseDialogue) return false;
@@ -113,12 +118,13 @@ internal static class Wire
         if (kind == Kind.ShopState && a > (ushort)ShopResult.Failed) return false;
         if (kind == Kind.NativeCommand && (serial == 0 || a != 0)) return false;
         if (kind == Kind.NativeReply && (serial == 0 || a > (ushort)ShopResult.Failed)) return false;
-        if (kind == Kind.NativeAck && (a != 0 || serial != 0)) return false;
+        if (kind == Kind.NativeAck && (a >= NativeSnapshotFrame.MaxPages || serial != 0)) return false;
+        if (kind == Kind.NativeSyncFailed && (a != 0 || serial != 0)) return false;
         if (kind == Kind.NativeNeedFull && (a!=0 || serial!=0 || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48))==0)) return false;
         if (kind == Kind.NativePresence && (a != 0 || serial == 0)) return false;
         if (kind == Kind.NativeTooltip && (a!=0 || serial==0 || serial>uint.MaxValue || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48))==0)) return false;
         if (kind==Kind.NativeProgress && (serial==ulong.MaxValue || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48))!=serial+1 ||
-            a>=(ReplicaLink.MaxBytes+ReplicaLink.ChunkSize-1)/ReplicaLink.ChunkSize)) return false;
+            (a & ReplicaLink.ChunkIndexMask)>=(ReplicaLink.MaxBytes+ReplicaLink.ChunkSize-1)/ReplicaLink.ChunkSize)) return false;
         if (kind == Kind.ShopAck && (a != 0 || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48)) == 0))
             return false;
 

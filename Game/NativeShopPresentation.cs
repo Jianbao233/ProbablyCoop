@@ -58,6 +58,9 @@ internal readonly struct NativeShopPresentation
             door.blockerGameObject.transform.localPosition-door.blockerStartPosition,path)/path.sqrMagnitude) : 0;
     }
 
+    internal static void PresentShutter(StoreShutterButton door, bool opened, bool animate) =>
+        new NativeShopPresentation(0, 0, !opened, animate, opened ? 1 : 0).ApplyShutter(door, animate);
+
     internal void ApplyShutter(StoreShutterButton door, bool play)
     {
         float fraction=play ? Fraction(door) : OpenFraction;
@@ -105,6 +108,7 @@ internal static class NativeBellPlayback
     private static void Play(AudioSource source)
     {
         source.Play();
+        NativeInventoryPilot.RecordCampaignBell();
         var host=NativeWorld.Host;
         if(host==null) return;
         host.RecordBellCue();

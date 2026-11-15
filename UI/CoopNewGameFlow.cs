@@ -8,6 +8,7 @@ internal static class CoopNewGameFlow
 {
     private static MainMenuUIController menu;
     private static NewGameData request;
+    internal static bool SelectingPerks => menu != null && request == NewGameData.Instance && NewGamePerksUI.IsOpen;
 
     internal static bool Begin(MainMenuUIController controller)
     {

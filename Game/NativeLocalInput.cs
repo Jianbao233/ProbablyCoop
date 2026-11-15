@@ -10,6 +10,24 @@ internal static class NativeLocalInput
 {
     private static void Postfix(StoreUIManager __instance)
     {
+        if (NativeInventoryPilot.CampaignReplica && NativeInventoryPilot.Interactive)
+        {
+            if (!Application.isFocused || __instance.IsTyping()) return;
+            MachineStorageCoordinator.HandleInput();
+            HopperHelper.HandleInput();
+            if (KeyBindHelper.GetBackDown() && !GameOptionUIManager.ConsumedEscapeThisFrame() &&
+                !MachineStorageCoordinator.ConsumedEscapeThisFrame() && !HopperHelper.ConsumedEscapeThisFrame())
+                __instance.ResolveEscape();
+            if (KeyBindHelper.GetKeyDown("advance_dialogue"))
+            {
+                switch (NativeAdvanceInput.SelectTarget())
+                {
+                    case NativeAdvanceInput.Target.Customer: DialogUIManager.Instance.OnAdvancePressed(); break;
+                    case NativeAdvanceInput.Target.Phone: DialoguePhoneUIManager.Instance.OnAdvancePressed(); break;
+                }
+            }
+            return;
+        }
         if(!NativeGuest.Active) NativeWorld.Host?.CloseInaccessibleLogistics();
         if(!NativeGuest.Active || NativeWorld.Guest?.Ready!=true) return;
         __instance.CheckRaycast();

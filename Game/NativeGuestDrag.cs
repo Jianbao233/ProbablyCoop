@@ -6,6 +6,12 @@ using UnityEngine;
 
 namespace ProbablyCoop;
 
+internal static class NativeLocalDrag
+{
+    internal static bool IsHolding(GameItemElement item) => NativeInventoryPilot.HoldsLocalItem(item) ||
+        NativeWorld.Guest?.IsHoldingSingleItem(item) == true;
+}
+
 [HarmonyPatch(typeof(GameItemElement), nameof(GameItemElement.ValidateSelect))]
 internal static class NativeGuestDragVisual
 {
@@ -33,7 +39,7 @@ internal static class NativeGuestDragVisual
     private static void Prefix(GameItemElement __instance, out DragPose __state)
     {
         __state = default;
-        if (NativeWorld.Guest?.IsHoldingSingleItem(__instance) != true ||
+        if (!NativeLocalDrag.IsHolding(__instance) ||
             !__instance.fakeBackground.image.enabled) return;
 
         var rotator = __instance.fakeRotator.rectTransform;
@@ -51,7 +57,7 @@ internal static class NativeGuestDragVisual
     private static void Postfix(GameItemElement __instance, DragPose __state)
     {
         if (__state.Count <= 0 || __instance.IsDestroyed() ||
-            NativeWorld.Guest?.IsHoldingSingleItem(__instance) != true) return;
+            !NativeLocalDrag.IsHolding(__instance)) return;
 
         // ValidateSelect updates the confirmed render but also hides the native
         // drag preview and resets its transform, even for a tag-only change.
@@ -93,9 +99,9 @@ internal static class NativeDragTargetHighlight
         RenderHandler.BackgroundColor color, bool replace)
     {
         var drag=ItemMouseDragHandler.current;
-        if(drag==null || (!NativeGuest.Active && NativeWorld.Host==null))
+        if(drag==null || (!NativeInventoryPilot.OwnsScene && !NativeGuest.Active && NativeWorld.Host==null))
             return inventory.HighlightSlot(slot,color,replace);
-        if(slot?.itemGridShape==null) return null;
+        if(slot==null || inventory is GameGridInventory && slot.itemGridShape==null) return null;
 
         // The native item-target branches draw directly on the inventory.
         // Register them with the same cleanup as a normal placement preview.
@@ -120,8 +126,8 @@ internal static class NativeGuestDropPointer
     private static void Prefix(ItemMouseDragHandler __instance, ISet<KeyCode> keysReleased,
         KeyCode ___lastMouseClickedKey, GameItemElement ___currentItem)
     {
-        if (___currentItem == null || ___currentItem.IsDestroyed() ||
-            NativeWorld.Guest?.IsHoldingSingleItem(___currentItem) != true ||
+        if (___currentItem == null || ___currentItem.IsDestroyed() || InputActionManager.current == null ||
+            !NativeLocalDrag.IsHolding(___currentItem) ||
             !keysReleased.Contains(___lastMouseClickedKey) ||
             !ReleasedThisFrame(___lastMouseClickedKey)) return;
 

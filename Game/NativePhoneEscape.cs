@@ -11,7 +11,7 @@ internal static class NativePhoneEscape
 {
     private static bool Prefix(StoreUIManager __instance,ref bool __result)
     {
-        if(NativeWorld.Host?.HostPhoneHidden!=true) return true;
+        if(NativeWorld.Host?.HostPhoneHidden!=true && NativeInventoryPilot.ActiveCampaign?.HostPhoneHidden!=true) return true;
         PixelWindow window=null;
         foreach(var candidate in WindowsHandler.current.visibleWindows)
             if(candidate.canMove && (window==null || candidate.focusStamp>=window.focusStamp)) window=candidate;

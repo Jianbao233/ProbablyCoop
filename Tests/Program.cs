@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Net;
+using System.Net.Sockets;
 using ProbablyCoop.Core;
 
 var build = new byte[Wire.FingerprintSize];
@@ -16,25 +17,50 @@ if (args.Length > 0)
         NativeSampleDelta.Run(args[1],args.Length==3);
     else if (args[0] == "--qa-relay" && args.Length == 1)
         QaLanRelayTests.Run();
+    else if (args[0] == "--effect-transition" && args.Length == 2)
+        NativeEffectTransitionTests.Run(args[1]);
+    else if (args[0] == "--day-settlement-boundaries" && args.Length == 3)
+        DaySettlementBoundaryTests.Run(args[1], args[2]);
     else if (args[0] == "--lan-smoke" && args.Length == 2)
     {
         await CheckDirectPeers(args[1]);
-        using var lanHost = new LoopbackLink(build, 0, bindAddress: IPAddress.Parse(args[1]));
+        var address = IPAddress.Parse(args[1]);
+        int port;
+        using (var reservation = new UdpClient(new IPEndPoint(address, 0)))
+            port = ((IPEndPoint)reservation.Client.LocalEndPoint).Port;
+        using var lanHost = new LoopbackLink(build, 0, bindAddress: address, listenPort: port);
+        Check(lanHost.LocalEndpoint.Equals(new IPEndPoint(address, port)), "IPv4 uses requested UDP port");
         var inventory = new TestShop { Full = true };
         lanHost.Session.Shop.SetAuthority(inventory);
         var output = await RunHeadless(lanHost, Stopwatch.StartNew(), null, "move 7", "exit");
         Check(output.Contains("\"Id\":80") && output.Contains("\"Result\":\"Applied\"") && inventory.Moves == 1,
             "all 80 inventory entries arrive via IPv4 fragments and guest applies exactly one move");
         Console.WriteLine("PASS real IPv4 UDP: full fragmented 80-item snapshot and authoritative move");
+        using var mappedHost = new LoopbackLink(build, 0, bindAddress: address);
+        string token = mappedHost.Code.Split('-')[3];
+        using var mappedGuest = new LoopbackLink(build, 0, $"PSI-192.0.2.1-1-{token}",
+            mappedEndpoint: mappedHost.LocalEndpoint);
+        var clock = Stopwatch.StartNew();
+        while (mappedGuest.Session.State != LinkState.Connected && clock.Elapsed.TotalSeconds < 4)
+        {
+            mappedHost.Tick(clock.Elapsed.TotalSeconds);
+            mappedGuest.Tick(clock.Elapsed.TotalSeconds);
+            await Task.Delay(10);
+        }
+        Check(mappedGuest.Session.State == LinkState.Connected, "IPv4 joins using mapped address and UDP port");
+        Console.WriteLine("PASS IPv4 fixed port and mapped endpoint");
     }
     else throw new ArgumentException("Usage: --local-guest <PSL code> <Assembly-CSharp.dll> <ProbablyCoop.dll>");
     return;
 }
 
 ActivityScopeTests.Run();
+RoomAdmissionTests.Run();
 NativeJoinSnapshotTests.Run();
+NativeSnapshotPageTests.Run();
 NativeCommandEnvelopeTests.Run();
 ChoiceLeaseTests.Run();
+DaySettlementTests.Run();
 ActivityRequestTests.Run();
 ActivityRequestTransportTests.Run();
 QaLanRelayTests.Run();
@@ -72,6 +98,7 @@ NativeSnapshotIndexTests.Run();
 NativeRootProjectionTests.Run();
 NativeReceiptProjectionTests.Run();
 NativeDeferredFieldsTests.Run();
+InlineSpriteDataTests.Run();
 foreach (ulong id in new[] { 1UL, 36UL, 0x0186AB00_ABCDEF01UL, ulong.MaxValue })
     Check(RoomCode.TryDecode(RoomCode.Encode(id).ToLowerInvariant(), out var parsed) && parsed == id, "room round trip");
 foreach (var code in new[] { "", "PS1-0-FFFF", "PS1-ZZZZZZZZZZZZZ-FFFF", "PS1-1-0000", new string('Z', 65) })

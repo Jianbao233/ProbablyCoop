@@ -90,6 +90,9 @@ internal static class NativeActorPersistence
         if (!ReferenceEquals(attempt.Session.Store, store) || attempt.Pending != null || !attempt.Session.CanCommit)
             throw new InvalidOperationException("Cooperative save capture was repeated or is no longer settled.");
         var session = attempt.Session;
+        if (NativeInventoryPilot.AuthoritativeCampaign &&
+            store.modData.TryGetValue(NativeEffectCampaign.SaveKey, out var schema) && schema == NativeEffectCampaign.SaveSchema)
+            NativeInventoryPilot.ActiveCampaign.StoreIdentityWatermarks(store);
         var carried = new HashSet<GameItem>(session.Carry.GetAllCarriedItems());
         var shared = session.Carry.Source.GetAllItems().Where(item => item != null && !carried.Contains(item) && item.uniqueId > 0)
             .Select(item => item.uniqueId).ToArray();
@@ -152,7 +155,6 @@ internal static class NativeActorPersistence
             if (NativeGuest.Active || data == null) return;
             int slot = data.saveSlot;
             var registered = CoopRun.RegisteredRunsAtSlot(slot);
-            if (registered.Count == 0) return;
             if (loading != null) throw new InvalidOperationException("Nested cooperative native load.");
             var value = ReadLoadEnvelope(SaveFiles.ResolveLoadFile(data), slot, registered, prepared);
             if (value == null) return; // Rev12 repair or rediscovery may reuse the numeric slot.
@@ -298,6 +300,10 @@ internal static class NativeActorPersistence
                 Debug.Log("[probably_coop QA] PASS prepared-load-image confirmed checkpoint matches the native file bytes");
             return verified;
         }
+        bool cooperative=NativeCoopSaveRecovery.HasActorPayload(bytes,settings,out var actualRun,out int storedSlot);
+        if(cooperative && (!registered.Contains(actualRun) || storedSlot!=slot || Path.GetFileName(file)!=SaveFiles.Slot(slot)))
+            throw new InvalidDataException("此文件包含合作角色，但合作登记、内部槽位不匹配，或选择了历史检查点。请从「双人合伙店 → 继续合作档」验证并恢复，不能按单人档载入。");
+        if(!cooperative && registered.Count==0) return null;
         using var reader = ES3Reader.Create(bytes, settings);
         var receipt=NativeActorCheckpoint.ReadReceipt(reader,registered.Contains);
         return receipt==null ? null : NativeActorCheckpoint.DecodeReceipt(receipt,receipt.Run,slot,receipt.Day);

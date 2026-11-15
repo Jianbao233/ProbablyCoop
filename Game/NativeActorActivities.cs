@@ -429,8 +429,8 @@ internal static class NativeActorPhoneOrigin
         yield return AccessTools.Method(typeof(PhoneUIManager), nameof(PhoneUIManager.AutoCall));
         yield return AccessTools.Method(typeof(PhoneUIManager), nameof(PhoneUIManager.PressNumber));
     }
-    private static void Postfix(PhoneUIManager __instance)
-    { if (NativeActorContinuations.PhoneAlive(__instance)) NativeActorContinuations.Phone(__instance, true); }
+    private static void Postfix(PhoneUIManager __instance, bool __runOriginal)
+    { if (__runOriginal && NativeActorContinuations.PhoneAlive(__instance)) NativeActorContinuations.Phone(__instance, true); }
 }
 
 [HarmonyPatch]
@@ -451,5 +451,6 @@ internal static class NativeActorPhoneRetirement
     {
         foreach (string method in new[] { "StopCall", "OnPhoneDialogEnd", "NoNumber" }) yield return AccessTools.Method(typeof(PhoneUIManager), method);
     }
-    private static void Postfix(PhoneUIManager __instance) => NativeActorSession.Current?.Activities.Retire(__instance, "phone-call");
+    private static void Postfix(PhoneUIManager __instance, bool __runOriginal)
+    { if (__runOriginal) NativeActorSession.Current?.Activities.Retire(__instance, "phone-call"); }
 }

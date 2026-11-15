@@ -36,12 +36,11 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     private uint nextQuote;
     private uint offerId;
     private bool allowNativeEnd;
-    private int previousDay;
     private byte[] previousSave;
-    private double settleDeadline;
+    private DaySettlement settlement;
     private ShopDay phase;
-    private bool checkpointWritten;
     private string[] morningReport = Array.Empty<string>();
+    private bool morningReportCaptured;
     internal string[] FullMorningReport { get; private set; } = Array.Empty<string>();
     internal int FullMorningReportDay { get; private set; }
     private bool failedMutation;
@@ -58,6 +57,9 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     internal bool Matches(PlayerStore player) => ReferenceEquals(store, player) &&
         player.runID == runId && player.saveSlotId == slot;
     internal bool Settling => phase == ShopDay.Settling;
+    internal bool PendingSettlement => settlement?.Pending == true;
+    internal bool BlocksWorldCommands => PendingSettlement || failedMutation ||
+        phase is ShopDay.Settling or ShopDay.SaveUnverified or ShopDay.Ended;
     internal int GuestMaxRemove(GameItem item)
     {
         bool previous=committingHeld;
@@ -78,7 +80,19 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     {
         if (heldItem != null && (!connected || Time.realtimeSinceStartupAsDouble >= holdExpires))
             ClearHold();
-        if (Settling && Time.realtimeSinceStartupAsDouble >= settleDeadline)
+        var attempt = settlement;
+        if (attempt?.Pending != true) return;
+        if (!HasSettlementContext(attempt))
+        {
+            FailSettlement(attempt);
+            if (NativeActorSession.Current?.Terminal == true) SetDayPhase(ShopDay.Ended);
+            return;
+        }
+        var actors = NativeActorSession.Current;
+        if (StoreStation.Instance.dayCounter == attempt.ExpectedDay &&
+            actors?.CanCommit != false && actors?.TransitionActive != true && attempt.TryComplete())
+            SetDayPhase(ShopDay.Saved);
+        else if (attempt.Expire(Time.realtimeSinceStartupAsDouble))
             SetDayPhase(ShopDay.SaveUnverified);
     }
 
@@ -581,11 +595,11 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         {
             previousSave = HashSlot();
             if (previousSave == null) return ShopResult.Failed;
-            previousDay = StoreStation.Instance.dayCounter;
-            checkpointWritten = false;
+            settlement = new DaySettlement(store, runId, slot, NativeActorSession.Current,
+                StoreStation.Instance.dayCounter, Time.realtimeSinceStartupAsDouble + 20);
             morningReport = Array.Empty<string>();
+            morningReportCaptured = false;
             FullMorningReport=Array.Empty<string>(); FullMorningReportDay=0;
-            settleDeadline = Time.realtimeSinceStartupAsDouble + 20;
             NativeWorld.Host?.EndSharedPhone();
             SetDayPhase(ShopDay.Settling);
             Gate = this;
@@ -595,6 +609,7 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         }
         catch (Exception ex)
         {
+            settlement?.Fail();
             SetDayPhase(ShopDay.SaveUnverified);
             Debug.LogError($"[probably_coop] day transition exception: {ex}");
             return ShopResult.Failed;
@@ -602,27 +617,59 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         finally { allowNativeEnd = false; }
     }
 
-    private void VerifyCheckpoint(PlayerStore savedStore)
+    private bool HasSettlementContext(DaySettlement attempt) => Active && !failedMutation &&
+        attempt.Matches(store, store.runID, store.saveSlotId, NativeActorSession.Current) &&
+        attempt.AcceptsDay(StoreStation.Instance.dayCounter) &&
+        NativeActorSession.Current?.Faulted != true && NativeActorSession.Current?.Terminal != true;
+
+    private void FailSettlement(DaySettlement attempt)
     {
-        if (!Settling || !Matches(savedStore) || StoreStation.Instance.dayCounter != previousDay + 1) return;
+        if (!ReferenceEquals(settlement, attempt) || !attempt.Pending) return;
+        attempt.Fail();
+        if (phase != ShopDay.Ended) SetDayPhase(ShopDay.SaveUnverified);
+    }
+
+    private sealed class SettlementHook
+    {
+        internal readonly NativeShop Shop;
+        internal readonly DaySettlement Attempt;
+        internal SettlementHook(NativeShop shop, DaySettlement attempt) { Shop = shop; Attempt = attempt; }
+        internal void Fail() => Shop.FailSettlement(Attempt);
+    }
+
+    private SettlementHook CaptureSettlement(PlayerStore player)
+    {
+        var attempt = settlement;
+        if (attempt?.Pending != true || !ReferenceEquals(store, player)) return null;
+        if (!HasSettlementContext(attempt)) { FailSettlement(attempt); return null; }
+        return StoreStation.Instance.dayCounter == attempt.ExpectedDay ? new SettlementHook(this, attempt) : null;
+    }
+
+    private void VerifyCheckpoint(DaySettlement attempt, PlayerStore savedStore, bool ranOriginal)
+    {
+        if (!ReferenceEquals(settlement, attempt) || !attempt.Pending) return;
+        if (!ranOriginal || !HasSettlementContext(attempt) || !Matches(savedStore) ||
+            StoreStation.Instance.dayCounter != attempt.ExpectedDay) { FailSettlement(attempt); return; }
         try
         {
             var file = HashSlot();
-            if (file == null || file.AsSpan().SequenceEqual(previousSave)) return;
-            checkpointWritten = CoopRun.VerifyCheckpoint(store, previousDay + 1);
+            if (file == null || file.AsSpan().SequenceEqual(previousSave) ||
+                !CoopRun.VerifyCheckpoint(store, attempt.ExpectedDay)) { FailSettlement(attempt); return; }
+            attempt.ConfirmSave(true);
         }
         catch (Exception ex)
         {
-            checkpointWritten = false;
+            FailSettlement(attempt);
             Debug.LogWarning($"[probably_coop] saved checkpoint could not be read: {ex.Message}");
         }
     }
 
-    private void FinishDay()
+    private void FinishDay(DaySettlement attempt, bool ranOriginal)
     {
-        if (Settling)
-            SetDayPhase(checkpointWritten && Active && StoreStation.Instance.dayCounter == previousDay + 1
-                ? ShopDay.Saved : ShopDay.SaveUnverified);
+        if (!ReferenceEquals(settlement, attempt) || !attempt.Pending) return;
+        if (!ranOriginal || !HasSettlementContext(attempt) || StoreStation.Instance.dayCounter != attempt.ExpectedDay)
+        { FailSettlement(attempt); return; }
+        attempt.ConfirmMorning(true);
     }
 
     private byte[] HashSlot()
@@ -704,23 +751,41 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     [HarmonyPatch(typeof(PlayerStore), nameof(PlayerStore.SaveGame))]
     private static class VerifyNativeSave
     {
-        private static void Postfix(PlayerStore __instance) => Gate?.VerifyCheckpoint(__instance);
+        [HarmonyPriority(Priority.First + 1)]
+        private static void Prefix(PlayerStore __instance, out SettlementHook __state) =>
+            __state = Gate?.CaptureSettlement(__instance);
+        private static void Postfix(PlayerStore __instance, bool __runOriginal, SettlementHook __state) =>
+            __state?.Shop.VerifyCheckpoint(__state.Attempt, __instance, __runOriginal);
+        private static Exception Finalizer(SettlementHook __state, Exception __exception)
+        {
+            if (__exception != null) __state?.Fail();
+            return __exception;
+        }
     }
 
     [HarmonyPatch(typeof(StartOfDayUIManager), nameof(StartOfDayUIManager.OpenUI))]
     private static class FinishAfterNativeWake
     {
-        private static void Prefix()
+        [HarmonyPriority(Priority.First)]
+        private static void Prefix(out SettlementHook __state)
         {
             var shop = Gate;
-            if (shop?.Settling != true || !shop.checkpointWritten) return;
+            __state = shop?.CaptureSettlement(PlayerStore.IsInstanceExist() ? PlayerStore.Instance : null);
+            if (__state == null || shop.morningReportCaptured) return;
             var logs = shop.store.nightLogs;
             shop.FullMorningReport=logs.ToArray(); shop.FullMorningReportDay=StoreStation.Instance.dayCounter;
             int count = Math.Min(logs.Count, ShopProtocol.MaxReportLines);
             shop.morningReport = logs.GetRange(0, count).ToArray();
+            shop.morningReportCaptured = true;
         }
 
-        private static void Postfix() => Gate?.FinishDay();
+        private static void Postfix(bool __runOriginal, SettlementHook __state) =>
+            __state?.Shop.FinishDay(__state.Attempt, __runOriginal);
+        private static Exception Finalizer(SettlementHook __state, Exception __exception)
+        {
+            if (__exception != null) __state?.Fail();
+            return __exception;
+        }
     }
 
     [HarmonyPatch(typeof(PlayerStore), nameof(PlayerStore.ExecuteGameOver))]
@@ -729,12 +794,17 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         private static void Postfix(PlayerStore __instance)
         {
             var shop = Gate;
-            if (shop != null && shop.Settling && shop.Matches(__instance)) shop.SetDayPhase(ShopDay.Ended);
+            if (shop != null && shop.PendingSettlement && shop.Matches(__instance))
+            {
+                shop.settlement.Fail();
+                shop.SetDayPhase(ShopDay.Ended);
+            }
         }
     }
 
     public void Dispose()
     {
+        settlement?.Fail();
         if (ReferenceEquals(Gate, this)) Gate = null;
     }
 }

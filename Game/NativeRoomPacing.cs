@@ -15,12 +15,15 @@ internal static class NativeRoomPacing
     private static int previousRate, previousVsync;
     internal static bool PacingLocalPair => mode == Mode.LocalPair;
 
-    internal static void Update(RoomSelector room)
+    internal static void Update(RoomSelector room) =>
+        Update(room != null && (room.Busy || room.HasLobby), room?.Session?.State == LinkState.Connected,
+            room != null && room.IsLoopback);
+
+    internal static void Update(bool open, bool connected, bool loopback)
     {
         var next = Mode.Off;
-        if (!Application.isBatchMode && room != null && (room.Busy || room.HasLobby))
-            next = room.Session?.State != LinkState.Connected ? Mode.Waiting :
-                room.IsLoopback ? Mode.LocalPair : Mode.Network;
+        if (!Application.isBatchMode && open)
+            next = !connected ? Mode.Waiting : loopback ? Mode.LocalPair : Mode.Network;
         if (next == mode) return;
         if (mode == Mode.Off)
         {

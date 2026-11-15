@@ -9,6 +9,51 @@ namespace ProbablyCoop;
 
 internal static partial class NativeMirrorProbe
 {
+    // Cache only control metadata. GetValue/SetValue stay at each original call site.
+    // Keep fixed wire names separate: a missing native field still fails when used.
+    private static class ControlFields
+    {
+        internal static readonly System.Reflection.FieldInfo ScrollOverflow=AccessTools.Field(typeof(GameGridScrollableInventory),"scrollOverflow");
+        internal static readonly System.Reflection.FieldInfo SlotBackgroundImage=AccessTools.Field(typeof(GameSlotInventory),"backgroundImage");
+        internal static readonly System.Reflection.FieldInfo SlotHighlight=AccessTools.Field(typeof(GameSlotInventory),"highlight");
+        internal static readonly System.Reflection.FieldInfo SlotWidth=AccessTools.Field(typeof(GameSlotInventory),"defaultGridWidth");
+        internal static readonly System.Reflection.FieldInfo SlotHeight=AccessTools.Field(typeof(GameSlotInventory),"defaultGridHeight");
+        internal static readonly System.Reflection.FieldInfo RowDisplayOrder=AccessTools.Field(typeof(MachineryPanelRow),"displayOrder");
+        internal static readonly System.Reflection.FieldInfo PanelRequestedWidth=AccessTools.Field(typeof(MachineryPanel),"requestedWidth");
+        internal static readonly System.Reflection.FieldInfo PanelRequestedHeight=AccessTools.Field(typeof(MachineryPanel),"requestedHeight");
+        internal static readonly System.Reflection.FieldInfo PanelMinWidth=AccessTools.Field(typeof(MachineryPanel),"minWidth");
+        internal static readonly System.Reflection.FieldInfo TextNode=AccessTools.Field(typeof(MachineryText),"textNode");
+        internal static readonly System.Reflection.FieldInfo TextMinHeight=AccessTools.Field(typeof(MachineryText),"minHeight");
+        internal static readonly System.Reflection.FieldInfo IntakeStyleInventories=AccessTools.Field(typeof(MachineryIntake),"styleInventories");
+        internal static readonly System.Reflection.FieldInfo ButtonWidth=AccessTools.Field(typeof(MachineryButton),"forceWidth");
+        internal static readonly System.Reflection.FieldInfo ButtonHeight=AccessTools.Field(typeof(MachineryButton),"forceHeight");
+        internal static readonly System.Reflection.FieldInfo RangeWidth=AccessTools.Field(typeof(MachineryRangeSlider),"forceWidth");
+        internal static readonly System.Reflection.FieldInfo RangeRequestedWidth=AccessTools.Field(typeof(MachineryRangeSlider),"requestedWidth");
+        internal static readonly System.Reflection.FieldInfo AdvButtonWidth=AccessTools.Field(typeof(AdvButtonElement),"forceWidth");
+        internal static readonly System.Reflection.FieldInfo AdvButtonHeight=AccessTools.Field(typeof(AdvButtonElement),"forceHeight");
+        internal static readonly System.Reflection.FieldInfo PushIsToggle=AccessTools.Field(typeof(PushButtonElement),"isToggle");
+        internal static readonly System.Reflection.FieldInfo PushIsLocked=AccessTools.Field(typeof(PushButtonElement),"isLocked");
+        internal static readonly System.Reflection.FieldInfo PushWidth=AccessTools.Field(typeof(PushButtonElement),"forceWidth");
+        internal static readonly System.Reflection.FieldInfo PushHeight=AccessTools.Field(typeof(PushButtonElement),"forceHeight");
+        internal static readonly System.Reflection.FieldInfo PushIsDown=AccessTools.Field(typeof(PushButtonElement),"isDown");
+        internal static readonly System.Reflection.FieldInfo LabelIcon=AccessTools.Field(typeof(MachineryLabel),"icon");
+        internal static readonly System.Reflection.FieldInfo LabelWidth=AccessTools.Field(typeof(MachineryLabel),"fixedWidth");
+        internal static readonly System.Reflection.FieldInfo TabsRequestedWidth=AccessTools.Field(typeof(MachineryTabs),"requestedWidth");
+        internal static readonly System.Reflection.FieldInfo TabsRequestedHeight=AccessTools.Field(typeof(MachineryTabs),"requestedHeight");
+        internal static readonly System.Reflection.FieldInfo SliderWidth=AccessTools.Field(typeof(MachinerySlider),"forceWidth");
+        internal static readonly System.Reflection.FieldInfo SliderRequestedWidth=AccessTools.Field(typeof(MachinerySlider),"requestedWidth");
+        internal static readonly System.Reflection.FieldInfo GridXSpacing=AccessTools.Field(typeof(GridPixelElement),"_xSpacing");
+        internal static readonly System.Reflection.FieldInfo GridYSpacing=AccessTools.Field(typeof(GridPixelElement),"_ySpacing");
+        internal static readonly System.Reflection.FieldInfo GridChildMinimumSize=AccessTools.Field(typeof(GridPixelElement),"childMinimumSize");
+        internal static readonly string[] TagLayerNames={ "textNode", "textBackgroundNode", "textUnderlineNode", "textStrikethroughNode" };
+        internal static readonly System.Reflection.FieldInfo[] TagLayers=TagLayerNames.Select(name=>AccessTools.Field(typeof(TagElement),name)).ToArray();
+        internal static readonly System.Reflection.FieldInfo[] ButtonFaces={
+            AccessTools.Field(typeof(MachineryButton),"faceNormal"), AccessTools.Field(typeof(MachineryButton),"faceHover"),
+            AccessTools.Field(typeof(MachineryButton),"facePressed"), AccessTools.Field(typeof(MachineryButton),"faceDisabled") };
+        internal static readonly System.Reflection.FieldInfo[] PushNodes={
+            AccessTools.Field(typeof(PushButtonElement),"buttonNode"), AccessTools.Field(typeof(PushButtonElement),"buttonNode2") };
+    }
+
     private sealed class SpriteIdentity
     {
         internal string Atlas, Key;
@@ -16,8 +61,8 @@ internal static partial class NativeMirrorProbe
     }
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Sprite,SpriteIdentity> SpriteIdentities = new System.Runtime.CompilerServices.ConditionalWeakTable<Sprite,SpriteIdentity>();
     private static readonly System.Reflection.FieldInfo AtlasCacheField=AccessTools.Field(typeof(RenderHandler),"atlasCache");
-    // Asset references remain declarative atlas/key pairs. No texture bytes, Unity
-    // instance ids, native pointers or callback delegates are transferred.
+    // Prefer native atlas identities. Runtime sprites use a bounded data-only
+    // image/geometry record; Unity references and callbacks never cross the wire.
     private static JObject SpriteKey(Sprite sprite,bool required=true)
     {
         using var timing=NativePerformance.Measure("host.sprite_identity");
@@ -31,6 +76,9 @@ internal static partial class NativeMirrorProbe
                 return new JObject { ["atlas"]=saved.Atlas,["sprite"]=saved.Key };
             SpriteIdentities.Remove(sprite);
         }
+        // A validated fallback keeps observing texture and mesh changes, but
+        // does not rescan every atlas on every subsequent capture.
+        if(required && NativeSpriteTransfer.HasCapture(sprite)) return CaptureRuntimeSprite(sprite);
         foreach (var atlas in cache.OrderBy(p => p.Key, StringComparer.Ordinal))
             foreach (var entry in atlas.Value.OrderBy(p => p.Key, StringComparer.Ordinal))
                 if (entry.Value == sprite)
@@ -39,24 +87,40 @@ internal static partial class NativeMirrorProbe
                     return new JObject { ["atlas"] = atlas.Key, ["sprite"] = entry.Key };
                 }
         if(!required) return null;
-        throw new NotSupportedException("Sprite lacks a native atlas identity: " + sprite.name);
+        return CaptureRuntimeSprite(sprite);
     }
-    private static Sprite ReadSprite(JObject data) => data == null ? null : RenderHandler.LoadFromAtlas((string)data["atlas"], (string)data["sprite"]);
+    private static JObject CaptureRuntimeSprite(Sprite sprite)
+    {
+        try { return NativeSpriteTransfer.Capture(sprite); }
+        catch(Exception ex) { throw new NotSupportedException("Cannot synchronize sprite for item ["+Context?.CaptureOwner?.identifier+"]: "+ex.Message,ex); }
+    }
+    private static Sprite ReadSprite(JObject data) => data == null ? null : data["inline"]!=null
+        ? NativeSpriteTransfer.Read(data) : RenderHandler.LoadFromAtlas((string)data["atlas"], (string)data["sprite"]);
 
     // A liquid surface, label, or machine overlay is a native render result.
     // Send the resolved layers so the guest can also render them on its held item.
     private const int MaximumItemSpriteModifiers=128;
     private static JArray CaptureSpriteModifiers(GameItem item)
     {
-        var layers=item.getItemSpriteModifierForItemFunc?.Invoke(item);
+        var frozen=FreezeSpriteModifiers(item);
+        return frozen==null ? null : new JArray(frozen.Select(layer=>layer.Materialize()));
+    }
+
+    private static NativeDeferredFields.SpriteLayer[] FreezeSpriteModifiers(GameItem item)
+    {
+        List<ItemSpriteModifier> layers;
+        using(NativePerformance.Detailed ? NativePerformance.Measure("host.sprite_callback") : default)
+            layers=item.getItemSpriteModifierForItemFunc?.Invoke(item);
         if(layers==null || layers.Count==0) return null;
         if(layers.Count>MaximumItemSpriteModifiers)
             throw new InvalidOperationException("Too many native item sprite layers");
-        return new JArray(layers.Where(layer=>layer.sprite!=null).Select(layer=>new JObject {
-            ["image"]=SpriteKey(layer.sprite),["x"]=layer.position.x,["y"]=layer.position.y,
-            ["rotation"]=layer.orientation,["flip"]=layer.isFlipped,["priority"]=layer.priority,["mask"]=layer.haveMask,
-            ["color"]=new JArray(layer.color.r,layer.color.g,layer.color.b,layer.color.a)
-        }));
+        using var timing=NativePerformance.Detailed ? NativePerformance.Measure("host.sprite_freeze") : default;
+        var frozen=new List<NativeDeferredFields.SpriteLayer>(layers.Count);
+        foreach(var layer in layers)
+            if(layer.sprite!=null) frozen.Add(new NativeDeferredFields.SpriteLayer(
+                SpriteKey(layer.sprite),layer.position.x,layer.position.y,layer.orientation,layer.isFlipped,
+                layer.priority,layer.haveMask,layer.color.r,layer.color.g,layer.color.b,layer.color.a));
+        return frozen.ToArray();
     }
 
     private static List<ItemSpriteModifier> ReadSpriteModifiers(JArray data)
@@ -80,8 +144,8 @@ internal static partial class NativeMirrorProbe
         {
             case TagElement tag:
                 return new JObject { ["kind"] = "tag", ["fields"] = FieldData(tag,TagElementFields),
-                    ["layers"] = new JArray(new[] { "textNode", "textBackgroundNode", "textUnderlineNode", "textStrikethroughNode" }.Select(name => {
-                        var node = (TreeNodeRender)AccessTools.Field(typeof(TagElement), name).GetValue(tag);
+                    ["layers"] = new JArray(ControlFields.TagLayerNames.Select((name, index) => {
+                        var node = (TreeNodeRender)ControlFields.TagLayers[index].GetValue(tag);
                         return new JObject { ["name"] = name, ["text"] = node.text.text, ["enabled"] = node.text.enabled,
                             ["size"] = node.text.fontSize, ["style"] = (int)node.text.fontStyle,
                             ["color"] = ColorData(node.text.color), ["wrap"] = node.text.enableWordWrapping,
@@ -97,13 +161,13 @@ internal static partial class NativeMirrorProbe
                 return new JObject { ["kind"] = "rangeSlider", ["min"] = range.min, ["max"] = range.max,
                     ["step"] = range.step, ["low"] = range.low, ["high"] = range.high, ["disabled"] = range.isDisabled,
                     ["description"] = range.description, ["fill"] = range.fillWidth,
-                    ["w"] = (int)AccessTools.Field(typeof(MachineryRangeSlider), "forceWidth").GetValue(range),
-                    ["requestedW"] = (int)AccessTools.Field(typeof(MachineryRangeSlider), "requestedWidth").GetValue(range) };
+                    ["w"] = (int)ControlFields.RangeWidth.GetValue(range),
+                    ["requestedW"] = (int)ControlFields.RangeRequestedWidth.GetValue(range) };
             case AdvButtonElement button:
                 return new JObject { ["kind"] = "advButton", ["text"] = button.text,
                     ["description"] = button.description, ["hidden"] = button.isHidden,
-                    ["w"] = (int)AccessTools.Field(typeof(AdvButtonElement), "forceWidth").GetValue(button),
-                    ["h"] = (int)AccessTools.Field(typeof(AdvButtonElement), "forceHeight").GetValue(button),
+                    ["w"] = (int)ControlFields.AdvButtonWidth.GetValue(button),
+                    ["h"] = (int)ControlFields.AdvButtonHeight.GetValue(button),
                     ["normal"] = SpriteKey(button.spriteNormal,required:false),
                     ["highlight"] = SpriteKey(button.spriteHighlight,required:false),
                     ["clicked"] = SpriteKey(button.spriteClicked,required:false),
@@ -111,36 +175,36 @@ internal static partial class NativeMirrorProbe
             case PushButtonElement push:
                 return new JObject { ["kind"] = "push", ["text"] = push.text, ["color"] = (int)push.GetColor(),
                     ["textColor"] = (int)push.GetTextColor(), ["light"] = push.IsLight(), ["down"] = push.IsDown(),
-                    ["toggle"] = (bool)AccessTools.Field(typeof(PushButtonElement), "isToggle").GetValue(push),
-                    ["locked"] = (bool)AccessTools.Field(typeof(PushButtonElement), "isLocked").GetValue(push),
-                    ["w"] = (int)AccessTools.Field(typeof(PushButtonElement), "forceWidth").GetValue(push),
-                    ["h"] = (int)AccessTools.Field(typeof(PushButtonElement), "forceHeight").GetValue(push) };
+                    ["toggle"] = (bool)ControlFields.PushIsToggle.GetValue(push),
+                    ["locked"] = (bool)ControlFields.PushIsLocked.GetValue(push),
+                    ["w"] = (int)ControlFields.PushWidth.GetValue(push),
+                    ["h"] = (int)ControlFields.PushHeight.GetValue(push) };
             case MachineryLabel label:
                 return new JObject { ["kind"] = "label", ["text"] = label.GetText(),
-                    ["icon"] = SpriteKey((Sprite)AccessTools.Field(typeof(MachineryLabel), "icon").GetValue(label)),
-                    ["width"] = (int)AccessTools.Field(typeof(MachineryLabel), "fixedWidth").GetValue(label) };
+                    ["icon"] = SpriteKey((Sprite)ControlFields.LabelIcon.GetValue(label)),
+                    ["width"] = (int)ControlFields.LabelWidth.GetValue(label) };
             case MachineryTabs tabs:
                 return new JObject { ["kind"] = "tabs", ["selected"] = tabs.selected,
                     ["renameBay"] = NativeStorageTabs.TryNativeOwner(tabs,out var renameBay) ? Context?.Id(renameBay) ?? 0 : 0,
-                    ["w"] = (int)AccessTools.Field(typeof(MachineryTabs), "requestedWidth").GetValue(tabs),
-                    ["h"] = (int)AccessTools.Field(typeof(MachineryTabs), "requestedHeight").GetValue(tabs),
+                    ["w"] = (int)ControlFields.TabsRequestedWidth.GetValue(tabs),
+                    ["h"] = (int)ControlFields.TabsRequestedHeight.GetValue(tabs),
                     ["pages"] = new JArray(Enumerable.Range(0, tabs.count).Select(n => new JObject {
                         ["caption"] = tabs.GetCaption(n), ["page"] = CaptureElement(tabs.GetPage(n)) })) };
             case MachinerySlider slider:
                 return new JObject { ["kind"] = "slider", ["min"] = slider.min, ["max"] = slider.max,
                     ["step"] = slider.step, ["value"] = slider.value, ["disabled"] = slider.isDisabled,
                     ["description"] = slider.description, ["fill"] = slider.fillWidth,
-                    ["w"] = (int)AccessTools.Field(typeof(MachinerySlider), "forceWidth").GetValue(slider),
-                    ["requestedW"] = (int)AccessTools.Field(typeof(MachinerySlider), "requestedWidth").GetValue(slider) };
+                    ["w"] = (int)ControlFields.SliderWidth.GetValue(slider),
+                    ["requestedW"] = (int)ControlFields.SliderRequestedWidth.GetValue(slider) };
             case GridPixelElement grid:
                 var cells = new JArray();
                 for (int y = 0; y < grid.gridHeight; y++)
                     for (int x = 0; x < grid.gridWidth; x++) cells.Add(CaptureElement(grid.GetElement(x, y)));
                 return new JObject { ["kind"] = "layoutGrid", ["w"] = grid.gridWidth, ["h"] = grid.gridHeight,
                     ["center"] = grid.isCentered, ["justify"] = grid.justifyWidth, ["priority"] = grid.searchUsingPriority,
-                    ["spaceX"] = (int)AccessTools.Field(typeof(GridPixelElement), "_xSpacing").GetValue(grid),
-                    ["spaceY"] = (int)AccessTools.Field(typeof(GridPixelElement), "_ySpacing").GetValue(grid),
-                    ["minimums"] = JArray.FromObject((ValueTuple<int,int>[])AccessTools.Field(typeof(GridPixelElement), "childMinimumSize").GetValue(grid)),
+                    ["spaceX"] = (int)ControlFields.GridXSpacing.GetValue(grid),
+                    ["spaceY"] = (int)ControlFields.GridYSpacing.GetValue(grid),
+                    ["minimums"] = JArray.FromObject((ValueTuple<int,int>[])ControlFields.GridChildMinimumSize.GetValue(grid)),
                     ["cells"] = cells };
             default: throw new NotSupportedException("Native layout adapter missing: " + element.GetType().FullName);
         }
@@ -153,12 +217,12 @@ internal static partial class NativeMirrorProbe
                 var tag = FindExisting(data) as TagElement ?? new TagElement();
                 ApplyFields(tag, TagElementFields, (JObject)data["fields"]);
                 // Fixed local field set, not fields named by a remote sender.
-                string[] names = { "textNode", "textBackgroundNode", "textUnderlineNode", "textStrikethroughNode" };
+                var names = ControlFields.TagLayerNames;
                 for (int i = 0; i < names.Length; i++)
                 {
                     var layer = (JObject)((JArray)data["layers"])[i];
                     if ((string)layer["name"] != names[i]) throw new InvalidOperationException("Tag text layer contract mismatch");
-                    var node = (TreeNodeRender)AccessTools.Field(typeof(TagElement), names[i]).GetValue(tag);
+                    var node = (TreeNodeRender)ControlFields.TagLayers[i].GetValue(tag);
                     node.text.text = (string)layer["text"]; node.text.enabled = (bool)layer["enabled"];
                     node.text.fontSize = (float)layer["size"]; node.text.fontStyle = (TMPro.FontStyles)(int)layer["style"];
                     node.text.color = ReadColor((JArray)layer["color"]).Value;
@@ -203,13 +267,13 @@ internal static partial class NativeMirrorProbe
                 var push = (FindExisting(data) as PushButtonElement ?? new PushButtonElement()).SetText((string)data["text"], (int)data["w"], (int)data["h"])
                     .SetColor((IndicatorElement.IndicatorColor)(int)data["color"]).SetTextColor((IndicatorElement.IndicatorColor)(int)data["textColor"]);
                 if ((bool)data["light"]) push.Light(); else push.Dark();
-                AccessTools.Field(typeof(PushButtonElement), "isToggle").SetValue(push, (bool)data["toggle"]);
+                ControlFields.PushIsToggle.SetValue(push, (bool)data["toggle"]);
                 // No onDown/onUp callback exists on this replica; do not invoke activation
                 // even for layout reconstruction. Preserve the visual latch directly.
-                AccessTools.Field(typeof(PushButtonElement), "isDown").SetValue(push, (bool)data["down"]);
-                foreach (var field in new[] { "buttonNode", "buttonNode2" })
+                ControlFields.PushIsDown.SetValue(push, (bool)data["down"]);
+                foreach (var field in ControlFields.PushNodes)
                 {
-                    var node = (TreeNodeRender)AccessTools.Field(typeof(PushButtonElement), field).GetValue(push);
+                    var node = (TreeNodeRender)field.GetValue(push);
                     node.rectTransform.pivot = (bool)data["down"] ? new Vector2(1,0) : new Vector2(0,1);
                     node.rectTransform.localScale = (bool)data["down"] ? new Vector3(-1,-1,1) : Vector3.one;
                 }
@@ -217,7 +281,7 @@ internal static partial class NativeMirrorProbe
                 return push;
             case "label":
                 var label = FindExisting(data) as MachineryLabel ?? new MachineryLabel();
-                var labelIcon=(Sprite)AccessTools.Field(typeof(MachineryLabel),"icon").GetValue(label);
+                var labelIcon=(Sprite)ControlFields.LabelIcon.GetValue(label);
                 if (data["icon"] is JObject icon)
                 {
                     var sprite=ReadSprite(icon);
@@ -279,7 +343,7 @@ internal static partial class NativeMirrorProbe
                             throw new InvalidOperationException("Replica layout grid could not attach its child");
                     }
                 var minimums = ((JArray)data["minimums"]).ToObject<ValueTuple<int,int>[]>();
-                Array.Copy(minimums, (ValueTuple<int,int>[])AccessTools.Field(typeof(GridPixelElement), "childMinimumSize").GetValue(grid), minimums.Length);
+                Array.Copy(minimums, (ValueTuple<int,int>[])ControlFields.GridChildMinimumSize.GetValue(grid), minimums.Length);
                 grid.Validate(); return grid;
             default: throw new InvalidOperationException("Unknown declarative layout kind");
         }

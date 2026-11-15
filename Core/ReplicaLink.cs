@@ -10,9 +10,13 @@ internal sealed partial class ReplicaLink
     internal const int ChunkSize = 16000, MaxBytes = 4 * 1024 * 1024, MaxCommand = 4096;
     private readonly bool host;
     private readonly Func<Kind, ulong, ulong, ushort, byte[], bool> send;
-    private byte[] latest, outgoing, assembly, request;
+    internal const int ChunkIndexBits = 9, ChunkIndexMask = (1 << ChunkIndexBits) - 1;
+    private NativeSnapshotFrame latest, outgoing;
+    private byte[] assembly, request;
+    private byte[][] pages;
     private bool[] chunks;
     private int received, nextChunk;
+    private int sendingPage, receivingPage, completeBytes, receivedBytes;
     private ulong sequence, outgoingRevision, assemblingRevision, lastRequest, pending;
     private ulong pendingRevision;
     private ushort lastResult;
@@ -37,8 +41,15 @@ internal sealed partial class ReplicaLink
             ReferenceEquals(owner, link) && generation == link.generation;
     }
     internal Stamp CaptureStamp() => new Stamp(this, generation);
-    internal byte[] State { get; private set; }
-    internal byte[] FullState { get; private set; }
+    internal NativeSnapshotFrame Snapshot { get; private set; }
+    internal NativeSnapshotFrame FullSnapshot { get; private set; }
+    internal byte[] State => Snapshot?.Single;
+    internal byte[] FullState => FullSnapshot?.Single;
+    internal bool SynchronizationFailed { get; private set; }
+    private double nextFailureNotice;
+    internal (int Pages, int CompletePages, int PageBytes, int ReceivedPageBytes, int ReceivedBytes) Transfer =>
+        pages == null ? (0, 0, 0, 0, 0) :
+        (pages.Length, receivingPage, assembly?.Length ?? 0, receivedBytes, completeBytes + receivedBytes);
     internal ulong FullRevision { get; private set; }
     internal bool NeedsFull { get; private set; }
     private bool forcePublish;
@@ -75,7 +86,9 @@ internal sealed partial class ReplicaLink
     {
         ClearIndependentRequests();
         generation++;
-        latest = outgoing = assembly = request = State = FullState = null; chunks = null;
+        latest = outgoing = Snapshot = FullSnapshot = null;
+        request = null;
+        ClearAssembly();
         FullRevision=0; NeedsFull=forcePublish=false;
         requestedFull=0; retryFull=0;
         received = nextChunk = 0;
@@ -84,24 +97,33 @@ internal sealed partial class ReplicaLink
         nextProgress=0; progressed=false; gap=-1; sentThrough=0; wantProjection=appliedCommand=0;
         ResultFromProjection=false;
         RepairsSent=GapsRequested=0;
+        SynchronizationFailed=false; nextFailureNotice=0; sendingPage=0;
     }
 
     internal void Publish(byte[] value)
     {
-        if (!host || value == null || value.Length == 0 || value.Length > MaxBytes)
-            throw new ArgumentException("Invalid native snapshot");
-        if(NeedsFull && NativeRecordFrame.IsDelta(value)) return;
-        NeedsFull=false;
-        if (latest != null && latest.AsSpan().SequenceEqual(value)) return;
-        latest = (byte[])value.Clone();
+        if (value == null || value.Length is <1 or >MaxBytes) throw new ArgumentException("Invalid native snapshot");
+        Publish(new NativeSnapshotFrame(new[] { (byte[])value.Clone() }));
     }
 
-    internal ulong PublishCheckpoint(byte[] value)
+    internal void Publish(NativeSnapshotFrame value)
     {
-        if(!NativeRecordFrame.IsFull(value)) throw new ArgumentException("Expected a complete native checkpoint");
+        if (!host || value == null) throw new ArgumentException("Invalid native snapshot");
+        if(NeedsFull && value.Delta) return;
+        NeedsFull=false;
+        if (value.SameContent(latest)) return;
+        latest = value;
+    }
+
+    internal ulong PublishCheckpoint(byte[] value) =>
+        PublishCheckpoint(new NativeSnapshotFrame(new[] { (byte[])value.Clone() }));
+
+    internal ulong PublishCheckpoint(NativeSnapshotFrame value)
+    {
+        if(!value.Full) throw new ArgumentException("Expected a complete native checkpoint");
         Publish(value);
-        if(outgoing!=null && outgoing.AsSpan().SequenceEqual(value)) return outgoingRevision;
-        if(outgoing==null && !forcePublish && State!=null && ReferenceEquals(State,FullState) && State.AsSpan().SequenceEqual(value))
+        if(value.SameContent(outgoing)) return outgoingRevision;
+        if(outgoing==null && !forcePublish && ReferenceEquals(Snapshot,FullSnapshot) && value.SameContent(Snapshot))
             return FullRevision;
         forcePublish=true;
         return sequence+1;
@@ -110,12 +132,21 @@ internal sealed partial class ReplicaLink
     internal void Tick(double now, bool connected)
     {
         if (!connected) return;
+        if (SynchronizationFailed)
+        {
+            if (host && now >= nextFailureNotice)
+            {
+                send(Kind.NativeSyncFailed,0,Math.Max(Revision,outgoingRevision),0,null);
+                nextFailureNotice=now+0.5;
+            }
+            return;
+        }
         if (host)
         {
-            if (outgoing == null && latest != null && (forcePublish || State == null || !State.AsSpan().SequenceEqual(latest)))
-            { outgoing = latest; outgoingRevision = ++sequence; nextChunk = sentThrough = 0; gap=-1; retry = 0; forcePublish=false; }
+            if (outgoing == null && latest != null && (forcePublish || !latest.SameContent(Snapshot)))
+            { outgoing = latest; outgoingRevision = ++sequence; sendingPage=0; StartPage(); forcePublish=false; }
             if(outgoing==null) return;
-            int count = (outgoing.Length + ChunkSize - 1) / ChunkSize;
+            int count = ChunkCount(outgoing[sendingPage]);
             int budget=4;
             if(gap>=0)
             {
@@ -148,11 +179,21 @@ internal sealed partial class ReplicaLink
     }
     private bool SendChunk(int index)
     {
+        var page=outgoing[sendingPage];
         int offset=index*ChunkSize;
-        var payload=new byte[4+Math.Min(ChunkSize,outgoing.Length-offset)];
-        BinaryPrimitives.WriteInt32LittleEndian(payload,outgoing.Length);
-        outgoing.AsSpan(offset,payload.Length-4).CopyTo(payload.AsSpan(4));
-        return send(Kind.NativeChunk,0,outgoingRevision,(ushort)index,payload);
+        var payload=new byte[4+Math.Min(ChunkSize,page.Length-offset)];
+        BinaryPrimitives.WriteInt32LittleEndian(payload,page.Length);
+        page.AsSpan(offset,payload.Length-4).CopyTo(payload.AsSpan(4));
+        ulong serial=outgoing.Count==1 ? 0 : ((ulong)outgoing.Count << 16) | (uint)sendingPage;
+        return send(Kind.NativeChunk,serial,outgoingRevision,(ushort)index,payload);
+    }
+    private static int ChunkCount(byte[] page) => (page.Length+ChunkSize-1)/ChunkSize;
+    private void StartPage() { nextChunk=sentThrough=0; gap=-1; retry=0; }
+    internal void FailSynchronization()
+    {
+        if(!host || SynchronizationFailed) return;
+        SynchronizationFailed=true;
+        outgoing=latest=null;
     }
     internal bool ProjectionApplied(ulong through,ushort result)
     {
@@ -169,29 +210,29 @@ internal sealed partial class ReplicaLink
     }
     private void ReportProgress(double now)
     {
-        if(assembly==null && (Waiting || Revision==0)) return;
-        double interval=assembly!=null || wantProjection>appliedCommand ? 0.12 : 0.40;
+        if(pages==null && (Waiting || Revision==0)) return;
+        double interval=pages!=null || wantProjection>appliedCommand ? 0.12 : 0.40;
         if(progressed || nextProgress==0) { progressed=false; nextProgress=now+interval; return; }
         if(now<nextProgress || Revision==ulong.MaxValue) return;
         nextProgress=now+interval;
         int missing=chunks==null ? 0 : Array.IndexOf(chunks,false);
-        if(missing>=0 && send(Kind.NativeProgress,Revision,Revision+1,(ushort)missing,null)) GapsRequested++;
+        if(missing>=0 && send(Kind.NativeProgress,Revision,Revision+1,(ushort)((receivingPage<<ChunkIndexBits)|missing),null)) GapsRequested++;
     }
     private void CommitOutgoing()
     {
-        State=outgoing; outgoing=null; Revision=outgoingRevision; gap=-1;
+        Snapshot=outgoing; outgoing=null; Revision=outgoingRevision; gap=-1;
         RememberFull();
     }
     private void RememberFull()
     {
-        if(!NativeRecordFrame.IsFull(State)) return;
-        FullState=State; FullRevision=Revision;
+        if(Snapshot?.Full!=true) return;
+        FullSnapshot=Snapshot; FullRevision=Revision;
         requestedFull=0;
     }
     internal bool RequestFull(ulong failedBase)
     {
         if(host || failedBase==0 || FullRevision!=failedBase || !NativeRecordFrame.IsDelta(State)) return false;
-        FullRevision=0; FullState=null;
+        FullRevision=0; FullSnapshot=null;
         requestedFull=Revision; retryFull=0;
         return true;
     }
@@ -211,17 +252,24 @@ internal sealed partial class ReplicaLink
 
     internal bool Receive(Packet packet)
     {
+        if (packet.Kind == Kind.NativeSyncFailed && !host && packet.Revision>=Revision)
+        {
+            SynchronizationFailed=true;
+            ClearAssembly();
+            return true;
+        }
+        if (SynchronizationFailed) return false;
         if(packet.Kind==Kind.NativeNeedFull)
         {
             if(!host) return false;
-            bool sending=packet.Revision==outgoingRevision && NativeRecordFrame.IsDelta(outgoing);
+            bool sending=packet.Revision==outgoingRevision && outgoing?.Delta==true;
             bool alreadyReceived=packet.Revision>FullRevision && packet.Revision<=Revision && NativeRecordFrame.IsDelta(State);
-            if((sending || alreadyReceived) && !NativeRecordFrame.IsFull(outgoing))
+            if((sending || alreadyReceived) && outgoing?.Full!=true)
             {
                 outgoing=null; gap=-1; forcePublish=true;
                 // A replacement checkpoint may already be queued behind
                 // the rejected delta. Preserve its promised wire revision.
-                NeedsFull=!NativeRecordFrame.IsFull(latest);
+                NeedsFull=latest?.Full!=true;
                 if(NeedsFull) latest=null;
             }
             return true;
@@ -243,17 +291,23 @@ internal sealed partial class ReplicaLink
         if (host && packet.Kind == Kind.NativeAck)
         {
             if (outgoing == null) return packet.Revision == Revision;
-            if (packet.Revision != outgoingRevision) return false;
-            CommitOutgoing(); return true;
+            if (packet.Revision!=outgoingRevision || packet.Value>sendingPage) return false;
+            if (packet.Value<sendingPage) return true;
+            if (sentThrough!=ChunkCount(outgoing[sendingPage])) return false;
+            if (sendingPage+1==outgoing.Count) CommitOutgoing();
+            else { sendingPage++; StartPage(); }
+            return true;
         }
         if(packet.Kind==Kind.NativeProgress)
         {
             if(!host || packet.Serial==ulong.MaxValue || packet.Revision!=packet.Serial+1 ||
-                packet.Value>=(MaxBytes+ChunkSize-1)/ChunkSize) return false;
+                (packet.Value & ChunkIndexMask)>=(MaxBytes+ChunkSize-1)/ChunkSize) return false;
             // Repeat the last complete acknowledgement and ask for exactly one
             // missing logical chunk. Never advance a revision from a partial receipt.
-            if(outgoing!=null && packet.Serial==outgoingRevision) CommitOutgoing();
-            if(outgoing!=null && packet.Revision==outgoingRevision && packet.Value<sentThrough) gap=packet.Value;
+            if(outgoing!=null && packet.Serial==outgoingRevision && sendingPage==outgoing.Count-1 &&
+                sentThrough==ChunkCount(outgoing[sendingPage])) CommitOutgoing();
+            int page=packet.Value>>ChunkIndexBits, chunk=packet.Value & ChunkIndexMask;
+            if(outgoing!=null && packet.Revision==outgoingRevision && page==sendingPage && chunk<sentThrough) gap=chunk;
             return true;
         }
         if (host && packet.Kind == Kind.NativeCommand)
@@ -270,34 +324,77 @@ internal sealed partial class ReplicaLink
             return true;
         }
         if (host || packet.Kind != Kind.NativeChunk || packet.Revision == 0) return false;
+        return ReceiveChunk(packet);
+    }
+
+    private bool ReceiveChunk(Packet packet)
+    {
+        ulong advertised=packet.Serial>>16;
+        int pageCount=packet.Serial==0 ? 1 : (int)advertised;
+        int page=(int)(packet.Serial & 0xffff);
+        if(advertised>NativeSnapshotFrame.MaxPages || packet.Serial!=0 && pageCount<2 || page>=pageCount) return false;
         if (packet.Revision <= Revision)
-        { send(Kind.NativeAck, 0, Revision, 0, null); return true; }
+        {
+            if(packet.Revision==Revision && pageCount==Snapshot.Count)
+                send(Kind.NativeAck,0,Revision,(ushort)(Snapshot.Count-1),null);
+            return true;
+        }
         var body = packet.Payload;
         if (body == null || body.Length <= 4) return false;
         int length = BinaryPrimitives.ReadInt32LittleEndian(body);
         int offsetBytes = packet.Value * ChunkSize;
         if (length < 1 || length > MaxBytes || offsetBytes >= length ||
             body.Length != 4 + Math.Min(ChunkSize, length - offsetBytes)) return false;
-        if (assembly == null || packet.Revision > assemblingRevision)
+        if (pages==null || packet.Revision>assemblingRevision)
         {
-            assembly = new byte[length]; chunks = new bool[(length + ChunkSize - 1) / ChunkSize];
-            received = 0; assemblingRevision = packet.Revision;
+            if(page!=0) return false;
+            ClearAssembly();
+            pages=new byte[pageCount][];
+            assemblingRevision=packet.Revision;
         }
-        if (packet.Revision != assemblingRevision || assembly.Length != length) return false;
+        if (packet.Revision!=assemblingRevision || pageCount!=pages.Length || page>receivingPage) return false;
+        if (page<receivingPage)
+        { send(Kind.NativeAck,0,assemblingRevision,(ushort)page,null); return true; }
+        if (length>NativeSnapshotFrame.MaxPackedBytes-completeBytes) return RejectAssembly();
+        if (assembly==null) { assembly=new byte[length]; chunks=new bool[ChunkCount(assembly)]; }
+        if (assembly.Length!=length) return false;
         if (!chunks[packet.Value])
-        { body.AsSpan(4).CopyTo(assembly.AsSpan(offsetBytes)); chunks[packet.Value] = true; received++; progressed=true; }
+        {
+            body.AsSpan(4).CopyTo(assembly.AsSpan(offsetBytes)); chunks[packet.Value]=true;
+            received++; receivedBytes+=body.Length-4; progressed=true;
+        }
         if (received == chunks.Length)
         {
-            if(NativeRecordFrame.IsDelta(assembly) && !NativeRecordFrame.HasBase(assembly,FullRevision))
+            if(pageCount>1 && !NativeRecordFrame.IsFull(assembly)) return RejectAssembly();
+            if(pageCount==1 && NativeRecordFrame.IsDelta(assembly) && !NativeRecordFrame.HasBase(assembly,FullRevision))
             {
-                assembly=null; chunks=null;
-                send(Kind.NativeNeedFull,0,assemblingRevision,0,null);
+                ClearAssembly();
+                send(Kind.NativeNeedFull,0,packet.Revision,0,null);
                 return true;
             }
-            State = assembly; Revision = assemblingRevision; assembly = null; chunks = null;
-            RememberFull();
-            send(Kind.NativeAck, 0, Revision, 0, null);
+            pages[receivingPage++]=assembly;
+            completeBytes+=assembly.Length;
+            assembly=null; chunks=null; received=receivedBytes=0;
+            if(receivingPage==pageCount)
+            {
+                Snapshot=new NativeSnapshotFrame(pages);
+                Revision=assemblingRevision;
+                ClearAssembly();
+                RememberFull();
+            }
+            send(Kind.NativeAck,0,packet.Revision,(ushort)page,null);
         }
         return true;
+    }
+    private bool RejectAssembly()
+    {
+        ClearAssembly();
+        SynchronizationFailed=true;
+        return false;
+    }
+    private void ClearAssembly()
+    {
+        assembly=null; chunks=null; pages=null;
+        receivingPage=completeBytes=receivedBytes=received=0;
     }
 }

@@ -9,6 +9,8 @@ namespace ProbablyCoop;
 internal sealed partial class NativeWorld
 {
     private static readonly FieldInfo CustomerGrid=AccessTools.Field(typeof(StoreClientInstance),"gridInv");
+    internal static GameObject CustomerInventoryView(StoreClientInstance customer) =>
+        (CustomerGrid.GetValue(customer) as GameGridInventory)?.handler?.gameObject;
     private StoreClientInstance replicaCustomer;
     private uint replicaCustomerId;
     private GameObject qaRetiredGrid;

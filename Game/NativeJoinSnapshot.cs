@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using Newtonsoft.Json.Linq;
 using ProbablyCoop.Core;
 
@@ -14,7 +15,20 @@ internal static class NativeJoinSnapshot
         bool delta = NativeRecordFrame.IsDelta(frame);
         if (delta && (full == null || !NativeRecordFrame.IsFull(full)))
             throw new InvalidDataException("Missing cooperative join checkpoint");
-        var state = NativeSnapshotCodec.Unpack(delta ? NativeRecordFrame.Body(frame, fullRevision) : frame);
+        return ReadContract(NativeSnapshotCodec.Unpack(delta ? NativeRecordFrame.Body(frame, fullRevision) : frame));
+    }
+
+    internal static (Guid Run, bool Required) Read(NativeSnapshotFrame frame,NativeSnapshotFrame full,ulong fullRevision,
+        CancellationToken cancellation=default)
+    {
+        if(frame.Delta && full?.Full!=true) throw new InvalidDataException("Missing cooperative join checkpoint");
+        var metadata=frame.Delta ? NativeRecordFrame.Body(frame.First,fullRevision) : frame.First;
+        return ReadContract(frame.Count==1 ? NativeSnapshotCodec.Unpack(metadata,cancellation) :
+            NativeSnapshotPages.ReadMetadata(frame,cancellation));
+    }
+
+    private static (Guid Run, bool Required) ReadContract(JObject state)
+    {
         if (state["actors"] is not JObject actors || actors["run"]?.Type != JTokenType.String ||
             !Guid.TryParse((string)actors["run"], out var run) || run == Guid.Empty ||
             state["partnerSetupRequired"]?.Type != JTokenType.Boolean)

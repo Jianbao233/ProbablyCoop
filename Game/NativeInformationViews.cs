@@ -41,12 +41,16 @@ internal static class ReplicaNewsView
 
 [HarmonyPatch(typeof(StoreReputation),nameof(StoreReputation.UpdateReputation))]
 internal static class ReplicaReputationRules
-{ private static bool Prefix() => !NativeGuest.Active; }
+{
+    private static bool Prefix() => !ReplicaReputationView.IsReplica;
+}
 
 internal static class ReplicaReputationView
 {
     private static readonly ConditionalWeakTable<ReputationElement,StoreReputation> rows=new ConditionalWeakTable<ReputationElement,StoreReputation>();
     private static StoreReputationPerk hovered;
+    internal static bool IsReplica => NativeGuest.Active || NativeInventoryPilot.CampaignReplica;
+
     internal static void Refresh()
     {
         var ui=ReputationUIManager.Instance;
@@ -62,11 +66,28 @@ internal static class ReplicaReputationView
     }
     [HarmonyPatch(typeof(ReputationElement),nameof(ReputationElement.Init))]
     private static class Bind
-    { private static void Postfix(ReputationElement __instance,StoreReputation storeReputation) { if(!NativeGuest.Active) return; rows.Remove(__instance); rows.Add(__instance,storeReputation); } }
+    {
+        private static void Postfix(ReputationElement __instance, StoreReputation storeReputation)
+        {
+            if (!IsReplica) return;
+            rows.Remove(__instance);
+            rows.Add(__instance, storeReputation);
+        }
+    }
     [HarmonyPatch(typeof(ReputationUIManager),nameof(ReputationUIManager.UpdateToolTipContent))]
     private static class Hover
-    { private static void Postfix(StoreReputationPerk perk) { if(NativeGuest.Active) hovered=perk; } }
+    {
+        private static void Postfix(StoreReputationPerk perk)
+        {
+            if (IsReplica) hovered = perk;
+        }
+    }
     [HarmonyPatch(typeof(ReputationUIManager),nameof(ReputationUIManager.OpenUI))]
     private static class Open
-    { private static void Prefix() { if(NativeGuest.Active) hovered=null; } }
+    {
+        private static void Prefix()
+        {
+            if (IsReplica) hovered = null;
+        }
+    }
 }

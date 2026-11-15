@@ -106,12 +106,12 @@ internal sealed partial class NativeBackgroundQa
         {
             var world=NativeWorld.Guest;
             Require(Enabled && IsGuestProduct && world.Ready && !world.HasPendingWork &&
-                connection?.State==LinkState.Connected && connection.Native.State!=null &&
+                connection?.State==LinkState.Connected && connection.Native.Snapshot!=null &&
                 PlayerStore.Instance.saveSlotId==-1 && world.RemoteHostActor!=null &&
                 ReferenceEquals(EmporiumEntry.Instance.afterhourPocketSlotInvBackpack,
                     world.ActorCarry.Get(NativeActorRun.Slot.Partner,NativeActorInventory.CarrySlot.Backpack)),
                 "nightly Guest actor snapshot is not the current slot-free Partner frontend");
-            var join=NativeJoinSnapshot.Read(connection.Native.State,connection.Native.FullState,connection.Native.FullRevision);
+            var join=NativeJoinSnapshot.Read(connection.Native.Snapshot,connection.Native.FullSnapshot,connection.Native.FullRevision);
             Require(!join.Required,"nightly Guest partner character was not configured");
             personal=new JObject { ["schema"]=1,["run"]=join.Run.ToString("D"),
                 ["actors"]=new JArray(world.RemoteHostActor.Serialize(),NativeActorState.Capture(PlayerStore.Instance).Serialize()) };

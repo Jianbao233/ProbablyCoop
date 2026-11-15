@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using ProbablyCoop.Sync;
 using ES3Internal;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -75,6 +76,7 @@ internal static class NativeActorCheckpoint
         internal int Slot;
         internal int Day;
         internal int CurrentUniqueId;
+        internal EffectItemIds? EffectWatermarks;
         internal string Encoded;
         internal string PartnerSetup;
         internal JObject NativeHost;
@@ -237,7 +239,11 @@ internal static class NativeActorCheckpoint
         if (!string.Equals(receipt.PartnerSetup, decoded.PartnerSetup, StringComparison.Ordinal))
             throw Invalid("loaded partner setup/checkpoint mismatch");
         ValidateRoots(Parse(decoded.Encoded, MaximumEnvelopeCharacters), sharedIds, out var carryIds);
-        if (receipt.CurrentUniqueId < 0 || sharedIds.Concat(carryIds).Any(id => id > receipt.CurrentUniqueId))
+        var ids = sharedIds.Concat(carryIds);
+        if (receipt.CurrentUniqueId < 0 || receipt.EffectWatermarks is EffectItemIds watermarks &&
+            (!watermarks.Valid || receipt.CurrentUniqueId >= EffectItemIds.HostStart) ||
+            ids.Any(id => receipt.EffectWatermarks is EffectItemIds ranges ? !ranges.Covers(id, receipt.CurrentUniqueId) :
+                id > receipt.CurrentUniqueId))
             throw Invalid("native unique ID generator behind items");
         return decoded;
     }
@@ -325,6 +331,12 @@ internal static class NativeActorCheckpoint
                         var modData = body.Read<Dictionary<string, string>>();
                         if (modData == null || !modData.TryGetValue(ModDataKey, out receipt.Encoded)) throw Invalid("missing coop entry");
                         receipt.PartnerSetup = ReadPartnerSetup(modData);
+                        if (modData.TryGetValue(EffectItemIds.SaveKey, out string allocation))
+                        {
+                            if (!modData.TryGetValue(EffectItemIds.RunKey, out var mode) || mode != EffectItemIds.RunSchema ||
+                                !EffectItemIds.TryRead(allocation, out var watermarks)) throw Invalid("effect item ID watermarks");
+                            receipt.EffectWatermarks = watermarks;
+                        }
                         break;
                     default:
                         if (NativeInventoryFields.Contains(name)) receipt.NativeInventories.Add(name, body.Read<string>());

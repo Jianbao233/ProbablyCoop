@@ -75,5 +75,5 @@ internal static class ReplicaSecurityNoArrivalBusiness
         yield return AccessTools.Method(typeof(StoreUIManager),nameof(StoreUIManager.OnGenericArrived));
         yield return AccessTools.Method(typeof(StoreUIManager),nameof(StoreUIManager.OnGenericLeft));
     }
-    private static bool Prefix() => !NativeGuest.Active;
+    private static bool Prefix() => !NativeGuest.Active && !NativeInventoryPilot.CampaignReplica;
 }

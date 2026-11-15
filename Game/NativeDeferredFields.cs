@@ -14,6 +14,8 @@ namespace ProbablyCoop;
 internal sealed class NativeDeferredFields
 {
     internal const int MaxValues=500000;
+    private readonly int totalBudget, recordBudget;
+    private int RemainingValues=>Math.Min(MaxValues,totalBudget-values);
     private sealed class Contract
     {
         internal readonly string[] Names;
@@ -148,6 +150,32 @@ internal sealed class NativeDeferredFields
     }
     private readonly StockCache tagCache,shapeCache,fieldCache;
     internal bool HasItemFieldCache=>fieldCache!=null;
+    // The capture thread resolves a sprite into an exclusively owned data-only
+    // identity. Layers retain no native renderer, callback, or Unity value.
+    internal sealed class SpriteLayer
+    {
+        internal readonly JObject Image;
+        internal readonly float X,Y,R,G,B,A;
+        internal readonly int Rotation,Priority;
+        internal readonly bool Flip,Mask;
+        private int consumed;
+        internal SpriteLayer(JObject image,float x,float y,int rotation,bool flip,int priority,bool mask,
+            float r,float g,float b,float a)
+        {
+            if(image==null || image.Parent!=null) throw new InvalidOperationException("Sprite identity must be exclusively owned");
+            Image=image; X=x; Y=y; Rotation=rotation; Flip=flip; Priority=priority; Mask=mask;
+            R=r; G=g; B=b; A=a;
+        }
+        internal JObject Materialize()
+        {
+            if(Interlocked.Exchange(ref consumed,1)!=0 || Image.Parent!=null)
+                throw new InvalidOperationException("Frozen sprite layer was already consumed");
+            return new JObject {
+                ["image"]=Image,["x"]=X,["y"]=Y,["rotation"]=Rotation,["flip"]=Flip,
+                ["priority"]=Priority,["mask"]=Mask,["color"]=new JArray(R,G,B,A)
+            };
+        }
+    }
     // Only the item values are collected on Unity's thread. Construct the
     // ordered JSON properties on the encoding worker after ownership transfer.
     internal sealed class ItemRow
@@ -155,12 +183,13 @@ internal sealed class NativeDeferredFields
         internal readonly JObject Target=new JObject();
         internal JObject Fields,State,Modified,Shape,ModifiedShape,Content,Examine;
         internal JArray Types,Features,SpriteModifiers;
+        internal SpriteLayer[] FrozenSpriteModifiers;
         internal JToken Tooltip,Advanced;
         internal uint Owner;
         internal bool MayRemove;
         internal int MaxRemove,Abilities,FrontendKind;
         internal string Move,Contents;
-        internal bool IsPlain=>Content==null && Examine==null && SpriteModifiers==null && Features?.Count==0 && Fields!=null && State!=null &&
+        internal bool IsPlain=>Content==null && Examine==null && SpriteModifiers==null && FrozenSpriteModifiers==null && Features?.Count==0 && Fields!=null && State!=null &&
             Modified!=null && Shape!=null && ModifiedShape!=null && Types!=null && Tooltip!=null && Advanced!=null;
         internal void AddComponentRoots(HashSet<JToken> roots)
         {
@@ -172,6 +201,18 @@ internal sealed class NativeDeferredFields
         {
             var entity=Target.Property("entity");
             if(entity==null || Target.Count!=1) throw new InvalidOperationException("Native item identity was modified");
+            if(FrozenSpriteModifiers!=null)
+            {
+                if(SpriteModifiers!=null || FrozenSpriteModifiers.Length>128)
+                    throw new InvalidOperationException("Invalid frozen native sprite layers");
+                var modifiers=new JArray();
+                foreach(var layer in FrozenSpriteModifiers)
+                {
+                    if(layer==null) throw new InvalidOperationException("Missing frozen native sprite layer");
+                    modifiers.Add(layer.Materialize());
+                }
+                SpriteModifiers=modifiers;
+            }
             entity.Remove();
             Target.Add("fields",Fields); Target.Add("state",State); Target.Add("modified",Modified);
             Target.Add("shape",Shape); Target.Add("modifiedShape",ModifiedShape); Target.Add("types",Types);
@@ -225,7 +266,7 @@ internal sealed class NativeDeferredFields
     internal JObject StageItem(ItemRow row)
     {
         RequireCaptureThread();
-        if(!WorkerItems || sealedCapture || itemRows.Count>=MaxValues) throw new InvalidOperationException("Invalid staged item");
+        if(!WorkerItems || sealedCapture || itemRows.Count>=recordBudget) throw new InvalidOperationException("Invalid staged item");
         itemRows.Add(row);
         return row.Target;
     }
@@ -237,8 +278,17 @@ internal sealed class NativeDeferredFields
         itemRows.Clear();
     }
     internal bool PresentationRows { get; }
-    internal NativeDeferredFields(bool presentationRows=true, StockCache tagCache=null, StockCache shapeCache=null,bool workerItems=false,StockCache fieldCache=null)
-    { PresentationRows=presentationRows; this.tagCache=tagCache; this.shapeCache=shapeCache; WorkerItems=workerItems; this.fieldCache=fieldCache; }
+    internal NativeDeferredFields(bool presentationRows=true,StockCache tagCache=null,StockCache shapeCache=null,
+        bool workerItems=false,StockCache fieldCache=null,bool pagedSnapshots=false)
+    {
+        PresentationRows=presentationRows; this.tagCache=tagCache; this.shapeCache=shapeCache;
+        WorkerItems=workerItems; this.fieldCache=fieldCache;
+        // A capture may span pages, while each individual copied component
+        // remains bounded just as before. The encoder also checks each page
+        // and the complete checkpoint's actual expansion cost.
+        totalBudget=pagedSnapshots ? NativeSnapshotPages.MaxNodes : MaxValues;
+        recordBudget=pagedSnapshots ? NativeSnapshotPages.MaxRecords : MaxValues;
+    }
     private static readonly string[] TooltipNames={"nakedText","richTextForeground","richTextBackground","richTextUnderline",
         "richTextStrikethrough","recommendedWidth","recommendedHeight","isTruncated"};
     private static readonly string[] ShapeNames={"x","y","w","h","flip","rotation","outside","cells"};
@@ -247,7 +297,7 @@ internal sealed class NativeDeferredFields
         int width,int height,bool truncated)
     {
         RequireCaptureThread();
-        if(sealedCapture || TooltipNames.Length>MaxValues-values) throw new InvalidOperationException("Invalid deferred tooltip");
+        if(sealedCapture || TooltipNames.Length>RemainingValues) throw new InvalidOperationException("Invalid deferred tooltip");
         // Strings are immutable; the worker owns these scalar values and
         // never needs to touch the native item, renderer, or RichText object.
         var target=ObjectMarker();
@@ -261,7 +311,7 @@ internal sealed class NativeDeferredFields
     internal JObject CaptureCachedFields<T>(T source,FieldInfo[] fields,Func<T,object[],object[]> read) where T:class
     {
         RequireCaptureThread();
-        if(sealedCapture || fieldCache==null || source==null || fields==null || fields.Length>MaxValues-values)
+        if(sealedCapture || fieldCache==null || source==null || fields==null || fields.Length>RemainingValues)
             throw new InvalidOperationException("Invalid immutable item field capture");
         var contract=Contracts.GetValue(fields,key=>new Contract(key));
         var table=fieldCache.ItemFields.GetOrCreateValue(source);
@@ -279,7 +329,7 @@ internal sealed class NativeDeferredFields
         RequireCaptureThread();
         if(sealedCapture) throw new InvalidOperationException("Deferred capture already sealed");
         if(source==null || fields==null) throw new ArgumentNullException();
-        if(fields.Length>MaxValues-values) throw new InvalidOperationException("Deferred field budget exceeded");
+        if(fields.Length>RemainingValues) throw new InvalidOperationException("Deferred field budget exceeded");
         var contract=Contracts.GetValue(fields,key=>new Contract(key));
         var frozen=new object[fields.Length];
         if(read==null)
@@ -293,7 +343,7 @@ internal sealed class NativeDeferredFields
     internal JObject CaptureBusinessFields(object source,FieldInfo[] fields)
     {
         RequireCaptureThread();
-        if(sealedCapture || source==null || fields==null || fields.Length>MaxValues-values)
+        if(sealedCapture || source==null || fields==null || fields.Length>RemainingValues)
             throw new InvalidOperationException("Invalid deferred business fields");
         var contract=CollectionContracts.GetValue(fields,key=>new Contract(key,true));
         var frozen=new object[fields.Length];
@@ -302,7 +352,7 @@ internal sealed class NativeDeferredFields
         {
             var value=fields[i].GetValue(source);
             int elements=value is System.Collections.ICollection list ? list.Count : 0;
-            if(elements>MaxValues-values-count) throw new InvalidOperationException("Deferred business value budget exceeded");
+            if(elements>RemainingValues-count) throw new InvalidOperationException("Deferred business value budget exceeded");
             count+=elements;
             frozen[i]=value switch {
                 List<int> ints=>ints.ToArray(),List<string> strings=>strings.ToArray(),
@@ -342,7 +392,7 @@ internal sealed class NativeDeferredFields
         RequireCaptureThread();
         if(sealedCapture) throw new InvalidOperationException("Deferred capture already sealed");
         if(source==null || fields==null) throw new ArgumentNullException();
-        if(fields.Length==0 || source.Count>(MaxValues-values)/fields.Length)
+        if(fields.Length==0 || source.Count>RemainingValues/fields.Length)
             throw new InvalidOperationException("Deferred field map budget exceeded");
         var contract=Contracts.GetValue(fields,key=>new Contract(key));
         var keys=new string[source.Count];
@@ -373,7 +423,7 @@ internal sealed class NativeDeferredFields
     {
         RequireCaptureThread();
         if(sealedCapture) throw new InvalidOperationException("Deferred capture already sealed");
-        if(source.Length>MaxValues-values) throw new InvalidOperationException("Deferred byte array budget exceeded");
+        if(source.Length>RemainingValues) throw new InvalidOperationException("Deferred byte array budget exceeded");
         var target=ArrayMarker();
         blocks.Add(new Block {Target=target,Bytes=source.ToArray()});
         values+=source.Length;
@@ -382,7 +432,7 @@ internal sealed class NativeDeferredFields
     internal JArray CaptureStrings(List<string> source)
     {
         RequireCaptureThread();
-        if(sealedCapture || source==null || source.Count>MaxValues-values)
+        if(sealedCapture || source==null || source.Count>RemainingValues)
             throw new InvalidOperationException("Invalid native string list");
         if(source.Count==0) return new JArray();
         var target=ArrayMarker();
@@ -394,7 +444,7 @@ internal sealed class NativeDeferredFields
     private byte[] ReadCells<T>(T source,int count,FillCells<T> fill)
     {
         RequireCaptureThread();
-        if(sealedCapture || fill==null || count<0 || count>MaxValues-values)
+        if(sealedCapture || fill==null || count<0 || count>RemainingValues)
             throw new InvalidOperationException("Invalid deferred shape cells");
         if(shapeCache!=null && !shapeCache.ReadingShape && source is object key && !typeof(T).IsValueType)
         {
@@ -415,8 +465,10 @@ internal sealed class NativeDeferredFields
     internal JObject CaptureShape<T>(T source,int x,int y,int width,int height,bool flipped,int rotation,byte outside,
         FillCells<T> fill,JObject basis)
     {
-        if(width<0 || height<0 || width>128 || height>128 || width*height+ShapeNames.Length>MaxValues-values)
+        if(width<0 || height<0 || width>128 || height>128)
             throw new InvalidOperationException("Invalid deferred native shape");
+        if(width*height+ShapeNames.Length>RemainingValues)
+            throw new InvalidOperationException("Deferred native checkpoint capture budget exceeded");
         int count=width*height;
         var bytes=ReadCells(source,count,fill);
         object cells=bytes;
@@ -452,7 +504,7 @@ internal sealed class NativeDeferredFields
         if(sealedCapture) throw new InvalidOperationException("Deferred capture already sealed");
         if(source==null || freeze==null) throw new ArgumentNullException();
         layout=layout ?? NativeTagRow.Canonical;
-        if(source.Count>(MaxValues-values)/NativeTagRow.Names.Length)
+        if(source.Count>RemainingValues/NativeTagRow.Names.Length)
             throw new InvalidOperationException("Deferred tag table budget exceeded");
         var table=tagCache?.Tags.GetOrCreateValue(source);
         int count=source.Count;
@@ -561,7 +613,12 @@ internal sealed class NativeDeferredFields
     internal byte[] Pack(JObject root,CancellationToken cancellation=default) =>
         Pack(root,cancellation,false,null,0,out _,out _);
     internal byte[] Pack(JObject root,CancellationToken cancellation,bool records,NativeRecordBasis basis,
-        ulong revision,out NativeRecordBasis checkpoint,out int referenced,byte[] auditBasis=null)
+        ulong revision,out NativeRecordBasis checkpoint,out int referenced,byte[] auditBasis=null) =>
+        PackFrame(root,cancellation,records,basis,revision,out checkpoint,out referenced,auditBasis,false).Single;
+
+    internal Core.NativeSnapshotFrame PackFrame(JObject root,CancellationToken cancellation,bool records,NativeRecordBasis basis,
+        ulong revision,out NativeRecordBasis checkpoint,out int referenced,byte[] auditBasis=null,
+        bool allowPages=true,bool preferPages=false)
     {
         if(!sealedCapture || Interlocked.Exchange(ref consumed,1)!=0)
             throw new InvalidOperationException("Deferred capture is not available for encoding");
@@ -612,36 +669,50 @@ internal sealed class NativeDeferredFields
                     throw new InvalidOperationException("Deferred field destination left its captured graph");
             }
             FinishUpgradeProof(lookup,cancellation);
-            if(!records) return NativeSnapshotBinary.Pack(root,cancellation,lookup);
+            if(!records) return Single(NativeSnapshotBinary.Pack(root,cancellation,lookup));
             if(incremental)
             {
                 byte[] expected=auditBasis==null ? null : NativeSnapshotBinary.Pack(root,cancellation,lookup);
                 var reused=basis.ReferenceUnchanged(root,lookup,cancellation,verified);
                 if(reused.Count>0)
                 {
-                    var delta=NativeSnapshotBinary.Pack(root,cancellation,lookup);
-                    if(delta.Length<=Core.ReplicaLink.MaxBytes-12)
+                    bool published=false;
+                    try
                     {
-                        if(expected!=null && !expected.AsSpan().SequenceEqual(NativeRecordBasis.ExpandForAudit(delta,auditBasis,cancellation)))
-                            throw new InvalidDataException("Native delta differs from complete authority capture");
-                        referenced=reused.Count;
-                        if(Markers!=null && components!=null && components.Count!=0)
-                            foreach(var block in blocks)
-                                if(components.Contains(block.Target)) Markers.Reclaim(block.Target);
-                        return Core.NativeRecordFrame.Delta(delta,revision);
+                        var delta=NativeSnapshotBinary.Pack(root,cancellation,lookup);
+                        if(delta.Length<=Core.ReplicaLink.MaxBytes-12)
+                        {
+                            if(expected!=null && !expected.AsSpan().SequenceEqual(NativeRecordBasis.ExpandForAudit(delta,auditBasis,cancellation)))
+                                throw new InvalidDataException("Native delta differs from complete authority capture");
+                            referenced=reused.Count;
+                            if(Markers!=null && components!=null && components.Count!=0)
+                                foreach(var block in blocks)
+                                    if(components.Contains(block.Target)) Markers.Reclaim(block.Target);
+                            var frame=Single(Core.NativeRecordFrame.Delta(delta,revision));
+                            published=true;
+                            return frame;
+                        }
                     }
-                    foreach(var entry in reused) entry.Row["data"]=entry.Data;
+                    catch(InvalidDataException error) when(allowPages && NativeSnapshotBinary.IsCapacity(error)) { }
+                    finally { if(!published) foreach(var entry in reused) entry.Row["data"]=entry.Data; }
                 }
                 if(verified!=null && auditBasis==null)
                     foreach(var row in itemRows) if(verified.Contains(row.Target)) row.Assemble();
             }
-            var full=NativeSnapshotBinary.Pack(root,cancellation,lookup);
+            Core.NativeSnapshotFrame full=null;
+            if(!preferPages || itemRows.Count==0)
+            {
+                try { full=Single(NativeSnapshotBinary.Pack(root,cancellation,lookup)); }
+                catch(InvalidDataException error) when(allowPages && NativeSnapshotBinary.IsCapacity(error)) { }
+            }
+            full??=NativeSnapshotPages.Pack(root,itemRows,lookup,cancellation);
             checkpoint=new NativeRecordBasis(root,lookup,itemRows);
             return full;
         }
         finally { itemRows.Clear(); blocks.Clear(); }
     }
-    private sealed class ReferenceComparer : IEqualityComparer<JToken>
+    private static Core.NativeSnapshotFrame Single(byte[] bytes)=>new Core.NativeSnapshotFrame(new[] { bytes });
+    internal sealed class ReferenceComparer : IEqualityComparer<JToken>
     {
         internal static readonly ReferenceComparer Instance=new ReferenceComparer();
         public bool Equals(JToken x,JToken y)=>ReferenceEquals(x,y);

@@ -82,7 +82,7 @@ internal sealed partial class NativeBackgroundQa
                 "Host native appraisal names are missing or raw identifiers");
             appraisalQaControl.ModifyTag(AppraisalQaNames,tag=>tag.Enable().SetString(nativeNames.ToString(Formatting.None)));
             Record("PASS appraisal-native-name-source",nativeNames.ToString(Formatting.None));
-            using(session.Enter(NativeActorRun.Slot.Host)) AppraisalItemsWindow.Open();
+            using(session.Enter(NativeActorRun.Slot.Host)) appraisalQaCertificate.ActivateSlotItem();
             Require(CustomUIManager.Instance.IsOpen("appraisal_items") && AppraisalQaToggles().Length==3,
                 "Host original rank-two appraisal window unavailable");
             appraisalQaWatching=true;

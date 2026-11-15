@@ -7,15 +7,19 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="QaDesktop.cs" />
+    <Compile Remove="NativeRequestedUiQa.cs" />
+    <Compile Remove="NativeRequestedAppraisalQa.cs" />
     <Compile Remove="InputProbe\**\*.cs" />
     <Compile Remove="NativeActors\**\*.cs" />
     <Compile Remove="NativeActorActivities\**\*.cs" />
     <Compile Remove="NativeBarterOfferLogic\**\*.cs" />
+    <Compile Remove="Sync\**\*.cs" />
     <Compile Include="..\Core\*.cs" Link="Core\%(Filename)%(Extension)" />
     <Compile Include="..\Game\NativeSnapshotCodec.cs" Link="Game\NativeSnapshotCodec.cs" />
     <Compile Include="..\Game\NativeJoinSnapshot.cs" Link="Game\NativeJoinSnapshot.cs" />
     <Compile Include="..\Game\NativeCommandEnvelope.cs" Link="Game\NativeCommandEnvelope.cs" />
     <Compile Include="..\Game\NativeSnapshotBinary.cs" Link="Game\NativeSnapshotBinary.cs" />
+    <Compile Include="..\Game\NativeSnapshotPages.cs" Link="Game\NativeSnapshotPages.cs" />
     <Compile Include="..\Game\NativeSnapshotIndex.cs" Link="Game\NativeSnapshotIndex.cs" />
     <Compile Include="..\Game\NativeRootProjection.cs" Link="Game\NativeRootProjection.cs" />
     <Compile Include="..\Game\NativeActorInventory.cs" Link="Game\NativeActorInventory.cs" />

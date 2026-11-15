@@ -20,3 +20,7 @@ internal sealed class NativeWorld
     internal bool HasActorProjection { get; set; }
     internal NativeActorState RemoteHostActor { get; set; }
 }
+internal static class NativeInventoryPilot
+{
+    internal static NativeActorState RemoteHostActor { get; set; }
+}

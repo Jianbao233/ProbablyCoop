@@ -11,7 +11,7 @@ namespace ProbablyCoop;
 // host's existing native settings drive that pool and both local windows.
 internal sealed partial class NativeWorld
 {
-    private const string AppraisalWindowId="appraisal_items";
+    internal const string AppraisalWindowId="appraisal_items";
     private static readonly MethodInfo AppraisalSetAllowed=AccessTools.Method(typeof(AppraisalItemsWindow),"SetAllowed");
     private static readonly Action<bool> BuildAppraisalWindow=AccessTools.MethodDelegate<Action<bool>>(
         AccessTools.Method(typeof(AppraisalItemsWindow),nameof(AppraisalItemsWindow.Open),new[]{typeof(bool)}));
@@ -41,12 +41,18 @@ internal sealed partial class NativeWorld
         ["names"]=new JArray(AppraisalItemRegistry.GetUnlocked(AppraisalSettingsRank()).Select(type=>type.GetDisplayName())) });
 
     private void RenderAppraisal(bool sound)
+        => RenderAppraisal(remoteHostActor, sound);
+
+    internal static void RenderAppraisal(NativeActorState settings, bool sound)
     {
         var previous=appraisalRenderSettings;
-        appraisalRenderSettings=remoteHostActor;
+        appraisalRenderSettings=settings;
         try { BuildAppraisalWindow(sound); }
         finally { appraisalRenderSettings=previous; }
     }
+
+    internal static void ApplyAppraisalCategory(AppraisalItemType type, bool allowed) =>
+        AppraisalSetAllowed.Invoke(null, new object[] { type, allowed });
 
     internal bool AppraisalFrontendVisible(GameItem target)=>target!=null && ReferenceEquals(appraisalFrontendTarget,target) &&
         CustomUIManager.Instance?.GetWindow(AppraisalWindowId)?.IsAlive==true;
@@ -109,7 +115,7 @@ internal sealed partial class NativeWorld
         if(type==null || !AppraisalItemRegistry.CanBlock(type,rank) ||
             !allowed && AppraisalItemRegistry.IsLastAllowed(type,rank))
             return (ushort)ShopResult.Unavailable;
-        AppraisalSetAllowed.Invoke(null,new object[]{type,allowed});
+        ApplyAppraisalCategory(type, allowed);
         nextCapture=0;
         return (ushort)ShopResult.Applied;
     }

@@ -3,10 +3,14 @@
   <PropertyGroup>
     <AssemblyName>ProbablyCoop</AssemblyName>
     <RootNamespace>ProbablyCoop</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.3.1</Version>
 
     <ModId>probably_coop</ModId>
     <OutDir>$(MSBuildThisFileDirectory)torelease\ProbablyCoop\</OutDir>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(ProbablyCoopGridQa)' == 'true'">
+    <DefineConstants>$(DefineConstants);PROBABLY_COOP_GRID_QA</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -39,6 +43,20 @@
       <Private>false</Private>
     </Reference>
     <Compile Remove="Tests\**\*.cs;LocalGuest\**\*.cs" />
+    <Compile Include="Tests\NativeInventoryPilotQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectCampaignQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectBusinessQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectStockQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectMechanismsQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectWorkshopQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectActivitiesQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectMachineMatrixQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectMachineEffectsQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectShopUiQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeEffectInputGuideQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeLocalTraitsQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeRequestedUiQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeRequestedAppraisalQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
   </ItemGroup>
 
   <Target Name="RequireGameReferences" BeforeTargets="ResolveAssemblyReferences">

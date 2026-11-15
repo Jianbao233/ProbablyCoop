@@ -150,7 +150,7 @@ internal sealed partial class NativeBackgroundQa
         if (world?.Ready != true || !world.HasActorProjection || world.HasPendingWork || connection?.Native?.State == null ||
             connection.Native.Waiting || !RestoreActorGameplayCheckpointGuest()) return false;
         var expected = ActorReloadExpected();
-        var metadata = NativeJoinSnapshot.Read(connection.Native.State, connection.Native.FullState, connection.Native.FullRevision);
+        var metadata = NativeJoinSnapshot.Read(connection.Native.Snapshot, connection.Native.FullSnapshot, connection.Native.FullRevision);
         Require(metadata.Run.ToString("D") == (string)expected["run"] && !metadata.Required && PlayerStore.Instance.saveSlotId == -1,
             "restored Guest did not join the configured Partner in the saved run");
         var personal = new JObject { ["schema"] = 1, ["run"] = metadata.Run.ToString("D"),

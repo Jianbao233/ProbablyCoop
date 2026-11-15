@@ -11,6 +11,7 @@ internal static class CloseDepartureForNight
     private static void Postfix(EndOfDayUIManager __instance)
     {
         if(!__instance.IsOpen) return;
+        NativeInventoryPilot.ActiveCampaign?.CancelDepartureForNight();
         var world=NativeGuest.Active ? NativeWorld.Guest : NativeWorld.Host;
         world?.CancelDepartureForSleep();
     }
