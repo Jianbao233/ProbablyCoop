@@ -24,6 +24,9 @@ internal sealed partial class NativeWorld
     private JObject shootingReplica;
     private ulong presentedShootingEpisode;
     private bool guestShootingEntered, guestShootingFired, guestShootingLeaving;
+    private ulong fireClickEpisode;
+    private uint fireClickCustomer;
+    private double fireClickUntil;
     private int shootingPresentationGeneration;
     internal bool ShootingOwnsCustomer => host && shootingPhase is > ShootingPhase.Idle and < ShootingPhase.Complete;
     internal ShootingPhase ShootingState => host ? shootingPhase : shootingReplica==null ? ShootingPhase.Idle : (ShootingPhase)(int)shootingReplica["phase"];
@@ -92,6 +95,35 @@ internal sealed partial class NativeWorld
     {
         var command=ShootingCommand(action);
         return command!=null && Submit(command);
+    }
+
+    internal bool CanAcceptGuestFireClick() => !host && Ready && guestShootingEntered &&
+        !guestShootingFired && !guestShootingLeaving && StoreUIManager.Instance?.shootingUI.activeSelf == true &&
+        (int?)shootingReplica?["actor"] == (int)NativeActorRun.Slot.Partner &&
+        ShootingState is ShootingPhase.Entering or ShootingPhase.Aiming;
+
+    internal void GuestFireClick()
+    {
+        if (!CanAcceptGuestFireClick() || UiPending("shooting")) return;
+        if (ShootingState == ShootingPhase.Aiming && RequestShooting("fire")) return;
+        // The local aiming screen can finish opening before the room receives
+        // the Aiming revision. Keep this click only for this visible incident.
+        fireClickEpisode = ShootingEpisode;
+        fireClickCustomer = replicaCustomerId;
+        fireClickUntil = Time.realtimeSinceStartupAsDouble + 1.5;
+    }
+
+    private void FlushGuestFireClick()
+    {
+        if (fireClickUntil == 0) return;
+        if (Time.realtimeSinceStartupAsDouble >= fireClickUntil ||
+            fireClickEpisode != ShootingEpisode || fireClickCustomer != replicaCustomerId ||
+            !CanAcceptGuestFireClick() || UiPending("shooting"))
+        {
+            fireClickUntil = 0;
+            return;
+        }
+        if (ShootingState == ShootingPhase.Aiming && RequestShooting("fire")) fireClickUntil = 0;
     }
     private ushort ExecuteShooting(JObject command)
     {
@@ -242,10 +274,12 @@ internal sealed partial class NativeWorld
             ui.body.SetActive((bool)shootingReplica["body"]);
         if(phase==ShootingPhase.Complete && guestShootingLeaving && !ui.isShootingMode)
         {ui.isShot=false;ui.shotClientInstance=null;}
+        FlushGuestFireClick();
     }
     internal void GuestBodyExit() => guestShootingLeaving=true;
     private void ResetShootingPresentation()
     {
+        fireClickUntil=0;
         shootingPresentationGeneration++;
         var ui=StoreUIManager.Instance;
         if(ui!=null && guestShootingEntered)

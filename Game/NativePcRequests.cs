@@ -68,6 +68,7 @@ internal sealed partial class NativeWorld
     {
         var ui = PCUIManager.Instance;
         if (ui?.storePC == null) return;
+        ApplyMarketplaceScreen();
         var requests = PlayerStore.Instance.storeRequests;
         if (requestsChanged)
         {
@@ -96,6 +97,18 @@ internal sealed partial class NativeWorld
             if (request != null) row.acceptButton.interactable = owned.Count(request.CanThisItemFillRequest) >= request.requiredItemCount;
         }
         pcRows.Clear();
+    }
+
+    // The original purchase callback also generates orders and writes the
+    // unlock day. Replicas only need the original screen and poster visuals.
+    internal static void ApplyMarketplaceScreen()
+    {
+        var screen = StoreUIManager.Instance?.pcScreenObject;
+        if (screen == null || !PlayerStore.Instance.networkUpgrade.TryGetValue("MARKETPLACE_REQUESTS", out var upgrade) ||
+            screen.activeSelf == upgrade.IsUnlocked()) return;
+        screen.SetActive(upgrade.IsUnlocked());
+        if (StorePoster.Instance is { } poster && poster != null && !poster.isPulled)
+            poster.PullDown(mute: true);
     }
 }
 [HarmonyPatch(typeof(StoreRequest),nameof(StoreRequest.FillRequest))]

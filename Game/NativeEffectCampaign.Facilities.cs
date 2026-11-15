@@ -377,6 +377,7 @@ internal sealed partial class NativeEffectCampaign
             upgrade.cooldownCurrent = (int)row[2];
             upgrade.cost = (int)row[3];
         }
+        NativeWorld.ApplyMarketplaceScreen();
         foreach (JArray row in (JArray)facts["services"])
         {
             var service = store.storeService.FirstOrDefault(candidate => candidate.id == (string)row[0]);

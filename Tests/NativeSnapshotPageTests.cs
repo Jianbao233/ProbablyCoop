@@ -31,6 +31,7 @@ internal static class NativeSnapshotPageTests
         Reject(()=>NativeSnapshotPages.Unpack(InvalidReferences(1),default));
         CheckFrozenCapture();
         CheckTransfer();
+        CheckSendBackpressure();
         Console.WriteLine("PASS paged checkpoints: large nested parity, typed references, delta basis, atomic transfer, duplicate/lost chunks, bounded failure and retry");
     }
 
@@ -132,6 +133,36 @@ internal static class NativeSnapshotPageTests
         {
             Check(Wire.TryDecode(Wire.Encode(packet),false,out var decoded) && guest.Receive(decoded),"wire rejected a valid page packet");
         }
+    }
+
+    private static void CheckSendBackpressure()
+    {
+        var sent = new List<Packet>();
+        int attempts = 0;
+        var host = new ReplicaLink(true, (kind, serial, revision, value, body) =>
+        {
+            if (++attempts <= 2) return false;
+            sent.Add(new Packet(kind, serial: serial, revision: revision, value: value, payload: body));
+            return true;
+        });
+        var guest = new ReplicaLink(false, (kind, serial, revision, value, body) =>
+            host.Receive(new Packet(kind, serial: serial, revision: revision, value: value, payload: body)));
+        var data = new byte[ReplicaLink.ChunkSize + 4096];
+        new Random(74).NextBytes(data);
+        var bytes = NativeSnapshotBinary.Pack(new JObject { ["data"] = Convert.ToBase64String(data) });
+        Check(bytes.Length > ReplicaLink.ChunkSize && bytes.Length <= 2 * ReplicaLink.ChunkSize,
+            "backpressure fixture must span two chunks");
+        host.PublishCheckpoint(bytes);
+        host.Tick(0, true);
+        host.Tick(0.01, true);
+        Check(attempts == 1 && sent.Count == 0, "transport was retried during the first cooldown");
+        host.Tick(0.06, true);
+        host.Tick(0.12, true);
+        Check(attempts == 2 && sent.Count == 0, "second send rejection did not extend the cooldown");
+        host.Tick(0.17, true);
+        Check(sent.Count == 2 && sent.All(guest.Receive) && guest.State.SequenceEqual(bytes) && host.Revision == 1,
+            "backpressure lost a pending chunk or its completion acknowledgement");
+        Console.WriteLine("PASS checkpoint send backpressure: paced retry preserves first chunk and complete revision");
     }
 
     private static (NativeDeferredFields Fields,JObject Data,Guid Run) Fixture(int children,int entries,Guid run=default)

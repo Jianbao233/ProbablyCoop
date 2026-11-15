@@ -131,6 +131,7 @@ internal sealed partial class NativeWorld
     private void CloseSession()
     {
         CloseShooting();
+        StopReplicaRingtone();
         ResetDynamicChoice();
         ClearFrontends();
         ClearBubblePresentation();
@@ -479,6 +480,7 @@ internal sealed partial class NativeWorld
             applied=snapshotRevision;
             appliedIndex=decoded.Index;
             appliedRoots=roots; View=view; ShopPresentation=shopPresentation;
+            ApplyAudio(data["audio"]);
             // Frozen with this graph on the host. A pre-command encode/decode job
             // may complete after its reply; link.Revision cannot prove causality.
             if(connection.ProjectionApplied(commandThrough,commandResult) && NativeBackgroundQa.Enabled)
@@ -573,6 +575,7 @@ internal sealed partial class NativeWorld
             store.playerCash,store.wildFavor,HashData,oracle,upgradeProofCache);
         snapshot["shutter"]=CaptureShutter();
         snapshot["shopPresentation"]=NativeShopPresentation.Capture(bellCue,shutterCue,shutterAnimated);
+        snapshot["audio"]=CaptureAudio();
         using(EnterPartnerOperation())
         using(NativePerformance.Measure("host.target_queries")) snapshot["targets"]=CaptureTargetQueries();
         snapshot["auxiliary"]=CaptureAuxiliary();

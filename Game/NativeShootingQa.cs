@@ -34,6 +34,11 @@ internal sealed partial class NativeBackgroundQa
     private double shootingQaRejoinBy;
     private bool shootingQaResumeVerified;
     private ulong shootingQaResumeRequest;
+#if PROBABLY_COOP_GRID_QA
+    private ulong shootingQaBeforeClick;
+    private static bool RequireWindowShootingClick =>
+        Environment.GetCommandLineArgs().Contains("--probably-coop-qa-shooting-mouse");
+#endif
 
     private void CheckShootingQaConnection(bool connected,double now)
     {
@@ -282,10 +287,27 @@ internal sealed partial class NativeBackgroundQa
             string action=shootingQaGuestRound==0 ? "exit" : "fire";
             shootingQaOld=Encoding.UTF8.GetBytes(world.ShootingCommand(action).ToString(Formatting.None));
             if(shootingQaGuestRound==0) { RestartShootingGuest("aim",78); return false; }
+#if PROBABLY_COOP_GRID_QA
+            if (RequireWindowShootingClick)
+            {
+                shootingQaBeforeClick = world.LastSubmittedUiRequest;
+                shootingQaStep = 40;
+                Record("TRACE shooting-mouse-ready","waiting for a Windows left click through the original Arm.Update");
+                return false;
+            }
+#endif
             ui.Shoot();
             Require(QaWaiting(link),"original aiming action did not submit shared operation");
             shootingQaStep=5;return false;
         }
+#if PROBABLY_COOP_GRID_QA
+        if (shootingQaStep == 40)
+        {
+            if (world.LastSubmittedUiRequest == shootingQaBeforeClick) return false;
+            Record("PASS shooting-mouse","Windows left click submitted a fire request through the original Arm.Update");
+            shootingQaStep = 5;
+        }
+#endif
         if(shootingQaStep==5)
         {
             Require(QaResult(link)==(ushort)ShopResult.Applied,"original shooting action rejected");
@@ -417,3 +439,16 @@ internal static class NativeShootingQaObserver
         if(name==nameof(AugHelper.CleanupKill)){NativeShootingQaEvidence.BadKills++;NativeShootingQaEvidence.BadActor=NativeActorSession.Current?.Run.CurrentActor??NativeActorRun.Slot.Host;}
     }
 }
+
+#if PROBABLY_COOP_GRID_QA
+[HarmonyPatch(typeof(AudioManager), nameof(AudioManager.Play2))]
+internal static class NativeShootingQaAudioObserver
+{
+    private static void Postfix(string identifier, bool __result)
+    {
+        if (__result && NativeGuest.Active && NativeShootingQaEvidence.Enabled &&
+            identifier is "shotgun_fire" or "body_collapse_floor")
+            Debug.Log("[probably_coop QA] native guest audio " + identifier);
+    }
+}
+#endif
