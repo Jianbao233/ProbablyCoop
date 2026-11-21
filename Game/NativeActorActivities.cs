@@ -22,6 +22,17 @@ internal sealed class NativeActorActivities : IDisposable
     private Lease current;
     internal bool HasExecuting => executing != 0;
     internal bool HasActiveBusiness { get { CheckThread(); Prune(); return active.Values.Any(value => value.BlocksCommit); } }
+    internal string BlockingChannel
+    {
+        get
+        {
+            CheckThread();
+            Prune();
+            foreach (var pair in active)
+                if (pair.Value.BlocksCommit) return pair.Key.Channel;
+            return null;
+        }
+    }
     internal Lease Current => current;
 
     internal NativeActorActivities(NativeActorRun run) => this.run = run ?? throw new ArgumentNullException(nameof(run));
@@ -274,6 +285,7 @@ internal sealed class NativeActorActivities : IDisposable
 // original actor until the native consequence has actually been flushed.
 internal static class NativeActorContinuations
 {
+    private static readonly FieldInfo PausedCustomerLine = AccessTools.Field(typeof(DialogUIManager), "pausedDialog");
     private static readonly FieldInfo CustomerEpoch = AccessTools.Field(typeof(DialogUIManager), "conversationEpoch");
     private static readonly FieldInfo PhoneEpoch = AccessTools.Field(typeof(DialoguePhoneUIManager), "conversationEpoch");
     private static readonly FieldInfo PhoneNumber = AccessTools.Field(typeof(PhoneUIManager), "currentNumber");
@@ -281,6 +293,7 @@ internal static class NativeActorContinuations
     private static readonly FieldInfo PhoneTalking = AccessTools.Field(typeof(PhoneUIManager), "isTalking");
     internal static bool PhoneAlive(PhoneUIManager ui) => ui != null &&
         ((long)PhoneNumber.GetValue(ui) != 0 || (bool)PhoneCalling.GetValue(ui) || (bool)PhoneTalking.GetValue(ui));
+    internal static Dialogue PausedLine(DialogUIManager manager) => (Dialogue)PausedCustomerLine.GetValue(manager);
     internal static Dialogue Line(object manager) => manager is DialogUIManager customer ? customer.currentDialog : ((DialoguePhoneUIManager)manager).currentDialog;
     private static int Epoch(object manager) => (int)(manager is DialogUIManager ? CustomerEpoch : PhoneEpoch).GetValue(manager);
     internal static NativeActorActivities.Lease BindLine(object manager, bool adoptCaller)
@@ -313,6 +326,15 @@ internal static class NativeActorContinuations
         if (line == null) return;
         var lease = NativeActorSession.Current?.Activities.Find(line, "dialogue-end");
         if (lease != null && !lease.HasScheduledContinuation) lease.Dispose();
+    }
+
+    internal static void RetireCancelledPhoneConsequences(IEnumerable<Dialogue> lines)
+    {
+        var activities = NativeActorSession.Current?.Activities;
+        if (activities == null) return;
+        // The phone generation also vetoes the native consequence. Retire its
+        // activity now, including timers that will be discarded without running.
+        foreach (var line in lines) activities.Retire(line, "dialogue-end");
     }
 }
 
@@ -376,6 +398,32 @@ internal static class NativeActorDelayedAction
         { lease.MarkScheduled(); action = lease.Wrap(action); }
         else if (lease.IsDialogueConsequence || lease.IsConsequenceContinuation) action = lease.ForkOnce(action);
         else action = lease.Wrap(action);
+    }
+}
+
+[HarmonyPatch]
+internal static class NativeActorCustomerDialogueRetirement
+{
+    private static IEnumerable<MethodBase> TargetMethods()
+    {
+        yield return AccessTools.Method(typeof(DialogUIManager), nameof(DialogUIManager.RemoveCurrentDialog));
+        yield return AccessTools.Method(typeof(DialogUIManager), nameof(DialogUIManager.ClearPausedConversation));
+        yield return AccessTools.Method(typeof(DialogUIManager), nameof(DialogUIManager.ResumeConversation));
+    }
+
+    private static void Prefix(DialogUIManager __instance, MethodBase __originalMethod, out Dialogue __state)
+    {
+        __state = NativeActorSession.Current == null ? null : __originalMethod.Name == nameof(DialogUIManager.RemoveCurrentDialog)
+            ? __instance.currentDialog : NativeActorContinuations.PausedLine(__instance);
+    }
+
+    private static void Postfix(DialogUIManager __instance, Dialogue __state)
+    {
+        if (__state == null || ReferenceEquals(__state, __instance.currentDialog) ||
+            ReferenceEquals(__state, NativeActorContinuations.PausedLine(__instance))) return;
+        // A paused line can resume, and already scheduled native end actions
+        // still execute. Only a discarded, unscheduled consequence is retired.
+        NativeActorContinuations.RetireUnscheduledConsequence(__state);
     }
 }
 

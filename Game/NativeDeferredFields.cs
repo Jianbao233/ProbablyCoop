@@ -180,7 +180,8 @@ internal sealed class NativeDeferredFields
     // ordered JSON properties on the encoding worker after ownership transfer.
     internal sealed class ItemRow
     {
-        internal readonly JObject Target=new JObject();
+        internal readonly JObject Target;
+        internal ItemRow(JObject target=null) { Target=target ?? new JObject(); }
         internal JObject Fields,State,Modified,Shape,ModifiedShape,Content,Examine;
         internal JArray Types,Features,SpriteModifiers;
         internal SpriteLayer[] FrozenSpriteModifiers;
@@ -231,6 +232,23 @@ internal sealed class NativeDeferredFields
         }
     }
     private readonly List<ItemRow> itemRows=new List<ItemRow>();
+    private readonly Dictionary<JObject,uint> borrowedRecords=new Dictionary<JObject,uint>();
+    private readonly HashSet<JObject> borrowedNested=new HashSet<JObject>();
+    private NativeRecordBasis borrowedBasis;
+    internal readonly HashSet<uint> ConfirmedRecords=new HashSet<uint>();
+    internal readonly HashSet<uint> AuditedRecords=new HashSet<uint>();
+    internal readonly HashSet<uint> UntrackedRecords=new HashSet<uint>();
+    internal JObject BorrowRecord(NativeRecordBasis basis,uint id,bool nested=false)
+    {
+        RequireCaptureThread();
+        if(sealedCapture || basis==null || !basis.Contains(id) || borrowedBasis!=null && !ReferenceEquals(borrowedBasis,basis))
+            throw new InvalidOperationException("Invalid native capture basis");
+        if(borrowedRecords.Count>=recordBudget) throw new InvalidOperationException("Native record budget exceeded");
+        borrowedBasis=basis;
+        var marker=new JObject { ["entity"]=id }; borrowedRecords.Add(marker,id);
+        if(nested) borrowedNested.Add(marker);
+        return marker;
+    }
     internal int CapturedItemRows=>itemRows.Count;
     internal bool WorkerItems { get; }
     internal bool EarlyPlain { get; set; }=true;
@@ -540,6 +558,7 @@ internal sealed class NativeDeferredFields
     }
     internal void Materialize(JObject root,CancellationToken cancellation=default)
     {
+        if(borrowedRecords.Count!=0) throw new InvalidOperationException("Borrowed records require the record encoder");
         if(!sealedCapture || Interlocked.Exchange(ref consumed,1)!=0)
             throw new InvalidOperationException("Deferred capture is not available for encoding");
         try
@@ -636,6 +655,8 @@ internal sealed class NativeDeferredFields
             int itemCount=0;
             if(records) foreach(JObject parent in (JArray)root["roots"]) itemCount+=((JArray)parent["items"]).Count;
             bool incremental=records && basis!=null && Math.Abs(itemCount-basis.Count)<=Math.Max(8,basis.Count/3);
+            if(borrowedRecords.Count!=0 && (!records || !ReferenceEquals(basis,borrowedBasis)))
+                throw new InvalidOperationException("Borrowed records require their exact acknowledged basis");
             HashSet<JToken> verified=null,components=null;
             if(incremental && EarlyPlain && itemRows.Count!=0)
             {
@@ -662,6 +683,26 @@ internal sealed class NativeDeferredFields
                 ElidedRows=auditBasis==null ? verified.Count : 0;
             }
             else foreach(var row in itemRows) { cancellation.ThrowIfCancellationRequested(); row.Assemble(); }
+            var restoredRecords=new HashSet<JObject>();
+            void RestoreRecord(JObject target,uint id)
+            {
+                if(!restoredRecords.Add(target)) return;
+                int first=itemRows.Count;
+                borrowedBasis.Restore(id,target,lookup,itemRows,cancellation);
+                for(int i=first;i<itemRows.Count;i++) ConfirmedRecords.Add((uint)itemRows[i].Target["entity"]);
+            }
+            foreach(var target in borrowedNested) RestoreRecord(target,borrowedRecords[target]);
+            foreach(var record in borrowedRecords) ConfirmedRecords.Add(record.Value);
+            // Nested records have independent capture stamps. A changed outer
+            // machine/container must not force recapturing all its siblings.
+            if(basis!=null)
+                foreach(var row in itemRows)
+                {
+                    uint id=(uint)row.Target["entity"];
+                    if(ConfirmedRecords.Contains(id) || row.Target.Count==1) continue;
+                    if(basis.MatchesRecord(id,row.Target,lookup)) ConfirmedRecords.Add(id);
+                    else if(AuditedRecords.Contains(id)) UntrackedRecords.Add(id);
+                }
             foreach(var block in blocks)
             {
                 var owner=block.Target.Root;
@@ -670,8 +711,21 @@ internal sealed class NativeDeferredFields
             }
             FinishUpgradeProof(lookup,cancellation);
             if(!records) return Single(NativeSnapshotBinary.Pack(root,cancellation,lookup));
+            bool restored=false;
+            void RestoreBorrowed()
+            {
+                if(restored) return;
+                foreach(var record in borrowedRecords) RestoreRecord(record.Key,record.Value);
+                restored=true;
+            }
             if(incremental)
             {
+                if(borrowedRecords.Count!=0)
+                {
+                    verified??=new HashSet<JToken>(lookup.Comparer);
+                    foreach(var record in borrowedRecords) if(!borrowedNested.Contains(record.Key)) verified.Add(record.Key);
+                    if(auditBasis!=null) RestoreBorrowed();
+                }
                 byte[] expected=auditBasis==null ? null : NativeSnapshotBinary.Pack(root,cancellation,lookup);
                 var reused=basis.ReferenceUnchanged(root,lookup,cancellation,verified);
                 if(reused.Count>0)
@@ -685,6 +739,7 @@ internal sealed class NativeDeferredFields
                             if(expected!=null && !expected.AsSpan().SequenceEqual(NativeRecordBasis.ExpandForAudit(delta,auditBasis,cancellation)))
                                 throw new InvalidDataException("Native delta differs from complete authority capture");
                             referenced=reused.Count;
+                            foreach(var entry in reused) ConfirmedRecords.Add((uint)entry.Data["entity"]);
                             if(Markers!=null && components!=null && components.Count!=0)
                                 foreach(var block in blocks)
                                     if(components.Contains(block.Target)) Markers.Reclaim(block.Target);
@@ -699,6 +754,7 @@ internal sealed class NativeDeferredFields
                 if(verified!=null && auditBasis==null)
                     foreach(var row in itemRows) if(verified.Contains(row.Target)) row.Assemble();
             }
+            RestoreBorrowed();
             Core.NativeSnapshotFrame full=null;
             if(!preferPages || itemRows.Count==0)
             {

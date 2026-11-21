@@ -18,13 +18,17 @@ internal static class NativeJoinSnapshot
         return ReadContract(NativeSnapshotCodec.Unpack(delta ? NativeRecordFrame.Body(frame, fullRevision) : frame));
     }
 
-    internal static (Guid Run, bool Required) Read(NativeSnapshotFrame frame,NativeSnapshotFrame full,ulong fullRevision,
+    internal static (Guid Run, bool Required, JToken Extensions) Read(NativeSnapshotFrame frame,NativeSnapshotFrame full,ulong fullRevision,
         CancellationToken cancellation=default)
     {
         if(frame.Delta && full?.Full!=true) throw new InvalidDataException("Missing cooperative join checkpoint");
         var metadata=frame.Delta ? NativeRecordFrame.Body(frame.First,fullRevision) : frame.First;
-        return ReadContract(frame.Count==1 ? NativeSnapshotCodec.Unpack(metadata,cancellation) :
-            NativeSnapshotPages.ReadMetadata(frame,cancellation));
+        var state=frame.Count==1 ? NativeSnapshotCodec.Unpack(metadata,cancellation) :
+            NativeSnapshotPages.ReadMetadata(frame,cancellation);
+        var join=ReadContract(state);
+        var extensions=state["modExtensions"];
+        state.Remove("modExtensions");
+        return (join.Run,join.Required,extensions);
     }
 
     private static (Guid Run, bool Required) ReadContract(JObject state)

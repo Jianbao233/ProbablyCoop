@@ -20,7 +20,7 @@ ProbablyCoop 让两端运行各自的原版界面。房主验证并提交会影�
 2. 看 [NativeWorld.cs](../Game/NativeWorld.cs) 和 [NativeHandAuthority.cs](../Game/NativeHandAuthority.cs) 如何验证命令、角色上下文、当前实体和持物请求。
 3. 看 [NativeMirrorProbe.cs](../Game/Architecture/NativeMirrorProbe.cs) 与 [NativeMirrorLayouts.cs](../Game/Architecture/NativeMirrorLayouts.cs) 如何捕获共享事实并用原版控件恢复。这里的布局类型和 JSON 字段属于内部实现，可能随游戏更新变动。
 
-当前适配入口是原版接口和 ProbablyCoop 的源码贡献流程。第三方 Mod 可以通过独立的内容定义接入已有路径。需要共享新动作时，请提交能复现的最小内容 Mod，或在 ProbablyCoop 中提出一个有明确校验和执行边界的适配。未经接入的任意委托、反射调用和鼠标点击没有通用的远程执行入口。
+遵循上述原版路径的内容可以直接走已有的同步逻辑。自定义共享玩法使用 [联机扩展接口 v1](coop-extension-api.md) 注册动作和共享状态。作者定义游戏规则与存档，ProbablyCoop 负责请求的传递、去重、房主与伙伴身份、状态恢复，以及两端扩展版本校验。接口为开发分支功能，以包含该接口的 ProbablyCoop 构建为准。
 
 ## 最小回归
 

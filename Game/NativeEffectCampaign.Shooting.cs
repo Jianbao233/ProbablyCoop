@@ -40,7 +40,7 @@ internal sealed partial class NativeEffectCampaign
         if (ui.isShootingMode) wasInShotCamera = true;
         if (shotPhase == Phase.Entering && ui.isShootingMode && ui.shootingUI.activeSelf)
             SetShotPhase(Phase.Aiming);
-        if (shotPhase == Phase.Leaving && wasInShotCamera && !ui.isShootingMode)
+        if (shotPhase == Phase.Leaving && !shotCommitted && wasInShotCamera && !ui.isShootingMode)
             FinishShot();
         else if (!shotCommitted && shotPhase is Phase.Entering or Phase.Aiming &&
             !ReferenceEquals(shotTarget, PlayerStore.Instance.currentClientInstance))
@@ -235,11 +235,22 @@ internal sealed partial class NativeEffectCampaign
         return () => { if (run != Guid.Empty && episode == shotEpisode) PlayShotVisual(callback); };
     }
 
-    internal IEnumerator BindShotAnimation(IEnumerator iterator)
+    internal IEnumerator BindShotAnimation(IEnumerator iterator,bool survivor)
     {
-        if (host) return shotLease?.WrapEnumerator(iterator) ?? iterator;
+        if (host)
+        {
+            if (shotLease == null) return iterator;
+            if (survivor) iterator = FinishSurvivorAnimation(iterator, shotEpisode);
+            return shotLease.WrapEnumerator(iterator);
+        }
         if (!presentingShot) return iterator;
         return PresentNativeShot(iterator, shotEpisode);
+    }
+
+    private IEnumerator FinishSurvivorAnimation(IEnumerator iterator, ulong episode)
+    {
+        while (iterator.MoveNext()) yield return iterator.Current;
+        if (shotEpisode == episode) FinishShot();
     }
 
     private IEnumerator PresentNativeShot(IEnumerator iterator, ulong episode)

@@ -873,7 +873,7 @@ internal static partial class NetTests
         {
             "", "PSL", "PSL-0-" + token, "PSL-70000-" + token, "PSL-+123-" + token, "PSL-123-" + token.Substring(1),
             "PSL-123-" + Guid.Empty.ToString("N"), "PSL-123-" + token + "-x", "psl-123-" + token,
-            "PSI-127.0.0.1-123-" + token, "PSI-224.0.0.1-123-" + token, "PSI-0.1.2.3-123-" + token,
+            "PSI-127.1-123-" + token, "PSI-224.0.0.1-123-" + token, "PSI-0.1.2.3-123-" + token,
             "PSI-192.168.001.5-123-" + token, "PSI-::1-123-" + token, "PSI-example.com-123-" + token,
             "PS1-ABC-1234", "PSI-192.168.1.5-123-" + token + new string('0', 40)
         };

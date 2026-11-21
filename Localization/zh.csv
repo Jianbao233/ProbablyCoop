@@ -1,4 +1,23 @@
 title,双人合伙店
+paste_room_code,粘贴房间码
+show_lan_options,IPv4 / 虚拟局域网建房…
+hide_lan_options,收起 IPv4 建房
+coop_saves_heading,合作存档
+terminal_title,连接状态
+terminal_show_details,连接详情
+terminal_hide_details,收起详情
+terminal_overview,连接状态 · {0} · {1} · {2}
+terminal_role_host,房主
+terminal_role_guest,客机
+terminal_role_none,未进房
+terminal_transport_steam,Steam P2P
+terminal_transport_ipv4,IPv4 直连
+terminal_transport_local,本机回环
+terminal_transport_none,无连接方式
+terminal_packets,累计包数 · 发送 {0:N0} · 接收 {1:N0}
+terminal_revision,世界同步修订 · {0:N0}
+terminal_batches,库存检查点 · {0:N0} / {1:N0} 批 · {2:N0} KiB
+terminal_no_session,当前没有活动连接的收发数据。
 room_header,创建或加入同一家店铺
 native_header,共享经营 · 房间管理
 native_hint,F7 管理房间和随身物品。
@@ -9,14 +28,14 @@ join_code_hint,粘贴房间码
 join_room_heading,加入房间
 host_room_heading,创建房间
 join_from_menu,要加入好友，请回到主菜单粘贴房间码。
-host_address_hint,本机 IPv4
+host_address_hint,本机 IPv4（同机 frp 可填 127.0.0.1）
 pause_entry,联机
 hide_nutrifruit_launcher,隐藏小营养果浮窗
 perk_mixed_coop,个人效果按当前角色生效。开局赠品和自动发生的全店事件由房主的天赋决定。
 perk_gambling_coop,赌博成瘾不会随天数解除。{0}可随机解除一种成瘾，{1}可指定移除。彩票提前开放和自动购票按房主的天赋结算。
-ipv4_mapping_hint,内网映射请选择 UDP，并转发到房主的监听端口。
+ipv4_mapping_hint,frp 和游戏在同一台电脑时，房主可填 127.0.0.1 和固定端口。UDP 隧道的本地目标填相同地址和端口。异地客机粘贴原房间码，再填写隧道的公网 IPv4 和外部端口。
 udp_port_hint,UDP 端口（留空自动）
-mapped_address_hint,映射后的 IPv4:端口（可选）
+mapped_address_hint,隧道公网 IPv4:外部端口（通过隧道加入时填写）
 udp_listening,IPv4 监听 {0}（UDP）
 status_bad_udp_port,请输入 1–65535 的 UDP 端口，或留空自动分配。
 status_udp_port_in_use,该 UDP 端口已被占用，请换一个端口。
@@ -119,7 +138,7 @@ result_Busy,主机正在处理其他操作
 result_Failed,操作失败
 shop_header,共享经营 · 点击可移动货物
 lan_create,IPv4 建房
-status_bad_address,请填写房主电脑的局域网或虚拟局域网 IPv4 地址。
+status_bad_address,请输入本机网卡 IPv4。同机运行 frp 时也可填 127.0.0.1。公网地址填在客机的映射栏。
 status_lan_waiting,局域网房间已创建。复制 PSI 房间码给合伙人。
 status_lan_connected,局域网合伙人已连接。
 status_steam_unavailable,Steam 尚未就绪。可输入 IPv4 开局域网房间。
@@ -128,6 +147,18 @@ travel_unavailable,此版本的副机暂可前往垃圾倾倒场。
 day_peer_outside,合伙人还在外面，回店后才能日结。
 trade_current_offer,当前报价
 resume_run,继续合作档
+solo_import,从单人存档创建合作副本
+solo_import_button,导入单人档
+solo_import_hint,选择一个单人存档。副本使用新的存档槽，保留单人原档。
+solo_import_no_saves,没有可用于创建合作副本的单人存档。
+solo_import_row,{0} · 存档槽 {1} · 第 {2} 天 · 现金 {3:N0}
+solo_import_confirm,从存档槽 {0}（第 {1} 天，现金 {2:N0}）创建并打开合作副本？原单人存档会保留。
+solo_import_back,返回合伙店菜单
+solo_import_failed,无法从该单人存档创建合作副本。
+solo_import_failure_reason,无法创建合作副本：{0}
+sync_extension_missing_guest,客机需要启用模组 {0}。
+sync_extension_missing_host,房主尚未启用客机所用的模组 {0}。
+sync_extension_mismatch,两端的模组 {0} 版本或联机配置不兼容。
 no_checkpoints,没有可读取的合作检查点。
 checkpoint_unavailable,无法读取这个合作检查点。
 cursor_location_0,主菜单
@@ -190,3 +221,70 @@ diff_guest_only,{0} {1}：仅合伙人启用
 diff_version,{0}：房主 {1}，合伙人 {2}
 diff_adapter,{0} 的联机适配声明不一致，房主 {1}，合伙人 {2}
 diff_more,另有 {0} 项
+pointer_settings,玩家名称与提示
+pointer_settings_save,保存玩家名称
+settings_pointer_name,玩家名称
+settings_pointer_name_help,合伙人会在你的指针旁看到这个名称。留空使用 Steam 名称。
+settings_ping_binding,标记物品按键
+settings_ping_binding_help,指向物品并按下此键即可提醒合伙人。默认鼠标中键。
+settings_sync_notices,显示联机同步提示
+settings_sync_notices_help,显示普通的操作等待与同步重试提示。入房错误和连接记录始终留在联机面板。
+item_ping_notice,合伙人标记了 {0}
+player_name,玩家名称
+player_name_input,输入玩家名称（默认使用 Steam 名称）
+change_player_name,更改玩家名称
+player_name_changed,玩家名称已更新
+contact_title,联系作者
+contact_qq_group,QQ群 1132567943
+contact_author_qq,作者QQ 1600597561
+contact_discord,Discord jianbao1954（不常在线）
+contact_bilibili,B站主页（复制链接）
+contact_qq_group_copied,QQ群号已复制
+contact_author_qq_copied,作者QQ已复制
+contact_discord_copied,Discord 用户名已复制
+contact_bilibili_copied,B站链接已复制
+history_scan_deferred,历史检查点暂不扫描
+history_scan_complete,已包含历史检查点
+scan_history,扫描历史档
+scan_checkpoints_loading,正在查找合作档…
+sync_fail_host_capture,房主读取店铺状态失败
+sync_fail_host_encode,房主打包店铺状态失败
+sync_fail_guest_format,客机收到的检查点格式无效
+sync_fail_guest_budget,客机收到的检查点超出接收上限
+sync_fail_guest_apply,客机解码或应用店铺状态失败
+sync_previous_progress,上次记录的进度 {0}
+day_bedroll_bell,按铃提醒房主日结
+day_settlement_unavailable,暂时无法日结。请处理未完成的店铺事件，确认双方都已回到店内并放下手里的物品。
+day_block_StoreOpen,请先关店，再开始日结。
+day_block_Outside,请等两人都回店后再日结。
+day_block_InTransit,正在切换场景。请等场景切换完成。
+day_block_HoldingItem,有人还拿着物品。请先松手放下物品。
+day_block_MandatoryCustomer,还有必须接待的顾客或访客，请先处理。
+day_block_Activity,仍有电话、对话或其他店铺事务进行中。请先完成或关闭对应界面。
+day_block_ActorState,合作角色的状态还没有准备好。请稍等再试。
+day_block_Services,无法读取本次夜间服务的费用。
+day_block_Funds,资金不足以支付所选的夜间服务。
+day_block_MissingSave,无法读取当前合作存档，本次日结尚未开始。
+day_input_wait,房主正在结算并保存，请稍等。
+day_recovery_exit,返回主菜单（本次不再保存）
+trip_block_busy,场景或日结正在处理中，请稍后再确认出行。
+trip_block_trade,交易还在进行中，请完成或关闭交易后再出行。
+diag_copy,复制诊断
+diag_copied,诊断已复制
+diag_DAY-201,新一天已保存，晨间流程尚未确认。可以继续等待，或返回主菜单后继续合作档。
+diag_DAY-202,晨间流程已完成，新一天的存档尚未核验。可以继续等待，或退回最近已确认的合作档。
+diag_DAY-203,存档与晨间流程均未确认。先等待房主游戏响应；状态持续时可恢复最近已确认的合作档。
+diag_DAY-204,存档与晨间流程已确认，切换尚未结束。先等待；状态持续时可返回主菜单并读档。
+diag_DAY-206,房主未能写入或读回验证新一天的合作档。恢复后若仍出现，请附上房主日志。
+diag_DAY-301,房主仍在确认日结。请房主查看联机面板里的 DAY 状态码，客机先留在店内等候。
+diag_reloaded_from,已返回主菜单。请用「继续合作档」读取最近已确认的第 {0} 天。
+diag_no_checkpoint,已返回主菜单。本局暂无已确认的合作档，请新建合作局。
+diag_SYNC-101,房主未能收集店铺状态。房主保持当前游戏，客机重进一次；若再次失败请提供房主日志。
+diag_SYNC-102,房主未能打包店铺状态。客机可用原房间码重试一次；若再次失败请提供房主日志。
+diag_SYNC-103,客机收到的检查点未通过校验。请用原房间码重试；若再次失败请提供两端日志。
+diag_SYNC-104,同步数据超过客机接收限额。请提供两端日志和合作档副本。
+diag_SYNC-105,客机无法应用店铺数据。请核对两端游戏及必需 Mod 版本，再用原房间码重进。
+diag_SYNC-106,双方的玩法 Mod 或联机适配不一致。请按加载记录核对并重进。
+diag_SYNC-107,连接没有在时限内响应。请确认房间仍开启，检查 UDP 路由或 Steam 连接，再用原码重进。
+status_udp_address_not_local,无法监听此地址。房主请填自己网卡的 IPv4，或为同机 frp 填 127.0.0.1。客机在映射栏填节点公网地址。
+player_options_heading,玩家设置

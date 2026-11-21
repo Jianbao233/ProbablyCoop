@@ -21,6 +21,7 @@ internal sealed class CoopRuntime : MonoBehaviour
     private readonly NativeDayUi dayUi = new NativeDayUi();
     private readonly NativePartnerJoin partnerJoin = new NativePartnerJoin();
     private bool returningGuest;
+    private (string Code, int? Day)? recoveryExit;
     private PlayerStore checkedStore;
     private bool stopped;
     private Action captureAfterReceive;
@@ -36,7 +37,11 @@ internal sealed class CoopRuntime : MonoBehaviour
         if (architectureQa != null) { architectureQa.Tick(); return; }
         try
         {
-            if(NativeActorFaultRecovery.TryReturnToMenu(CloseSession)) return;
+            if(NativeActorFaultRecovery.TryReturnToMenu(CloseSession, day =>
+            {
+                var attempt = shop?.RecoveryCandidate;
+                recoveryExit = (attempt == null ? "DAY-205" : CoopIssueCode.Settlement(attempt), day);
+            })) return;
             var scene = SceneManager.GetActiveScene().name;
             bool inMenu = scene == "EmporiumMenu" || MainMenuUIController.Instance != null &&
                 EmporiumEntry.Instance == null;
@@ -154,10 +159,12 @@ internal sealed class CoopRuntime : MonoBehaviour
                 if (!room.IsGuest || connection?.State != LinkState.Connected || !connection.Shop.View.Active ||
                     !guest.Matches(connection))
                 {
-                    LeaveGuest();
+                    bool timedOut = room.Status=="peer_timeout";
+                    if (timedOut) panel.JoinFailed(duringPlay:true);
+                    LeaveGuest(timedOut ? "sync_failed" : "idle");
                     return;
                 }
-                try { guest.Tick(connection); }
+                try { guest.Tick(connection); dayUi.Tick(connection.Shop); }
                 catch(Exception error) { FailGuestSynchronization(error); return; }
             }
             else if (inMenu && room.IsGuest && connection?.State == LinkState.Connected &&
@@ -171,12 +178,14 @@ internal sealed class CoopRuntime : MonoBehaviour
                 catch(Exception error) { FailGuestSynchronization(error); return; }
                 if (guest != null) return;
             }
-            dayUi.Tick((shop != null || guest != null) && connection?.State == LinkState.Connected
-                ? connection.Shop : null);
+            if (!inMenu) recoveryExit = null;
+            panel.ObserveDay(shop,
+                guest != null && connection?.Shop.View.Phase == ShopDay.SaveUnverified,
+                recoveryExit);
             NativeActorCarryUi.Tick();
             pointer.Tick(connection, inMenu || shop != null || guest != null);
             panel.Tick();
-            qa?.Tick(room, shop, guest, inMenu);
+            qa?.Tick(room, panel, shop, guest, inMenu);
         }
         catch (Exception exception)
         {
@@ -195,8 +204,11 @@ internal sealed class CoopRuntime : MonoBehaviour
 
     private void FailGuestSynchronization(Exception error=null)
     {
-        Debug.LogWarning("[probably_coop] guest synchronization failed; room can be rejoined. "+error);
-        panel.JoinFailed();
+        var native=room.Session?.Native;
+        Debug.LogWarning($"[probably_coop] guest synchronization failed; room can be rejoined. " +
+            $"reason={native?.FailureReason} receivedRevision={native?.Revision} fullRevision={native?.FullRevision} {error}");
+        panel.JoinFailed(error as ModExtensionJoinException,native?.FailureReason ?? NativeSyncFailure.None,
+            error!=null, duringPlay:guest?.EnteredShop==true);
         partnerJoin.Dispose();
         if(guest!=null || NativeGuest.Active) LeaveGuest("sync_failed");
         else room.Leave("sync_failed");

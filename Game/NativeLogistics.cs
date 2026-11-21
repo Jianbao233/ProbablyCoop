@@ -54,7 +54,7 @@ internal sealed partial class NativeWorld
         if(!Ready || edit==null || !TryData(item,out _) || !localFrontends.Values.Any(view=>ReferenceEquals(view.Target,item))) return true;
         if(!logisticsDrafts.TryGetValue(item,out var draft))
         {
-            if(logisticsDrafts.Count>=16) { CommandNotice("待确认的设备设置过多，请稍后再试。"); return true; }
+            if(logisticsDrafts.Count>=16) { CommandNotice("待确认的设备设置过多，请稍后再试。",sync:true); return true; }
             var basis=LogisticsConfig(item,kind);
             draft=new LogisticsDraft { Item=item,Kind=kind,Base=basis,Desired=(JObject)basis.DeepClone() };
             logisticsDrafts.Add(item,draft);
@@ -118,7 +118,7 @@ internal sealed partial class NativeWorld
     }
     internal bool RequestLogisticsRun(GameItem item)
     {
-        if(logisticsDrafts.ContainsKey(item)) { CommandNotice("请等待漏斗设置确认后再转移物品。"); return false; }
+        if(logisticsDrafts.ContainsKey(item)) { CommandNotice("请等待漏斗设置确认后再转移物品。",sync:true); return false; }
         var command=LogisticsCommand(item,FrontendKind.Hopper,"run");
         if(command==null) return false;
         command["expected"]=HashData(LogisticsConfig(item,FrontendKind.Hopper));

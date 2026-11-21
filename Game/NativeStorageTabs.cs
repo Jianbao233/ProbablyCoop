@@ -73,7 +73,7 @@ internal sealed partial class NativeWorld
         if(host || !Ready || !model.Objects.TryGetValue(bayId,out var value) || value is not GameItem bay ||
             !ReferenceEquals(NativeStorageTabs.Tabs(bay),tabs) || index<0 || index>=tabs.count ||
             !GeneralHelper.IsItemEffectivelyOwned(bay) || !Accessible(bay.parentInventory)) return;
-        if(storageTabEdits.Count>=16) { CommandNotice("待确认的分页名称过多，请稍后再试。"); return; }
+        if(storageTabEdits.Count>=16) { CommandNotice("待确认的分页名称过多，请稍后再试。",sync:true); return; }
         var view=new StorageTabEditor { Bay=bay,Tabs=tabs,Index=index,Context=observedOperationContext,
             Expected=StorageExpansionHelper.GetTabName(bay,index) ?? "" };
         view.Done=text=>RequestStorageTabRename(view,text);

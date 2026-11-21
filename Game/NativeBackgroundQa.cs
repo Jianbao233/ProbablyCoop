@@ -42,6 +42,7 @@ internal sealed partial class NativeBackgroundQa
     internal static bool SynchronizationProfile { get; private set; }
 #if PROBABLY_COOP_GRID_QA
     private static int failFirstSynchronization;
+    private readonly bool extensionProbeQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-extension-probe") >= 0;
     internal static bool TakeSynchronizationFailure() =>
         System.Threading.Interlocked.Exchange(ref failFirstSynchronization,0)!=0;
 #endif
@@ -158,7 +159,7 @@ internal sealed partial class NativeBackgroundQa
         property.SetValue(grid,new GridShapeBuilder(shape.Width,shape.Height).SetData(cells,shape.Width).SetDataOutside(shape.Outside));
     }
 
-    internal void Tick(RoomSelector room, NativeShop shop, NativeGuest guest, bool inMenu)
+    internal void Tick(RoomSelector room, CoopPanel panel, NativeShop shop, NativeGuest guest, bool inMenu)
     {
         if (done) return;
         // Native option loading may overwrite Create's cap when scenes load.
@@ -218,7 +219,9 @@ internal sealed partial class NativeBackgroundQa
             }
             if (now - started > 900+soakSeconds) throw new InvalidOperationException($"timeout stage={stage}");
 #if PROBABLY_COOP_GRID_QA
+            if (workshopApproval) { TickWorkshopApproval(inMenu,now); return; }
             if (localTraitsQa) { TickLocalTraits(room, shop, inMenu, now); return; }
+            if (soloImportQa) { TickSoloImport(room, panel, inMenu); return; }
 #endif
             if(VerifyGuestRoomExit(room,inMenu,now)) return;
             if(waterMerchantQa) { TickWaterMerchant(room,shop,inMenu,now); return; }
@@ -256,6 +259,9 @@ internal sealed partial class NativeBackgroundQa
                 }
                 if (shop == null) return;
 #if PROBABLY_COOP_GRID_QA
+                if (extensionProbeQa) return;
+                if (workshopMachine != null) { TickWorkshopMachine(room,now,true); return; }
+                if (captureChangesQa) { TickCaptureChangesHost(room,now); return; }
                 if (requestedAppraisalQa) { TickRequestedAppraisalHost(room,now); return; }
                 if (requestedUiQa) { TickRequestedUiHost(room); return; }
                 if (requestedShootingQa) { TickRequestedShootingHost(room,now); return; }
@@ -455,6 +461,9 @@ internal sealed partial class NativeBackgroundQa
             if (guest == null || link?.View.Active != true || now < next) return;
             if (NativeWorld.Guest?.Ready != true) return;
 #if PROBABLY_COOP_GRID_QA
+            if (extensionProbeQa) return;
+            if (workshopMachine != null) { TickWorkshopMachine(room,now,false); return; }
+            if (captureChangesQa) { TickCaptureChangesGuest(room,now); return; }
             if (requestedAppraisalQa) { if(TickRequestedAppraisalGuest(room.Session.Native,now)) Finish("PASS requested-appraisal guest"); return; }
             if (requestedUiQa) { if(TickRequestedUiGuest(room.Session.Native,now)) Finish("PASS requested-ui guest"); return; }
             if (requestedShootingQa) { if(TickRequestedShootingGuest(room.Session.Native,now)) Finish("PASS requested-shooting guest"); return; }

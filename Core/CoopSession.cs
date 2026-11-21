@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 
 namespace ProbablyCoop.Core;
 
@@ -22,6 +23,10 @@ internal sealed class CoopSession
     private ulong pendingRevision;
     private ulong cursorSequence;
     private ulong receivedCursorSequence;
+    private ulong nameSequence, receivedNameSequence, pingSequence, receivedPingSequence;
+    private string sentPointerName;
+    private string sentPointerNameInput;
+    private double nextItemPing, nextIncomingItemPing;
     private double lastReceive;
     private double nextControl;
     private double nextRetry;
@@ -38,6 +43,8 @@ internal sealed class CoopSession
     internal ReplicaLink Native { get; }
     internal event Action<Packet> RemoteCursor;
     internal event Action<Kind> Received;
+    internal string RemotePointerName { get; private set; }="";
+    internal (ulong Serial, ulong Context, uint Entity) RemoteItemPing { get; private set; }
 
     internal CoopSession(bool host, byte[] fingerprint, Func<byte[], bool, bool> send,bool requireApproval=false)
     {
@@ -63,6 +70,7 @@ internal sealed class CoopSession
         JoinPending=false;
         challenge = host ? 0 : BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(), 0) | 1UL;
         lastRequest = pendingRequest = cursorSequence = receivedCursorSequence = 0;
+        ResetPointerProfile();
         phaseStart = lastReceive = now;
         nextControl = now;
         if (!host)
@@ -79,8 +87,37 @@ internal sealed class CoopSession
         JoinPending=false;
         challenge=0;
         pendingRequest = 0;
+        ResetPointerProfile();
         Shop.Reset();
         Native.Reset();
+    }
+
+    private void ResetPointerProfile()
+    {
+        nameSequence=receivedNameSequence=pingSequence=receivedPingSequence=0;
+        nextItemPing=nextIncomingItemPing=0;
+        sentPointerName=null;
+        sentPointerNameInput=null;
+        RemotePointerName="";
+        RemoteItemPing=default;
+    }
+
+    internal void SetPointerName(string value)
+    {
+        if(State!=LinkState.Connected || sentPointerNameInput==value) return;
+        string name=PointerProfile.NormalizeName(value);
+        if(sentPointerName!=name && !Send(new Packet(Kind.PointerName,session,epoch,++nameSequence,payload:PointerProfile.Encode(name)))) return;
+        sentPointerName=name;
+        sentPointerNameInput=value;
+    }
+
+    internal bool SendItemPing(uint entity,ulong context,double now)
+    {
+        if(State!=LinkState.Connected || entity==0 || context==0 || now<nextItemPing) return false;
+        var payload=new byte[sizeof(uint)];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload,entity);
+        nextItemPing=now+0.5;
+        return Send(new Packet(Kind.ItemPing,session,epoch,++pingSequence,context,payload:payload));
     }
 
     internal void Tick(double now)
@@ -275,6 +312,20 @@ internal sealed class CoopSession
             receivedCursorSequence = packet.Serial;
             RemoteCursor?.Invoke(packet);
             return true;
+        }
+        else if(packet.Kind==Kind.PointerName)
+        {
+            if(packet.Serial<=receivedNameSequence || !PointerProfile.TryRead(packet.Payload,out string name)) return false;
+            receivedNameSequence=packet.Serial;
+            RemotePointerName=name;
+        }
+        else if(packet.Kind==Kind.ItemPing)
+        {
+            if(packet.Serial<=receivedPingSequence) return false;
+            receivedPingSequence=packet.Serial;
+            if(now<nextIncomingItemPing) return false;
+            nextIncomingItemPing=now+0.20;
+            RemoteItemPing=(packet.Serial,packet.Revision,BinaryPrimitives.ReadUInt32LittleEndian(packet.Payload));
         }
         else if (packet.Kind != Kind.Pong) return false;
 

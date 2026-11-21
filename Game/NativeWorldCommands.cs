@@ -147,7 +147,7 @@ internal sealed partial class NativeWorld
         if(link!=null) CheckCommandReply();
         if(!host && RequiresQuietUi(command) && HasPendingWork)
         {
-            CommandNotice("请等待当前操作确认后再切换经营阶段或共同出行。");
+            CommandNotice("请等待当前操作确认后再切换经营阶段或共同出行。",sync:true);
             return false;
         }
         double started=CommandClock();
@@ -165,11 +165,12 @@ internal sealed partial class NativeWorld
             commandProjection.Sent(issued,started,(string)command["kind"],applied);
             BeginFrontendPrediction(frontend,issued);
         }
-        else CommandNotice("待确认的操作已满，请稍后再试。");
+        else CommandNotice("待确认的操作已满，请稍后再试。",sync:true);
         return accepted;
     }
-    private void CommandNotice(string message)
+    private void CommandNotice(string message,bool sync=false)
     {
+        if(sync && !CoopSettings.ShowSyncNotices) return;
         double now=UnityEngine.Time.realtimeSinceStartupAsDouble;
         if(now<nextCommandNotice) return; nextCommandNotice=now+1;
         StoreUIManager.Instance?.Notify(message);
@@ -192,11 +193,12 @@ internal sealed partial class NativeWorld
             ObservePhoneReply(entry.Serial,result);
             if(result==(ushort)ShopResult.Applied) continue;
             ReconcileSelections(0,entry.Serial);
-            CommandNotice((ShopResult)result switch {
+            var refusal=(ShopResult)result;
+            CommandNotice(refusal switch {
                 ShopResult.Stale=>"物品或报价已发生变化，请根据最新状态重试。",
                 ShopResult.NoSpace=>"目标位置空间不足。",
                 ShopResult.Busy=>"此操作暂时不可用，请稍后再试。",
-                _=>"操作未完成，已保留房主确认的状态。" });
+                _=>"操作未完成，已保留房主确认的状态。" },sync:refusal is ShopResult.Stale or ShopResult.Failed);
         }
         uiRequests.Collect();
         ReconcileContinuous(0);
@@ -313,11 +315,11 @@ internal static class ReplicaUncheckedDrop
 internal static class ReplicaMayRemove
 {
     private static bool Prefix(GameItem __instance,ref bool __result)
-    { if(!NativeGuest.Active || NativeWorld.Guest?.TryData(__instance,out var data)!=true) return true; __result=(bool)data["mayRemove"]; return false; }
+    { if(!NativeGuest.Active || NativeWorld.Guest?.TryData(__instance,out var data)!=true) return true; __result=(bool)data["mayRemove"] && !NativeContainerAccess.BehindLock(__instance.parentInventory); return false; }
 }
 [HarmonyPatch(typeof(GameItem),nameof(GameItem.MaxNumRemove))]
 internal static class ReplicaMaxRemove
 {
     private static bool Prefix(GameItem __instance,ref int __result)
-    { if(!NativeGuest.Active || NativeWorld.Guest?.TryData(__instance,out var data)!=true) return true; __result=(int)data["maxRemove"]; return false; }
+    { if(!NativeGuest.Active || NativeWorld.Guest?.TryData(__instance,out var data)!=true) return true; __result=NativeContainerAccess.BehindLock(__instance.parentInventory) ? 0 : (int)data["maxRemove"]; return false; }
 }

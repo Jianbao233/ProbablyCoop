@@ -48,6 +48,7 @@ internal sealed class NativePointer : IDisposable
     private double remoteAt, clickUntil;
     private bool clicked,snapToSurface;
     private readonly CursorCadence cadence=new CursorCadence();
+    private readonly NativeItemPing itemPing=new NativeItemPing();
     private ReplicaLink.Stamp cursorStamp,remoteStamp;
 
     internal NativePointer(ICoopRoom room)
@@ -62,6 +63,7 @@ internal sealed class NativePointer : IDisposable
         double now = Time.realtimeSinceStartupAsDouble;
         if (!enabled || session?.State != LinkState.Connected)
         {
+            itemPing.Tick(null,false,default,now);
             Hide();
             remoteSurface = Hidden;
             clicked = false;
@@ -80,6 +82,8 @@ internal sealed class NativePointer : IDisposable
             LetterboxManager.GameAreaWidth, LetterboxManager.GameAreaHeight);
         var mouse = (Vector2)Input.mousePosition;
         bool visible = Application.isFocused && game.width > 0 && game.height > 0 && game.Contains(mouse);
+        session.SetPointerName(CoopSettings.PointerName);
+        itemPing.Tick(session,visible,mouse,now);
         clicked |= visible && Input.GetMouseButtonDown(0);
         if (cadence.ShouldSample(now,visible,clicked))
         {
@@ -109,7 +113,9 @@ internal sealed class NativePointer : IDisposable
         }
 
         Vector2 screen;
-        string name = room.PartnerName;
+        string name=session.RemotePointerName;
+        if(string.IsNullOrEmpty(name)) name=room.PartnerName;
+        if(string.IsNullOrEmpty(name)) name=Loc(room.IsGuest ? "terminal_role_host" : "terminal_role_guest");
         if(NativeWorld.Host?.PartnerHasHand==true || NativeWorld.Guest?.RemoteHostDragging==true) name+=" · "+Loc("cursor_carrying");
         if (remoteLocation != location)
         {
@@ -404,6 +410,7 @@ internal sealed class NativePointer : IDisposable
     {
         if(ReferenceEquals(Current,this)) Current=null;
         room.RemoteCursor -= Receive;
+        itemPing.Clear();
         if (overlay != null) UnityEngine.Object.Destroy(overlay.gameObject);
     }
 }

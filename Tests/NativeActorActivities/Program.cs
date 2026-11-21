@@ -142,6 +142,33 @@ internal static class Probe
         Check(end.IsAlive && activities.HasActiveBusiness, "phone interrupt retains native scheduled consequence");
         end.Wrap(() => line.isEndActionExecuted = true)();
         Check(!activities.HasActiveBusiness, "scheduled consequence finishes before night commit");
+        var customerUi = (DialogUIManager)RuntimeHelpers.GetUninitializedObject(typeof(DialogUIManager));
+        var suspended = new Dialogue { endAction = () => throw new Exception("discarded customer action ran") };
+        var suspendedLease = activities.Begin(suspended, "dialogue-end", NativeActorRun.Slot.Partner, () => true, true);
+        var pausedField = typeof(DialogUIManager).GetField("pausedDialog", BindingFlags.Instance | BindingFlags.NonPublic);
+        var retireCustomer = typeof(NativeActorCustomerDialogueRetirement).GetMethod("Postfix", BindingFlags.Static | BindingFlags.NonPublic);
+        pausedField.SetValue(customerUi, suspended);
+        retireCustomer.Invoke(null, new object[] { customerUi, suspended });
+        Check(suspendedLease.IsAlive && activities.HasActiveBusiness, "pausing preserves the resumable customer action");
+        pausedField.SetValue(customerUi, null);
+        retireCustomer.Invoke(null, new object[] { customerUi, suspended });
+        Check(!suspendedLease.IsAlive && !suspended.isEndActionExecuted && !activities.HasActiveBusiness,
+            "discarded unscheduled customer dialogue releases its hold without executing");
+        var scheduledCustomerAction = activities.Begin(suspended, "dialogue-end", NativeActorRun.Slot.Partner, () => !suspended.isEndActionExecuted, true);
+        scheduledCustomerAction.MarkScheduled();
+        retireCustomer.Invoke(null, new object[] { customerUi, suspended });
+        Check(scheduledCustomerAction.IsAlive, "discarding a customer line preserves its scheduled end action");
+        scheduledCustomerAction.Wrap(() => suspended.isEndActionExecuted = true)();
+        Check(!activities.HasActiveBusiness, "scheduled customer action releases its hold after running");
+        var cancelledPhoneLine = new Dialogue { endAction = () => throw new Exception("cancelled phone end ran") };
+        var cancelledPhone = activities.Begin(cancelledPhoneLine, "dialogue-end", NativeActorRun.Slot.Partner,
+            () => !cancelledPhoneLine.isEndActionExecuted, true);
+        cancelledPhone.MarkScheduled();
+        var cancelledPhoneTimer = cancelledPhone.Wrap(cancelledPhoneLine.endAction);
+        NativeActorContinuations.RetireCancelledPhoneConsequences(new[] { cancelledPhoneLine });
+        cancelledPhoneTimer();
+        Check(!cancelledPhone.IsAlive && !cancelledPhoneLine.isEndActionExecuted && !activities.HasActiveBusiness,
+            "invalidated phone timer releases the night gate without applying the cancelled consequence");
         line = new Dialogue { endAction = () => { } };
         end = activities.Begin(line, "dialogue-end", NativeActorRun.Slot.Partner, () => !line.isEndActionExecuted, true);
         Action phase2 = null;

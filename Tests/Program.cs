@@ -37,9 +37,11 @@ if (args.Length > 0)
             "all 80 inventory entries arrive via IPv4 fragments and guest applies exactly one move");
         Console.WriteLine("PASS real IPv4 UDP: full fragmented 80-item snapshot and authoritative move");
         using var mappedHost = new LoopbackLink(build, 0, bindAddress: address);
-        string token = mappedHost.Code.Split('-')[3];
-        using var mappedGuest = new LoopbackLink(build, 0, $"PSI-192.0.2.1-1-{token}",
-            mappedEndpoint: mappedHost.LocalEndpoint);
+        using var relay = new ProbablyCoopQaLanRelay(args[1], mappedHost.LocalEndpoint.Port,
+            dropReply:false, activeLoss:false, injectLoss:false);
+        Check(DirectRoomEndpoint.TryParseMappedEndpoint($"{address}:{relay.Port}", out var mappedEndpoint) &&
+            mappedEndpoint.Port != mappedHost.LocalEndpoint.Port, "relay publishes a separate UDP endpoint");
+        using var mappedGuest = new LoopbackLink(build, 0, mappedHost.Code, mappedEndpoint:mappedEndpoint);
         var clock = Stopwatch.StartNew();
         while (mappedGuest.Session.State != LinkState.Connected && clock.Elapsed.TotalSeconds < 4)
         {
@@ -48,13 +50,22 @@ if (args.Length > 0)
             await Task.Delay(10);
         }
         Check(mappedGuest.Session.State == LinkState.Connected, "IPv4 joins using mapped address and UDP port");
-        Console.WriteLine("PASS IPv4 fixed port and mapped endpoint");
+        Console.WriteLine("PASS original IPv4 room code through a separate UDP forwarding port");
+        Check(!DirectRoomEndpoint.TryParseIpv4("frp.example.test", out _) &&
+            CoopIssueCode.DirectRoom("bad_address") == "LAN-101", "domain is not a local listen address");
+        bool rejected = false;
+        try { using var wrong = new LoopbackLink(build, 0, bindAddress: IPAddress.Parse("192.0.2.1")); }
+        catch(SocketException error) when(error.SocketErrorCode == SocketError.AddressNotAvailable)
+        { rejected = CoopIssueCode.DirectRoom("udp_address_not_local") == "LAN-102"; }
+        Check(rejected, "unassigned relay IPv4 fails when used as a local listen address");
+        Console.WriteLine("PASS local UDP bind rejects nonlocal IPv4 and reports a distinct code");
     }
     else throw new ArgumentException("Usage: --local-guest <PSL code> <Assembly-CSharp.dll> <ProbablyCoop.dll>");
     return;
 }
 
 ActivityScopeTests.Run();
+CaptureChangeTests.Run();
 RoomAdmissionTests.Run();
 NativeJoinSnapshotTests.Run();
 NativeSnapshotPageTests.Run();
@@ -223,6 +234,24 @@ Check(displayed.Count == 1 && displayed[0].X == 456 && displayed[0].Y == 789 &&
 Check(!guest.Receive(new byte[Wire.MaxSize + 1], false, 4) &&
       !guest.Receive(newer.Data.AsSpan(0, 13), true, 4), "malformed lengths");
 
+guest.SetPointerName("  伙伴\nA  ");
+var profile = toHost.Dequeue();
+Check(!host.Receive(profile.Data, true, 4) && host.Receive(profile.Data, false, 4) &&
+      host.RemotePointerName == "伙伴A" && !host.Receive(profile.Data, false, 4), "pointer name channel, display and replay");
+guest.SetPointerName("  伙伴\nA  ");
+Check(toHost.Count == 0, "unchanged pointer name is not resent");
+Check(guest.SendItemPing(uint.MaxValue, 17, 4) && !guest.SendItemPing(9, 17, 4.1),
+    "item ping identity, context and rate limit");
+var itemPing = toHost.Dequeue();
+Check(host.Receive(itemPing.Data, false, 4) && host.RemoteItemPing == (1UL, 17UL, uint.MaxValue) &&
+      !host.Receive(itemPing.Data, false, 4), "item ping is reliable, bounded and processed once");
+Check(!PointerProfile.TryRead(new byte[]{0xff},out _) &&
+      !PointerProfile.TryRead(PointerProfile.Encode("<b>提示"),out _) &&
+      !PointerProfile.TryRead(new byte[PointerProfile.NameBytes+1],out _), "pointer profile rejects invalid text");
+guest.SetPointerName("");
+Drain(4);
+Check(host.RemotePointerName=="", "clearing name restores the transport fallback");
+
 host.Tick(17);
 guest.Tick(17);
 Check(host.State == LinkState.TimedOut && guest.State == LinkState.TimedOut, "heartbeat timeout");
@@ -230,6 +259,9 @@ Connect(18);
 Check(guest.Revision == 3 && guest.Tiles == 56, "new peer epoch gets host snapshot");
 Check(!host.Receive(request.Data, false, 18.2), "previous epoch request denied");
 Check(!guest.Receive(newer.Data, true, 18.2), "previous epoch cursor denied");
+Check(!host.Receive(itemPing.Data, false, 18.2) && host.RemoteItemPing.Serial==0 &&
+      host.RemotePointerName=="", "old room epoch cannot replay pointer settings or item pings");
+Console.WriteLine("PASS pointer profile and item pings: Unicode, limits, rate, duplicates, clearing and reconnect");
 for (double now = 19; now <= 619; now++)
 {
     host.Tick(now);
@@ -445,6 +477,30 @@ Drain(639.3);
 Check(authority.ChoicesMade == 1 && guest.Shop.Result == ShopResult.Stale, "expired dialogue rejected");
 Console.WriteLine("PASS dialogue protocol: host choice, duplicate replay and old dialogue rejection");
 
+using (var tunnelHost = new LoopbackLink(build, 0, bindAddress: IPAddress.Loopback, requireApproval: true))
+using (var tunnelGuest = new LoopbackLink(build, 0, tunnelHost.Code))
+{
+    Check(tunnelHost.Code.StartsWith("PSI-127.0.0.1-") &&
+        tunnelHost.LocalEndpoint.Address.Equals(IPAddress.Loopback), "tunnel listener uses the chosen adapter and the player room format");
+    Check(!DirectRoomEndpoint.TryParseMappedEndpoint("127.0.0.1:28015", out _),
+        "the guest's external mapping cannot point back to its own machine");
+    var clock = Stopwatch.StartNew();
+    bool approved = false;
+    while (tunnelGuest.Session.State != LinkState.Connected && clock.Elapsed.TotalSeconds < 5)
+    {
+        tunnelHost.Tick(clock.Elapsed.TotalSeconds);
+        if (!approved && tunnelHost.Session.JoinPending)
+        {
+            Check(tunnelGuest.Session.State != LinkState.Connected, "forwarded room waits for host permission");
+            tunnelHost.Session.ApproveJoin();
+            approved = true;
+        }
+        tunnelGuest.Tick(clock.Elapsed.TotalSeconds);
+        await Task.Delay(5);
+    }
+    Check(approved && tunnelGuest.Session.State == LinkState.Connected && tunnelHost.Session.State == LinkState.Connected,
+        "player IPv4 room over loopback completes approved handshake");
+}
 await CheckDirectPeers(null);
 
 using (var localHost = new LoopbackLink(build, 0))

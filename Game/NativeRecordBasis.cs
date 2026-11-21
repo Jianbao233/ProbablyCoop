@@ -11,9 +11,49 @@ namespace ProbablyCoop;
 internal sealed class NativeRecordBasis
 {
     private readonly Dictionary<uint,JObject> items=new Dictionary<uint,JObject>();
+    private readonly Dictionary<uint,JObject> records=new Dictionary<uint,JObject>();
     private readonly Dictionary<uint,NativeDeferredFields.ItemRow> plain=new Dictionary<uint,NativeDeferredFields.ItemRow>();
     private readonly Dictionary<JToken,NativeDeferredFields.Block> fields;
     internal int Count=>items.Count;
+    internal bool Contains(uint id)=>records.TryGetValue(id,out var item) && item!=null;
+    internal bool MatchesRecord(uint id,JObject item,Dictionary<JToken,NativeDeferredFields.Block> captured)=>
+        Contains(id) && Equal(item,records[id],captured);
+
+    // Copy only on the encoder worker, when a new full checkpoint is needed.
+    // The acknowledged basis and its frozen arrays are immutable. Native/Unity
+    // objects never enter this operation, and the old basis is not reparented.
+    internal void Restore(uint id,JObject destination,Dictionary<JToken,NativeDeferredFields.Block> into,
+        List<NativeDeferredFields.ItemRow> pageRows,CancellationToken cancellation)
+    {
+        if(!Contains(id) || destination.Count!=1 || (uint)destination["entity"]!=id)
+            throw new InvalidDataException("Invalid borrowed native record");
+        destination.RemoveAll();
+        Copy(records[id],destination);
+        void Copy(JContainer source,JContainer target)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            if(fields.TryGetValue(source,out var block))
+                into.Add(target,new NativeDeferredFields.Block { Target=target,Names=block.Names,Values=block.Values,
+                    Keys=block.Keys,TagRows=block.TagRows,TagColumns=block.TagColumns,Bytes=block.Bytes,
+                    Strings=block.Strings,TagBasis=block.TagBasis });
+            foreach(var child in source.Children())
+            {
+                if(child is JProperty property)
+                {
+                    var value=Clone(property.Value); ((JObject)target).Add(property.Name,value);
+                }
+                else target.Add(Clone(child));
+            }
+            if(target is JObject obj && obj["entity"]!=null && obj["modifiedShape"]!=null)
+                pageRows.Add(new NativeDeferredFields.ItemRow(obj));
+        }
+        JToken Clone(JToken source)
+        {
+            if(source is not JContainer container) return source.DeepClone();
+            JContainer result=source is JObject ? new JObject() : new JArray();
+            Copy(container,result); return result;
+        }
+    }
 
     internal NativeRecordBasis(JObject world,Dictionary<JToken,NativeDeferredFields.Block> fields,List<NativeDeferredFields.ItemRow> staged=null)
     {
@@ -29,6 +69,10 @@ internal sealed class NativeRecordBasis
         // parent world tree need not be held until the next checkpoint.
         var roots=new HashSet<JToken>(fields.Comparer);
         foreach(var item in items.Values) if(item!=null) roots.Add(item);
+        foreach(var item in items.Values) if(item!=null)
+            foreach(var token in item.DescendantsAndSelf())
+                if(token is JObject record && record["entity"]!=null && record["modifiedShape"]!=null)
+                { uint id=(uint)record["entity"]; if(!records.TryAdd(id,record)) records[id]=null; }
         this.fields=new Dictionary<JToken,NativeDeferredFields.Block>(fields.Comparer);
         foreach(var pair in fields)
             if(roots.Contains(pair.Key.Root)) this.fields.Add(pair.Key,pair.Value);

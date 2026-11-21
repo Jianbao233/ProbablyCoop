@@ -10,6 +10,8 @@ namespace ProbablyCoop;
 internal static class NativeShootingHooks
 {
     private static int sourceDepth, queryDepth;
+    private static readonly FieldInfo PendingSurvivor=AccessTools.Field(typeof(StoreUIManager),"pendingSurvivedShot");
+    internal static void ClearPendingSurvivor(StoreUIManager ui)=>PendingSurvivor.SetValue(ui,null);
     internal static NativeWorld Presentation { get; private set; }
     internal static NativeWorld ArrestCleanup { get; private set; }
     internal static NativeEffectCampaign EffectArrestCleanup { get; private set; }
@@ -59,7 +61,7 @@ internal static class NativeShootingInput
         }
         if(NativeShootingHooks.SourceInvocation || NativeWorld.Host==null) return true;
         var source=NativeWorld.Host;
-        if(action=="exit" && source.IsNativeBodyExit) {source.RecordNativeBodyExit();return true;}
+        if(action=="exit" && source.IsNativeShotExit) {source.RecordNativeShotExit();return true;}
         source.RunShootingAction(action);return false;
     }
 }
@@ -110,15 +112,39 @@ internal static class NativeShootingAnimationBinding
     {
         yield return AccessTools.Method(typeof(StoreUIManager),"WoundAnimationRoutine");
         yield return AccessTools.Method(typeof(StoreUIManager),"BodyFallRoutine");
+        yield return AccessTools.Method(typeof(StoreUIManager),"SurvivedShotRoutine");
     }
-    private static void Postfix(ref IEnumerator __result)
+    private static void Postfix(MethodBase __originalMethod,ref IEnumerator __result)
     {
+        bool survivor=__originalMethod.Name=="SurvivedShotRoutine";
         if (NativeInventoryPilot.ActiveCampaign is NativeEffectCampaign campaign)
-        { __result = campaign.BindShotAnimation(__result); return; }
+        { __result = campaign.BindShotAnimation(__result,survivor); return; }
         var world=NativeGuest.Active ? NativeWorld.Guest : NativeWorld.Host;
-        if(world!=null) __result=world.BindShootingAnimation(__result);
+        if(world!=null) __result=world.BindShootingAnimation(__result,survivor);
     }
 }
+
+[HarmonyPatch(typeof(StoreUIManager),"ShootSurvivor")]
+internal static class NativeShootingSurvivorReplica
+{
+    private static readonly Action PresentationOnly=()=>{};
+
+    private static void Postfix(ref Action ___pendingSurvivedShot)
+    {
+        // Keep the non-null guard used by native holstering. The host supplies
+        // the actual dialogue and customer departure through their usual routes.
+        if(NativeGuest.Active || NativeInventoryPilot.CampaignReplica)
+            ___pendingSurvivedShot=PresentationOnly;
+    }
+}
+
+[HarmonyPatch(typeof(DialogUIManager),nameof(DialogUIManager.InterruptDialog))]
+internal static class NativeShootingReplicaDialogue
+{
+    private static bool Prefix()=>NativeShootingHooks.Presentation==null &&
+        !(NativeInventoryPilot.CampaignReplica && NativeInventoryPilot.ActiveCampaign?.PresentingShot==true);
+}
+
 [HarmonyPatch(typeof(StoreUIManager),nameof(StoreUIManager.StartBlackscreenSequence))]
 internal static class NativeShootingPresentationCallbacks
 {

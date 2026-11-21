@@ -41,8 +41,13 @@ internal sealed partial class NativeWorld
     internal bool CanStartGesture()
     {
         TickGuestHand();
+        if (NativeShop.PhaseBlocksWorldCommands(View?.Phase ?? ShopDay.Playing))
+        {
+            CommandNotice(ModHelper.GetLocalized("probably_coop", "day_input_wait"), sync:true);
+            return false;
+        }
         if (gesture == null && handActions.Count < PendingActions.Capacity) return Ready;
-        CommandNotice("待确认的移动过多，请稍后再试。");
+        CommandNotice("待确认的移动过多，请稍后再试。",sync:true);
         return false;
     }
 
@@ -184,7 +189,7 @@ internal sealed partial class NativeWorld
             ShopResult.Busy=>"drop_busy",
             ShopResult.Unavailable=>"drop_unavailable",
             _=>"drop_stale"
-        }));
+        }),sync:refusal is not (ShopResult.NoSpace or ShopResult.Busy or ShopResult.Unavailable));
     }
 
     private void TickGuestHand()
@@ -299,7 +304,8 @@ internal static class NativeSinglePickup
     private static bool Prefix(ItemMouseDragHandler __instance)
     {
         if(NativeGuest.Active) return NativeWorld.Guest?.CanStartGesture()==true;
-        return NativeWorld.Host?.RejectHeldInput(__instance.GetCurrentItem())!=true;
+        return NativeShop.Gate?.BlocksWorldCommands!=true &&
+            NativeWorld.Host?.RejectHeldInput(__instance.GetCurrentItem())!=true;
     }
     private static void Postfix(ItemMouseDragHandler __instance,bool __runOriginal)
     {
@@ -317,7 +323,8 @@ internal static class NativeGroupPickup
     {
         if(NativeGuest.Active) return NativeWorld.Guest?.CanStartGesture()==true;
         var host=NativeWorld.Host;
-        return host==null || !NativeGroupTransfer.Selected(__instance).Any(host.RejectHeldInput);
+        return NativeShop.Gate?.BlocksWorldCommands!=true &&
+            (host==null || !NativeGroupTransfer.Selected(__instance).Any(host.RejectHeldInput));
     }
     private static void Postfix(ItemMultiSelectHandler __instance,bool __runOriginal)
     {

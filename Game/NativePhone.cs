@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using HarmonyLib;
@@ -23,10 +24,22 @@ internal sealed partial class NativeWorld
     internal static bool ExecutingPhone;
     private sealed class PhoneEndGeneration { internal int Value; }
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Dialogue,PhoneEndGeneration> phoneEnds=new System.Runtime.CompilerServices.ConditionalWeakTable<Dialogue,PhoneEndGeneration>();
+    private readonly HashSet<Dialogue> pendingPhoneEnds = new HashSet<Dialogue>();
     private int phoneCancelGeneration;
     internal void TrackPhoneEnd(Dialogue dialogue)
-    { if(dialogue!=null) { phoneEnds.Remove(dialogue); phoneEnds.Add(dialogue,new PhoneEndGeneration { Value=phoneCancelGeneration }); } }
-    internal void CancelPhoneEnds()=>phoneCancelGeneration++;
+    {
+        if (dialogue?.endAction == null || dialogue.isEndActionExecuted) return;
+        pendingPhoneEnds.RemoveWhere(line => line.isEndActionExecuted);
+        pendingPhoneEnds.Add(dialogue);
+        phoneEnds.Remove(dialogue);
+        phoneEnds.Add(dialogue, new PhoneEndGeneration { Value = phoneCancelGeneration });
+    }
+    internal void CancelPhoneEnds()
+    {
+        phoneCancelGeneration++;
+        NativeActorContinuations.RetireCancelledPhoneConsequences(pendingPhoneEnds);
+        pendingPhoneEnds.Clear();
+    }
     internal bool PhoneEndAllowed(Dialogue dialogue) => !phoneEnds.TryGetValue(dialogue,out var generation) || generation.Value==phoneCancelGeneration;
     private static object PhoneField(string name)=>AccessTools.Field(typeof(PhoneUIManager),name).GetValue(PhoneUIManager.Instance);
     private static void SetPhoneField(string name,object value)=>AccessTools.Field(typeof(PhoneUIManager),name).SetValue(PhoneUIManager.Instance,value);
@@ -175,13 +188,17 @@ internal sealed partial class NativeWorld
                 ResetDynamicChoice();
                 ClearFrontends();
                 authorityBasis=null; authorityBaseRevision=0; awaitingFull=null; verifiedRecordPublish=0;
+                ResetCaptureChanges();
                 int released=PartnerHandCount;
                 ResetPartnerHand();
                 runClock.Reset();
                 if(NativeBackgroundQa.Enabled && released!=0)
                     Debug.Log("[probably_coop QA] peer-generation released native hand items="+released);
                 if(phoneOwner==2) EndSharedPhone();
-                proposedTrip=""; tripReady=0; tripProof=""; proposedBackpack=0; proposedBackpackProof="";
+                CloseTravelPreparation();
+                ResetActorTrip();
+                tripProof="";
+                tripUi?.Close(); tripUi=null; drawnTrip=null;
                 remoteViews.Clear(); remoteTools.Clear(); viewsExpiry=0;
                 remoteHover=remoteInterest=servedInterest=0; ClearTooltipSchedule();
             }

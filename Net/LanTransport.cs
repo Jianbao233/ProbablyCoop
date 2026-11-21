@@ -11,8 +11,8 @@ namespace ProbablyCoop.Net;
 // UDP carrier for one NetLink: loopback (two game processes on one machine) or a single
 // IPv4 interface of a LAN / virtual LAN adapter.
 //
-// Datagram = tag(16) + link frame. On loopback the tag is the room token itself; on a
-// LAN it is HMAC-SHA256(token) over the frame, truncated to 16 bytes. That authenticates
+// Datagram = tag(16) + link frame. For PSL the tag is the room token itself; for PSI
+// it is HMAC-SHA256(token) over the frame, truncated to 16 bytes. That authenticates
 // the sender as someone who holds the room code. Nothing is encrypted.
 //
 // Room code: PSL-<port>-<token>  (loopback)   PSI-<ipv4>-<port>-<token>  (LAN)
@@ -44,16 +44,15 @@ internal sealed class LanTransport : IDisposable
         IsHost = code == null;
         int port = 0;
         Guid id = Guid.NewGuid();
-        IPAddress remote = IPAddress.Loopback;
-        if (!IsHost && !TryParseCode(code, out remote, out port, out id))
+        IPAddress advertised = bindAddress;
+        if (!IsHost && !DirectRoomEndpoint.TryParseCode(code, out advertised, out port, out id))
             throw new FormatException("Invalid direct room code.");
         token = id.ToByteArray();
-        bindAddress = IsHost ? bindAddress ?? IPAddress.Loopback :
-            IPAddress.IsLoopback(remote) ? IPAddress.Loopback : IPAddress.Any;
-        Lan = !IPAddress.IsLoopback(IsHost ? bindAddress : remote);
-        if (IsHost && !DirectRoomEndpoint.ValidHostAddress(bindAddress))
+        Lan = advertised != null;
+        if (IsHost && Lan && !DirectRoomEndpoint.ValidHostAddress(advertised))
             throw new FormatException("Enter the IPv4 address of a LAN or VPN adapter.");
-        socket = new UdpClient(new IPEndPoint(bindAddress, IsHost ? listenPort : 0));
+        IPAddress listenAddress = IsHost ? advertised ?? IPAddress.Loopback : (Lan ? IPAddress.Any : IPAddress.Loopback);
+        socket = new UdpClient(new IPEndPoint(listenAddress, IsHost ? listenPort : 0));
         if (Lan)
         {
             // A full send burst of the stream can exceed a 64 KiB socket queue between
@@ -67,8 +66,8 @@ internal sealed class LanTransport : IDisposable
             LocalEndpoint = (IPEndPoint)socket.Client.LocalEndPoint;
             port = LocalEndpoint.Port;
         }
-        else peer = Lan && mappedEndpoint != null ? mappedEndpoint : new IPEndPoint(remote, port);
-        string prefix = Lan ? $"PSI-{(IsHost ? bindAddress : remote)}" : "PSL";
+        else peer = Lan && mappedEndpoint != null ? mappedEndpoint : new IPEndPoint(advertised ?? IPAddress.Loopback, port);
+        string prefix = Lan ? $"PSI-{advertised}" : "PSL";
         Code = $"{prefix}-{port.ToString(CultureInfo.InvariantCulture)}-{id:N}";
         Link = new NetLink(Send, MaxFrame);
         if (IsHost) Link.Listen();
@@ -146,27 +145,6 @@ internal sealed class LanTransport : IDisposable
         disposed = true;
         socket.Dispose();
         mac?.Dispose();
-    }
-
-    private static bool TryParseCode(string code, out IPAddress address, out int port, out Guid token)
-    {
-        address = IPAddress.Loopback;
-        port = 0;
-        token = Guid.Empty;
-        if (code.Length > 64) return false;
-        string[] parts = code.Split('-');
-        int portIndex;
-        if (parts.Length == 3 && parts[0] == "PSL")
-        {
-            portIndex = 1;
-        }
-        else if (parts.Length == 4 && parts[0] == "PSI" && DirectRoomEndpoint.TryParseIpv4(parts[1], out address))
-        {
-            portIndex = 2;
-        }
-        else return false;
-        return DirectRoomEndpoint.TryParsePort(parts[portIndex], out port) && Guid.TryParseExact(parts[portIndex + 1], "N", out token) &&
-               token != Guid.Empty;
     }
 
     private ReadOnlySpan<byte> Tag(byte[] datagram) => mac == null ? token :

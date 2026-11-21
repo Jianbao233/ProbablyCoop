@@ -51,7 +51,8 @@ internal sealed class NativeGuest
         if (!world.TickGuest(session.Native, replicas)) return;
         trade.Tick(link,world.View,world.ShopPresentation);
         events.Tick(link,world.View);
-        if (awaitingReply && !link.Waiting && link.Result is not (ShopResult.None or ShopResult.Applied))
+        if (awaitingReply && !link.Waiting && link.Result is not (ShopResult.None or ShopResult.Applied) &&
+            (CoopSettings.ShowSyncNotices || link.Result is not (ShopResult.Stale or ShopResult.Failed)))
             StoreUIManager.Instance?.Notify(ModHelper.GetLocalized("probably_coop", "result_" + link.Result));
         awaitingReply = link.Waiting;
         // Original input handlers resolve local windows/slots; business sinks emit requests.
@@ -175,8 +176,7 @@ internal sealed class NativeGuest
                 __instance.GetComponent<StoreMagnifyingGlass>()!=null || __instance.GetComponent<StorePoster>()!=null ||
                 __instance.GetComponent<StoreVendingMachine>()!=null || __instance.GetComponent<StoreVendingFountain>()!=null ||
                 __instance.GetComponent<StoreScale>()!=null || __instance.GetComponent<Shotgun>()!=null) return true;
-            if (__instance.GetComponent<StoreBedroll>() != null) NativeDayUi.ShowGuestPlan();
-            else if (__instance.GetComponent<StoreDoor>() != null) return true;
+            if (__instance.GetComponent<StoreBedroll>() != null || __instance.GetComponent<StoreDoor>() != null) return true;
             else if (__instance.GetComponent<StoreTablet>() != null && NativeWorld.Guest?.Ready==true) return true;
             else if (__instance.GetComponent<StoreClientMono>() != null) NativeGuestTrade.Toggle();
             else if (__instance.GetComponent<StoreShutterButton>() != null) return true;

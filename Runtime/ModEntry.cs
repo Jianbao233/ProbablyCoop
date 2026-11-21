@@ -7,7 +7,7 @@ public sealed class ModEntry : IMod
     private CoopRuntime runtime;
     private RoomRuntime next;
 
-    public void Init(ModManifest manifest) { }
+    public void Init(ModManifest manifest) => CoopSettings.Register();
 
     public void OnEnable()
     {

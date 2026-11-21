@@ -35,16 +35,15 @@ internal sealed class LoopbackLink : IDisposable
         host = code == null;
         int port = 0;
         Guid id = Guid.NewGuid();
-        IPAddress remote = IPAddress.Loopback;
-        if (!host && !TryParseCode(code, out remote, out port, out id))
+        IPAddress advertised = bindAddress;
+        if (!host && !DirectRoomEndpoint.TryParseCode(code, out advertised, out port, out id))
             throw new FormatException("Invalid direct room code.");
         token = id.ToByteArray();
-        bindAddress = host ? bindAddress ?? IPAddress.Loopback :
-            IPAddress.IsLoopback(remote) ? IPAddress.Loopback : IPAddress.Any;
-        bool lan = !IPAddress.IsLoopback(host ? bindAddress : remote);
-        if (host && !DirectRoomEndpoint.ValidHostAddress(bindAddress))
+        bool lan = advertised != null;
+        if (host && lan && !DirectRoomEndpoint.ValidHostAddress(advertised))
             throw new FormatException("Enter the IPv4 address of a LAN or VPN adapter.");
-        socket = new UdpClient(new IPEndPoint(bindAddress, host ? listenPort : 0));
+        IPAddress listenAddress = host ? advertised ?? IPAddress.Loopback : (lan ? IPAddress.Any : IPAddress.Loopback);
+        socket = new UdpClient(new IPEndPoint(listenAddress, host ? listenPort : 0));
         if (lan)
         {
             // Four native state chunks plus authentication/fragment headers
@@ -58,33 +57,11 @@ internal sealed class LoopbackLink : IDisposable
             LocalEndpoint = (IPEndPoint)socket.Client.LocalEndPoint;
             port = LocalEndpoint.Port;
         }
-        else peer = lan && mappedEndpoint != null ? mappedEndpoint : new IPEndPoint(remote, port);
-        string prefix = lan ? $"PSI-{(host ? bindAddress : remote)}" : "PSL";
+        else peer = lan && mappedEndpoint != null ? mappedEndpoint : new IPEndPoint(advertised ?? IPAddress.Loopback, port);
+        string prefix = lan ? $"PSI-{advertised}" : "PSL";
         Code = $"{prefix}-{port.ToString(CultureInfo.InvariantCulture)}-{id:N}";
         Session = new CoopSession(host, fingerprint, Send, requireApproval);
         if (!host) Session.Connect(now);
-    }
-
-    private static bool TryParseCode(string code, out IPAddress address, out int port, out Guid token)
-    {
-        address = IPAddress.Loopback;
-        port = 0;
-        token = Guid.Empty;
-        if (code.Length > 64) return false;
-        string[] parts = code.Split('-');
-        int portIndex;
-        if (parts.Length == 3 && parts[0] == "PSL")
-        {
-            portIndex = 1;
-        }
-        else if (parts.Length == 4 && parts[0] == "PSI" && DirectRoomEndpoint.TryParseIpv4(parts[1], out address))
-        {
-            portIndex = 2;
-        }
-        else return false;
-        return DirectRoomEndpoint.TryParsePort(parts[portIndex], out port) &&
-            Guid.TryParseExact(parts[portIndex + 1], "N", out token) &&
-            token != Guid.Empty;
     }
 
     private ReadOnlySpan<byte> Tag(byte[] datagram) => mac == null ? token :

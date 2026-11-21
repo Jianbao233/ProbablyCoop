@@ -19,7 +19,7 @@ internal sealed partial class NativeWorld
     private NativeActorRun.Slot shootingActor;
     private StoreClientInstance shootingCustomer;
     private uint shootingCustomerId;
-    private bool shootingFired, shootingPoliceStarted;
+    private bool shootingFired, shootingPoliceStarted, shootingSurvives;
     private NativeActorActivities.Lease shootingActivity;
     private JObject shootingReplica;
     private ulong presentedShootingEpisode;
@@ -47,13 +47,16 @@ internal sealed partial class NativeWorld
     private bool ShootingActivityAlive(ulong episode)
     {
         if(closed || shootingEpisode!=episode || !ShootingOwnsCustomer) return false;
-        if(shootingFired || ReferenceEquals(PlayerStore.Instance.currentClientInstance,shootingCustomer)) return true;
-        // Check at EACH delayed invocation, not just the next network tick.
-        // Native Exit's blackscreen callback dismisses the current customer;
-        // an incident for a replaced target must never reach that callback.
+        if(shootingFired && !shootingSurvives || ReferenceEquals(PlayerStore.Instance.currentClientInstance,shootingCustomer)) return true;
+        // Only a lethal shot keeps police consequences after target replacement.
+        // A surviving target's pending dialogue belongs to that exact customer.
         CompleteShooting();
         var ui=StoreUIManager.Instance;
-        if(ui!=null && ui.isShootingMode) RestoreShootingCamera(ui);
+        if(ui!=null)
+        {
+            NativeShootingHooks.ClearPendingSurvivor(ui);
+            if(ui.isShootingMode) RestoreShootingCamera(ui);
+        }
         return false;
     }
     private void ObserveShooting()
@@ -63,6 +66,8 @@ internal sealed partial class NativeWorld
         var ui=StoreUIManager.Instance;
         if(shootingPhase==ShootingPhase.Entering && ui.isShootingMode && ui.shootingUI.activeSelf)
             ChangeShooting(ShootingPhase.Aiming);
+        else if(shootingPhase==ShootingPhase.Leaving && !shootingFired && !ui.isShootingMode)
+            CompleteShooting();
     }
     private void TickShootingAuthority()=>ShootingConnectionChanged(peerConnected);
     internal void ShootingConnectionChanged(bool connected)
@@ -162,12 +167,17 @@ internal sealed partial class NativeWorld
         {
             shootingEpisode=checked(shootingEpisode+1); shootingActor=ShootingCaller;
             shootingCustomer=store.currentClientInstance; shootingCustomerId=model.Id(shootingCustomer);
-            shootingFired=shootingPoliceStarted=false; ChangeShooting(ShootingPhase.Entering);
+            shootingFired=shootingPoliceStarted=shootingSurvives=false; ChangeShooting(ShootingPhase.Entering);
             ulong episode=shootingEpisode;
             shootingActivity=session?.Activities.Begin(this,"shotgun-incident",shootingActor,
                 ()=>ShootingActivityAlive(episode),true);
         }
-        else if(action=="fire") { shootingFired=true; ChangeShooting(ShootingPhase.Fired); }
+        else if(action=="fire")
+        {
+            shootingSurvives=shootingCustomer.GetClientBlueprint().survivesShot;
+            shootingFired=true;
+            ChangeShooting(ShootingPhase.Fired);
+        }
         else ChangeShooting(ShootingPhase.Leaving);
         try
         {
@@ -202,17 +212,29 @@ internal sealed partial class NativeWorld
         if(!shootingFired || shootingPoliceStarted) return false;
         shootingPoliceStarted=true; ChangeShooting(ShootingPhase.Police); return true;
     }
-    internal bool IsNativeBodyExit => ShootingOwnsCustomer && shootingFired &&
+    internal bool IsNativeShotExit => ShootingOwnsCustomer && shootingFired &&
         shootingActivity!=null && NativeActorSession.Current?.Activities.Current==shootingActivity;
     internal bool IsNativeShootingCleanup=>host && !closed && ShootingOwnsCustomer && shootingFired && shootingPoliceStarted;
     internal bool MayDismissShotCustomer(PlayerStore store)=>IsNativeShootingCleanup &&
         ReferenceEquals(store,NativeActorSession.Current?.Store) && ReferenceEquals(store.currentClientInstance,shootingCustomer);
-    internal void RecordNativeBodyExit() { if(shootingPhase==ShootingPhase.Fired) ChangeShooting(ShootingPhase.Leaving); }
+    internal void RecordNativeShotExit() { if(shootingPhase==ShootingPhase.Fired) ChangeShooting(ShootingPhase.Leaving); }
     internal void ShootingOfficerLeft(string id) { if(id=="SEC" && shootingPhase==ShootingPhase.Police) CompleteShooting(); }
-    internal IEnumerator BindShootingAnimation(IEnumerator iterator)
+    internal IEnumerator BindShootingAnimation(IEnumerator iterator,bool survivor)
     {
-        if(host) return shootingActivity?.WrapEnumerator(iterator) ?? iterator;
+        if(host)
+        {
+            if(shootingActivity==null) return iterator;
+            if(survivor) iterator=FinishSurvivedShot(iterator,shootingEpisode);
+            return shootingActivity.WrapEnumerator(iterator);
+        }
         return new ShootingAnimation(this,iterator,shootingPresentationGeneration);
+    }
+    private IEnumerator FinishSurvivedShot(IEnumerator iterator,ulong episode)
+    {
+        while(iterator.MoveNext()) yield return iterator.Current;
+        // Native code has restored the camera and started the survivor's dialogue.
+        // That dialogue owns any pending consequence from here.
+        if(shootingEpisode==episode && shootingSurvives) CompleteShooting();
     }
     private sealed class ShootingAnimation : IEnumerator
     {
@@ -293,6 +315,7 @@ internal sealed partial class NativeWorld
     }
     internal static void RestoreShootingCamera(StoreUIManager ui)
     {
+        NativeShootingHooks.ClearPendingSurvivor(ui);
         ui.isShootingMode=false; ui.isShot=false; ui.shotClientInstance=null;
         ui.mainCamera.SetActive(true); ui.shootingCamera.SetActive(false); ui.arm.SetActive(false);
         ui.inventoryCanvas.SetActive(true); UIFamilyLayer.SetRaisedCanvasActive(true); ui.worldInteractCanvas.SetActive(true);

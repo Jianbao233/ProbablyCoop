@@ -7,6 +7,8 @@ internal sealed partial class NativeWorld
 {
     private readonly OperationContext operationContext = new OperationContext();
     private ulong observedOperationContext;
+    internal ulong ItemPingContext => host ? operationContext.Generation : observedOperationContext;
+    internal static bool CanSeeItemPing(GameItem item)=>item!=null && Accessible(item.parentInventory);
 
     private ulong ObserveOperationContext() => operationContext.Observe(
         StoreStation.Instance.dayCounter, (int)PlayerStore.Instance.storeState,
@@ -34,7 +36,9 @@ internal sealed partial class NativeWorld
             CloseTravelPreparation();
             CancelAllHandActions();
             placementPreviews.Clear();
-            controlPreviews.Clear();
+            // Discard the local highlight before applying the new receipt.
+            // An unchanged incoming control might otherwise keep that highlight.
+            RestoreSelectionPreviews();
             controlDrafts.Clear();
             continuousPreviews.Clear();
         }

@@ -14,6 +14,7 @@ internal sealed class DaySettlement
     internal bool Pending { get; private set; } = true;
     internal bool TimedOut { get; private set; }
     internal bool Failed { get; private set; }
+    internal bool SaveFailed { get; private set; }
     internal bool Saved { get; private set; }
     internal bool SaveVerified { get; private set; }
     internal bool MorningCompleted { get; private set; }
@@ -37,7 +38,7 @@ internal sealed class DaySettlement
     internal void ConfirmSave(bool verified)
     {
         if (!Pending) return;
-        if (!verified) { Fail(); return; }
+        if (!verified) { Fail(saveFailed: true); return; }
         SaveVerified = true;
     }
 
@@ -64,12 +65,13 @@ internal sealed class DaySettlement
         return true;
     }
 
-    internal void Fail()
+    internal void Fail(bool saveFailed = false)
     {
         if (!Pending) return;
+        SaveFailed = saveFailed;
         Pending = false;
         Failed = true;
-        SaveVerified = false;
-        MorningCompleted = false;
+        // Keep receipts for recovery messaging. Failed still prevents completion
+        // and late callbacks cannot change the outcome of this attempt.
     }
 }

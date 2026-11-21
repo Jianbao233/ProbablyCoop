@@ -36,8 +36,29 @@ internal static class NativeCoopSaveRecovery
         string source=SaveFiles.AbsolutePath(current.File);
         byte[] sourceBytes=NativeActorPersistence.ReadFileImage(source);
         if(!SameDigest(sourceBytes,current.ImageDigest)) throw Invalid("恢复前存档已被替换。");
+        return Publish(current, source, sourceBytes, false);
+    }
+
+    internal static CoopRun.Checkpoint ImportSolo(CoopRun.Checkpoint selected)
+    {
+        if (selected == null || selected.Historical || selected.ImageDigest == null ||
+            !CoopRun.TryRead(selected.Slot, selected.Run, out var current, selected.File, soloOnly: true) ||
+            !current.ImageDigest.AsSpan().SequenceEqual(selected.ImageDigest) ||
+            ModHelper.ListModDataFiles(ModId).Any(key =>
+                CoopRun.TryParseRegistration(key, ModHelper.ReadModDataFileText(ModId, key), out var registered, out _) &&
+                registered == current.Run))
+            throw Invalid("The selected solo save has changed or already contains co-op data.");
+        string source = SaveFiles.AbsolutePath(current.File);
+        byte[] sourceBytes = NativeActorPersistence.ReadFileImage(source);
+        if (!SameDigest(sourceBytes, current.ImageDigest)) throw Invalid("The selected solo save has changed.");
+        return Publish(current, source, sourceBytes, true);
+    }
+
+    private static CoopRun.Checkpoint Publish(CoopRun.Checkpoint current, string source, byte[] sourceBytes, bool importSolo)
+    {
         int target=current.Slot;
-        bool copy=current.Historical || current.StoredSlot!=current.Slot;
+        bool copy=importSolo || current.Historical || current.StoredSlot!=current.Slot;
+        Guid run=importSolo ? Guid.NewGuid() : current.Run, nonce=current.Nonce;
         var active=ReadIndex("activeSaveSlotId",new List<int>()) ?? new List<int>();
         bool hadActive=ES3.KeyExists("activeSaveSlotId",IndexFile);
         if(copy) target=FindIndependentSlot(active);
@@ -46,7 +67,7 @@ internal static class NativeCoopSaveRecovery
         string temporary=copy ? Path.Combine(Path.GetDirectoryName(path),".probably-coop-recovery-"+Guid.NewGuid().ToString("N")+".tmp") : null;
         var previousPreview=ReadIndex<SavePreviewData>("preview_"+target,null);
         bool registerNative=copy || !active.Contains(target) || previousPreview==null;
-        string marker=CoopRun.RegistrationKey(current.Run,target);
+        string marker=CoopRun.RegistrationKey(run,target);
         bool hadMarker=ModHelper.ListModDataFiles(ModId).Contains(marker,StringComparer.Ordinal);
         string previousMarker=hadMarker ? ModHelper.ReadModDataFileText(ModId,marker) : null;
         bool created=false, temporaryCreated=false, nativeAttempted=false, markerAttempted=false;
@@ -55,7 +76,10 @@ internal static class NativeCoopSaveRecovery
         {
             if(copy)
             {
-                image=RewriteSlot(sourceBytes,new ES3Settings(source),current.StoredSlot,target);
+                var settings=new ES3Settings(source);
+                image=importSolo
+                    ? RewriteSolo(sourceBytes,settings,current.Run,current.StoredSlot,current.Day,run,target,out nonce)
+                    : RewriteSlot(sourceBytes,settings,current.StoredSlot,target);
                 using(var stream=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None))
                 {
                     temporaryCreated=true;
@@ -65,7 +89,7 @@ internal static class NativeCoopSaveRecovery
                 byte[] staged=NativeActorPersistence.ReadFileImage(temporary);
                 if(!staged.AsSpan().SequenceEqual(image))
                     throw Invalid("恢复副本写入后读回不一致。");
-                ValidateImage(staged,new ES3Settings(source),current.Run,target,current.Day,current.Nonce);
+                ValidateImage(staged,settings,run,target,current.Day,nonce);
                 // A crash before publication leaves only a non-save temporary
                 // file. A crash after it leaves a complete discoverable image.
                 // Same-directory Move is atomic and refuses an existing target.
@@ -73,10 +97,10 @@ internal static class NativeCoopSaveRecovery
                 created=true;
                 temporaryCreated=false;
             }
-            // DecodeReceipt validates the native fields, both actors, six
-            // roots, setup proof and checkpoint as one identity before index.
-            if(!CoopRun.TryRead(target,current.Run,out var verified,file,true) || !verified.HasActors ||
-                verified.StoredSlot!=target || verified.Nonce!=current.Nonce || verified.Day!=current.Day)
+            // Copies were checked on disk before their atomic move. In-place
+            // recovery still needs to validate the destination before indexing.
+            if(!copy && (!CoopRun.TryRead(target,run,out var verified,file,true) || !verified.HasActors ||
+                verified.StoredSlot!=target || verified.Nonce!=nonce || verified.Day!=current.Day))
                 throw Invalid("恢复副本未通过完整双角色校验。");
             if(!SameDigest(NativeActorPersistence.ReadFileImage(source),current.ImageDigest))
                 throw Invalid("验证时原档已变化，已取消恢复。");
@@ -91,12 +115,12 @@ internal static class NativeCoopSaveRecovery
                     throw Invalid("原生存档登记未成功持久化。");
             }
             markerAttempted=true;
-            CoopRun.WriteRegistration(current.Run,target);
-            if(!CoopRun.TryRead(target,current.Run,out var completed,file,true) || !completed.HasActors ||
-                completed.NeedsRecovery || completed.Nonce!=current.Nonce || completed.Day!=current.Day ||
+            CoopRun.WriteRegistration(run,target);
+            if(!CoopRun.TryRead(target,run,out var completed,file,true) || !completed.HasActors ||
+                completed.NeedsRecovery || completed.Nonce!=nonce || completed.Day!=current.Day ||
                 !SameDigest(NativeActorPersistence.ReadFileImage(source),current.ImageDigest))
                 throw Invalid("合作登记完成后校验失败。");
-            Debug.Log($"[probably_coop] recovered cooperative checkpoint source={current.Slot} stored={current.StoredSlot} target={target} copied={copy}");
+            Debug.Log($"[probably_coop] {(importSolo ? "imported solo save" : "recovered cooperative checkpoint")} source={current.Slot} stored={current.StoredSlot} target={target} copied={copy}");
             return completed;
         }
         catch(Exception failure)
@@ -118,7 +142,9 @@ internal static class NativeCoopSaveRecovery
             },"native registration");
             if(created) Rollback(() => DeleteOwnedCopy(path,image),"recovery copy");
             if(temporaryCreated) Rollback(() => DeleteOwnedCopy(temporary,image),"temporary recovery image");
-            throw new IOException("合作档恢复未完成，未载入游戏。",failure);
+            if (importSolo && !temporaryCreated && !created && failure is InvalidDataException)
+                throw new IOException("The selected solo save could not be converted: " + failure.Message, failure);
+            throw new IOException(importSolo ? "Could not create a co-op copy." : "合作档恢复未完成，未载入游戏。",failure);
         }
     }
 
@@ -197,6 +223,41 @@ internal static class NativeCoopSaveRecovery
         Replace(body,"modData",WriteObject(modData));
         Replace(wrapper,"value",WriteObject(body));
         Replace(root,"playerStore",WriteObject(wrapper));
+        return WriteCheckedImage(root,settings);
+    }
+
+    internal static byte[] RewriteSolo(byte[] source, ES3Settings settings, Guid sourceRun, int storedSlot, int day,
+        Guid run, int targetSlot, out Guid nonce)
+    {
+        if (source == null || source.Length == 0 || source.Length > NativeActorCheckpoint.MaximumSlotBytes ||
+            settings == null || settings.format != ES3.Format.JSON || sourceRun == Guid.Empty ||
+            run == Guid.Empty || run == sourceRun || storedSlot < 0 || targetSlot < 0)
+            throw Invalid("Invalid solo save identity.");
+        var root = ReadObject(source, settings);
+        using var reader = ES3Reader.Create(source, settings);
+        var receipt = NativeActorCheckpoint.ReadReceiptEntries(NativeActorCheckpoint.ReadNativeEntries(reader), fromSolo: true);
+        if (receipt.Run != sourceRun || receipt.Slot != storedSlot || receipt.Day != day)
+            throw Invalid("The selected solo save no longer matches its preview.");
+        var envelope = NativeActorCheckpoint.CreateFromSolo(receipt, run, targetSlot);
+        nonce = envelope.Checkpoint;
+
+        var wrapper = ReadObject(Find(root, "playerStore"), PlainSettings());
+        var body = ReadObject(Find(wrapper, "value"), PlainSettings());
+        byte[] nativeModData = Find(body, "modData");
+        var modData = ReadScalar<Dictionary<string, string>>(nativeModData) == null
+            ? new List<KeyValuePair<string, byte[]>>()
+            : ReadObject(nativeModData, PlainSettings());
+        modData.Add(new KeyValuePair<string, byte[]>(NativeActorCheckpoint.ModDataKey, Scalar(envelope.Encoded)));
+        Replace(body, "runID", Scalar(run.ToString("D")));
+        Replace(body, "saveSlotId", Scalar(targetSlot));
+        Replace(body, "modData", WriteObject(modData));
+        Replace(wrapper, "value", WriteObject(body));
+        Replace(root, "playerStore", WriteObject(wrapper));
+        return WriteCheckedImage(root, settings);
+    }
+
+    private static byte[] WriteCheckedImage(List<KeyValuePair<string, byte[]>> root, ES3Settings settings)
+    {
         byte[] image=WriteObject(root,settings);
         if(image.Length>NativeActorCheckpoint.MaximumSlotBytes) throw Invalid("恢复副本超出存档大小限制。");
         // Prove even unknown/unresolved outer entries survived byte-for-byte.

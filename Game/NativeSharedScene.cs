@@ -30,6 +30,7 @@ internal sealed partial class NativeWorld
     private string tripProof="",remoteTripProof="";
     private byte tripReady;
     private byte tripInitiator;
+    private string tripRefusal;
     private readonly uint[] tripBags=new uint[2];
     private readonly string[] tripBagProofs={"",""};
     private CustomUIWindow tripUi;
@@ -72,7 +73,7 @@ internal sealed partial class NativeWorld
             var result=(ShopResult)TravelRequest(destination,1,null,backpack,contents);
             if(result!=ShopResult.Applied)
                 CommandNotice(result switch {
-                    ShopResult.Busy=>"请先完成当前操作，再确认出行。",
+                    ShopResult.Busy=>ModHelper.GetLocalized("probably_coop", tripRefusal ?? "trip_block_busy"),
                     ShopResult.NoSpace=>"随身栏放不下选定的背包，请重新选择。",
                     _=>"出行条件已变化，请检查目的地和背包。"
                 });
@@ -110,6 +111,7 @@ internal sealed partial class NativeWorld
     }
     private ushort TravelRequest(string destination,byte actor,string expected=null,uint backpack=0,string backpackProof="")
     {
+        tripRefusal=null;
         if(HasActorProjection) return ActorTravelRequest(destination,actor,expected,backpack,backpackProof);
         if(EndingActive || shop.BlocksWorldCommands || string.IsNullOrEmpty(destination)) return (ushort)ShopResult.Busy;
         var map=MapUIManager.Instance; var store=PlayerStore.Instance;
@@ -133,9 +135,8 @@ internal sealed partial class NativeWorld
         { proposedTrip=destination; proposedBackpack=backpack; proposedBackpackProof=backpackProof; tripReady=0; }
         if(tripProof!=proof) { tripReady=0; tripProof=proof; }
         tripReady|=actor; nextCapture=0;
-        if(tripReady!=3) return (ushort)ShopResult.Applied;
-        if(PartnerHasHand || ItemMultiSelectHandler.current?.IsGroupDragging==true ||
-            ItemMouseDragHandler.current?.IsDraggingItem==true || shop.Capture().HeldItem!=0 || NegociationUIManager.IsTradeLocked())
+        if(!HasTravelConsent(destination, actor, tripReady)) return (ushort)ShopResult.Applied;
+        if(TravelIsBlocked(null))
         { tripReady=(byte)(tripReady&~actor); return (ushort)ShopResult.Busy; }
         NativeTravelExecution=true;
         EndSharedPhone();
@@ -180,11 +181,15 @@ internal sealed partial class NativeWorld
         if(first) { ResetActorTrip(); proposedTrip=destination; tripInitiator=actor; }
         if(tripProof!=proof) { tripReady=0; tripProof=proof; }
         int index=actor-1,other=1-index;
-        if(backpack!=0 && (tripReady&(1<<other))!=0 && tripBags[other]==backpack) return (ushort)ShopResult.Busy;
+        if(backpack!=0 && (tripReady&(1<<other))!=0 && tripBags[other]==backpack)
+        {
+            tripRefusal="transition_BackpackTaken";
+            return (ushort)ShopResult.Busy;
+        }
         tripBags[index]=backpack; tripBagProofs[index]=backpackProof;
         proposedBackpack=tripBags[tripInitiator-1]; proposedBackpackProof=tripBagProofs[tripInitiator-1];
         nextCapture=0;
-        if((tripReady|actor)!=3)
+        if(!HasTravelConsent(destination, actor, tripReady|actor))
         {
             tripReady|=actor;
             return (ushort)ShopResult.Applied;
@@ -192,8 +197,7 @@ internal sealed partial class NativeWorld
         // Keep the first player's consent while the second player's attempt
         // is blocked. A retry should not require another click from the peer.
         tripReady=(byte)(tripReady&~actor);
-        if(PartnerHasHand || ItemMultiSelectHandler.current?.IsGroupDragging==true || ItemMouseDragHandler.current?.IsDraggingItem==true ||
-            shop.Capture().HeldItem!=0 || NegociationUIManager.IsTradeLocked() || session.Activities.HasActiveBusiness)
+        if(TravelIsBlocked(session))
             return (ushort)ShopResult.Busy;
         if(destination!="return")
         {
@@ -220,6 +224,25 @@ internal sealed partial class NativeWorld
         try { activity.Wrap(()=> { if(destination=="return") map.ReturnNow(); else map.Travel(location); })(); }
         finally { NativeTravelExecution=false; ResetActorTrip(); }
         return (ushort)ShopResult.Applied;
+    }
+
+    internal bool HostWithoutTravelPartner => host && !peerConnected;
+
+    private bool HasTravelConsent(string destination, byte actor, int ready) =>
+        ready == 3 || (destination == "return" && actor == 1 && HostWithoutTravelPartner);
+
+    private bool TravelIsBlocked(NativeActorSession session)
+    {
+        if (PartnerHasHand || ItemMultiSelectHandler.current?.IsGroupDragging == true ||
+            ItemMouseDragHandler.current?.IsDraggingItem == true || shop.HeldForInteraction != null)
+            tripRefusal = "day_block_HoldingItem";
+        else if (NegociationUIManager.IsTradeLocked()) tripRefusal = "trip_block_trade";
+        else if (session?.Activities.BlockingChannel is string channel)
+        {
+            tripRefusal = "day_block_Activity";
+            Debug.Log($"[probably_coop] trip rejected day={StoreStation.Instance.dayCounter} activity={channel}");
+        }
+        return tripRefusal != null;
     }
 
     private static bool PrepareActorBackpacks(NativeActorSession session,GameItem[] selected)
@@ -353,7 +376,7 @@ internal sealed partial class NativeWorld
             StoreUIManager.Instance.clientCounter.SetActive(location==null);
             StoreUIManager.Instance.storeCreditDisplay.creditDisplayText.gameObject
                 .SetActive(location==null || location is DrJacksonLocation);
-            foreach(string name in new[]{"trashInvWindow","faucetWindow","drainInvWindow","cassettePlayerWindow","showcaseWindow","docInvWindow","invWindow","vendingMachineWindow","vendingFountainWindow"})
+            foreach(string name in new[]{"trashInvWindow","drainInvWindow","cassettePlayerWindow","showcaseWindow","docInvWindow","invWindow","vendingMachineWindow","vendingFountainWindow"})
             {
                 var window=AccessTools.Property(typeof(EmporiumEntry),name)?.GetValue(e) as PixelWindow;
                 window?.rectTransform.gameObject.SetActive(location==null);
@@ -395,7 +418,15 @@ internal static class SharedTravelRequest
 internal static class SharedReturnRequest
 {
     private static bool Prefix()
-    { if(NativeWorld.NativeTravelExecution) return true; var w=NativeGuest.Active ? NativeWorld.Guest : NativeWorld.Host; if(w==null) return true; w.ProposeTrip("return"); return false; }
+    {
+        if(NativeWorld.NativeTravelExecution) return true;
+        var world=NativeGuest.Active ? NativeWorld.Guest : NativeWorld.Host;
+        // A lone host gets the native warning about goods left on the ground.
+        // ReturnNow goes through travel validation again when the player confirms.
+        if(world==null || world.HostWithoutTravelPartner) return true;
+        world.ProposeTrip("return");
+        return false;
+    }
 }
 [HarmonyPatch(typeof(MapUIManager),nameof(MapUIManager.ReturnNow))]
 internal static class SharedConfirmedReturn

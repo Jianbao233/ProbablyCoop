@@ -102,6 +102,19 @@ internal static class NativeActorCheckpoint
         return envelope;
     }
 
+    internal static Envelope CreateFromSolo(Receipt source, Guid run, int slot)
+    {
+        var partner = NativeActorState.CreateDefault();
+        partner.playerName = "Partner";
+        var personal = new JObject { ["schema"] = 1, ["run"] = run.ToString("D"),
+            ["actors"] = new JArray(source.NativeHost, partner.Serialize()) };
+        // Native solo checkpoints put their saved items in the eleven store
+        // inventories. They have no serialized pocket roots or selected bag.
+        var roots = new JArray(RootKeys.Select(key => new JObject { ["key"] = key, ["save"] = JValue.CreateNull() }));
+        return Create(run, slot, source.Day, personal, roots,
+            new JArray(JValue.CreateNull(), JValue.CreateNull()), ReadSharedIds(source.NativeInventories));
+    }
+
     // Decode validates detached data only. Native item-specific tags, factories,
     // inventory capacities and onLoaded effects require a separate hydration
     // preflight and effect scope; success here never authorizes direct DecodeNodes.
@@ -263,7 +276,8 @@ internal static class NativeActorCheckpoint
             yield return entry;
     }
 
-    internal static Receipt ReadReceiptEntries(IEnumerable<KeyValuePair<string, ES3Data>> entries, Func<Guid, bool> isRegistered = null)
+    internal static Receipt ReadReceiptEntries(IEnumerable<KeyValuePair<string, ES3Data>> entries,
+        Func<Guid, bool> isRegistered = null, bool fromSolo = false)
     {
         byte[] player = null, station = null;
         var keys = new HashSet<string>(StringComparer.Ordinal);
@@ -329,6 +343,11 @@ internal static class NativeActorCheckpoint
                     case "dumpingGroundMinorWoundImmunitySearchesLeft": host.dumpingGroundMinorWoundImmunitySearchesLeft = body.Read<int>(); break;
                     case "modData":
                         var modData = body.Read<Dictionary<string, string>>();
+                        if (fromSolo)
+                        {
+                            if (HasCoopData(modData)) throw Invalid("solo source already contains cooperation data");
+                            break;
+                        }
                         if (modData == null || !modData.TryGetValue(ModDataKey, out receipt.Encoded)) throw Invalid("missing coop entry");
                         receipt.PartnerSetup = ReadPartnerSetup(modData);
                         if (modData.TryGetValue(EffectItemIds.SaveKey, out string allocation))
@@ -358,6 +377,10 @@ internal static class NativeActorCheckpoint
         if (!fields.Contains("dayCounter") || receipt.Slot < 0 || receipt.Day < 0) throw Invalid("native slot/day");
         return receipt;
     }
+
+    internal static bool HasCoopData(Dictionary<string, string> data) => data != null &&
+        data.Keys.Any(key => key.StartsWith("probably_coop:", StringComparison.Ordinal) ||
+            key.StartsWith("probably_coop.", StringComparison.Ordinal) || key == "probably_coop");
 
     // The setup receipt is historical: later perks may legitimately change.
     // Bind its exact text to this save; the coordinator validates its semantic

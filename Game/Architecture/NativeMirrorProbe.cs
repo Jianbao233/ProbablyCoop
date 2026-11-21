@@ -148,7 +148,7 @@ internal static partial class NativeMirrorProbe
             uint id=identities.Id(feature);
             data["entity"]=id;
             // Editor proof requests only read the live feature values and identity.
-            if(capture) { identities.Objects[id]=feature; identities.Seen.Add(id); }
+            if(capture) identities.RetainCaptured(feature,id);
         }
         return data;
     }
@@ -214,6 +214,8 @@ internal static partial class NativeMirrorProbe
     }
 #endif
     internal static JObject Capture(GameItem item)
+        => Context?.CaptureItem!=null ? Context.CaptureItem(item) : CaptureUncached(item);
+    internal static JObject CaptureUncached(GameItem item)
     {
         // Controls belong to the nearest item in the data graph, including
         // equipment carried inside another container. Renderer visibility does
@@ -580,8 +582,17 @@ internal static partial class NativeMirrorProbe
     {
         if (FindUnchanged(data) is GameItemElement same) return same;
         var values = (JObject)data["fields"];
-        var item = FindExisting(data) as GameItemElement ?? new GameItemElement((string)values["<identifier>k__BackingField"],
-            (string)values["<spriteAtlasPath>k__BackingField"], (string)values["<spritePath>k__BackingField"]);
+        var item = FindExisting(data) as GameItemElement;
+        if (item == null)
+        {
+            string identifier = (string)values["<identifier>k__BackingField"];
+            // The constructor always loads from the game's atlas. Workshop
+            // sprites resolve after the original item flags are applied below.
+            item = (bool?)values["<useSpriteFromMod>k__BackingField"] == true
+                ? new GameItemElement(identifier,"Items/items_tool","postit")
+                : new GameItemElement(identifier,(string)values["<spriteAtlasPath>k__BackingField"],
+                    (string)values["<spritePath>k__BackingField"]);
+        }
         bool fieldsChanged=PropertyChanged(data,"fields"),stateChanged=PropertyChanged(data,"state"),
             modifiedChanged=PropertyChanged(data,"modified"),shapeChanged=PropertyChanged(data,"shape"),
             positionChanged=PropertyChanged(data,"modifiedShape"),typesChanged=PropertyChanged(data,"types"),
@@ -650,6 +661,8 @@ internal static partial class NativeMirrorProbe
             var examine=ReadWindow(data["examine"] as JObject);
             if(!ReferenceEquals(item.examineWindow,examine)) item.SetExamineWindow(examine);
         }
+        if(NativeGuest.Active && item.contentWindow!=null && NativeContainerAccess.IsSealed(item))
+            NativeContainerAccess.HideContents(item);
         // ValidateSelect resets drag preview/background transforms. A remote
         // machine label or tooltip update alone must not reset the local hand.
         if(fieldsChanged || stateChanged || modifiedChanged || shapeChanged || positionChanged || typesChanged || featuresChanged || modifiersChanged)

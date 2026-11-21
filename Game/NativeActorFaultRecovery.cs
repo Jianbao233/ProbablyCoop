@@ -11,14 +11,12 @@ namespace ProbablyCoop;
 internal static class NativeActorFaultRecovery
 {
     private static bool returning;
-    private static string pendingNotice;
-    private static CustomUIWindow notice;
 
     // Call before room.Tick, native capture and any new gameplay command.
     // true means this frame was consumed by the recovery transition.
-    internal static bool TryReturnToMenu(Action closeNetwork)
+    internal static bool TryReturnToMenu(Action closeNetwork, Action<int?> reportStop)
     {
-        ShowPendingNotice();
+        if (returning && SceneManager.GetActiveScene().name == "EmporiumMenu") returning = false;
         var session = NativeActorSession.Current;
         if (session == null || !session.Faulted || session.Terminal || returning) return false;
         var scene = SceneManager.GetActiveScene();
@@ -36,14 +34,17 @@ internal static class NativeActorFaultRecovery
         var failures = new List<Exception>();
         string reason = session.Failure ?? "合作状态未能完成一致性校验。";
         if (reason.Length > 1200) reason = reason.Substring(0, 1200);
-        pendingNotice = "合作局已停止，已返回主菜单。\n\n" + reason + "\n\n" +
-            (session.VerifiedCheckpoint == null
-                ? "本次合作局尚无已确认的存档；请重新新建合作局。未确认的操作不保留。"
-                : "请从“继续合作局”返回最近成功保存的合作检查点，未确认的当日操作不保留。最近已确认：第 " +
-                    session.VerifiedCheckpoint.Day + " 天。");
+        reportStop(session.VerifiedCheckpoint?.Day);
         CoopRun.Armed = false;
         try
         {
+            // The nightly report can still be on a separate UI canvas when the
+            // store scene is frozen. Hide it before loading the native menu.
+            Try(() =>
+            {
+                var calendar = AdvCalendarUIManager.Instance;
+                if (calendar != null && calendar.UIPanel != null) calendar.UIPanel.SetActive(false);
+            }, failures);
             // Freeze only the verified failing InventoryScene. DontDestroyOnLoad
             // runtime and unrelated scenes are not touched. No close-button or
             // dialogue cancellation action is invoked while discarding this run.
@@ -70,26 +71,7 @@ internal static class NativeActorFaultRecovery
         }
     }
 
-    private static void ShowPendingNotice()
-    {
-        if (SceneManager.GetActiveScene().name != "EmporiumMenu") return;
-        returning = false;
-        if (pendingNotice == null || CustomUIManager.Instance == null) return;
-        var builder = CustomUIManager.Window("probably_coop_failed_run", "合作局已安全停止", "menu")
-            .SetSize(700, 350).Center().SetDraggable(true).SetCloseOnEscape();
-        builder.AddLabel(pendingNotice);
-        if (builder.Last.text != null) builder.Last.text.richText = false;
-        builder.AddButton("知道了", () => notice?.Close());
-        notice = builder.Show();
-        notice.BringToFront();
-        pendingNotice = null;
-    }
-
-    internal static void Reset()
-    {
-        if (notice?.IsAlive == true) notice.Close();
-        notice = null; pendingNotice = null; returning = false;
-    }
+    internal static void Reset() => returning = false;
     private static void Try(Action action, List<Exception> failures)
     { try { action(); } catch (Exception error) { failures.Add(error); } }
 }

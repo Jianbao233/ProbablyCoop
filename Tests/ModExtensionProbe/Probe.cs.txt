@@ -1,0 +1,134 @@
+using System;
+using System.Globalization;
+using System.Linq;
+using ProbablyCoop.Api;
+using UnityEngine;
+
+namespace ProbablyCoopExtensionProbe;
+
+public sealed class ProbeMod : IMod
+{
+    private const string ModId = "probably_coop_extension_probe";
+    private CoopExtensionSession session;
+    private GameObject runner;
+    private int count;
+    private int displayed = -1;
+    private int phase;
+    private bool sawHostSession;
+    private ulong firstRevision;
+    private bool forceReconnect;
+
+    public void Init(ModManifest manifest) { }
+
+    public void OnEnable()
+    {
+        ModHelper.OnMessage(ModId,CoopExtensionApi.DiscoveryChannel,Discover);
+        var arguments = Environment.GetCommandLineArgs();
+        if(!arguments.Contains("--probably-coop-qa-extension-probe") ||
+            !Application.productName.StartsWith("Probably Stolen Coop RegressionRev12Water ",StringComparison.Ordinal))
+            return;
+        forceReconnect = arguments.Contains("--probably-coop-qa-extension-rejoin");
+        runner = new GameObject("ProbablyCoopExtensionProbe");
+        UnityEngine.Object.DontDestroyOnLoad(runner);
+        runner.AddComponent<ProbePump>().TickAction = Update;
+    }
+
+    public void OnDisable()
+    {
+        ModHelper.OffMessage(ModId,CoopExtensionApi.DiscoveryChannel,Discover);
+        if(runner!=null) UnityEngine.Object.Destroy(runner);
+        runner=null;
+        session=null;
+    }
+
+    private void Discover(string sender,object payload)
+    {
+        if(sender!="probably_coop") return;
+        var registration = new CoopExtensionRegistration("counter-v1",new[] { "increment" },
+            () => count.ToString(CultureInfo.InvariantCulture),Execute,Project,Attach);
+        ModHelper.SendMessage(ModId,CoopExtensionApi.RegistrationChannel,registration);
+    }
+
+    private void Attach(CoopExtensionSession next)
+    {
+        session=next;
+        phase=0;
+        displayed=-1;
+        firstRevision=0;
+        sawHostSession=false;
+        Debug.Log("[coop-extension-probe] attached role="+next.LocalActor);
+    }
+
+    private CoopActionResult Execute(CoopExtensionAction action)
+    {
+        if(action.Id!="increment" || action.Payload!="1" || count>=1000) return CoopActionResult.Rejected;
+        count++;
+        Debug.Log("[coop-extension-probe] authoritative increment actor="+action.Actor+" count="+count);
+        return CoopActionResult.Applied;
+    }
+
+    private void Project(CoopExtensionState state)
+    {
+        displayed=int.Parse(state.Payload,CultureInfo.InvariantCulture);
+        Debug.Log("[coop-extension-probe] guest state count="+displayed+" revision="+state.Revision);
+    }
+
+    private void Update()
+    {
+        if(session?.IsReady!=true) return;
+        if(session.LocalActor==CoopExtensionActor.Host)
+        {
+            if(!sawHostSession)
+            {
+                Debug.Log("[coop-extension-probe] PASS native host discovery");
+                sawHostSession=true;
+            }
+            return;
+        }
+        var state=session.CurrentState;
+        if(state==null || phase!=0) return;
+        if(forceReconnect)
+        {
+            if(state.Payload=="1" && displayed==1)
+            {
+                Debug.Log("[coop-extension-probe] PASS native reconnect recovered count=1");
+                phase=3;
+            }
+            return;
+        }
+        if(state.Payload!="0" || displayed!=0) return;
+        firstRevision=state.Revision;
+        if(session.Request("increment","1",firstRevision,ConfirmIncrement)!=CoopActionSubmission.Queued) return;
+        phase=1;
+    }
+
+    private void ConfirmIncrement(CoopActionResult result)
+    {
+        if(result!=CoopActionResult.Applied || displayed!=1 || session.CurrentState?.Payload!="1")
+        {
+            Debug.LogError("[coop-extension-probe] FAIL increment acknowledgement "+result);
+            phase=3;
+            return;
+        }
+        phase=2;
+        if(session.Request("increment","1",firstRevision,ConfirmStale)!=CoopActionSubmission.Queued)
+        {
+            Debug.LogError("[coop-extension-probe] FAIL stale request not queued");
+            phase=3;
+        }
+    }
+
+    private void ConfirmStale(CoopActionResult result)
+    {
+        if(result==CoopActionResult.Stale && displayed==1)
+            Debug.Log("[coop-extension-probe] PASS native partner action, projected receipt and stale rejection");
+        else Debug.LogError("[coop-extension-probe] FAIL stale request "+result);
+        phase=3;
+    }
+}
+
+public sealed class ProbePump : MonoBehaviour
+{
+    internal Action TickAction;
+    private void Update() => TickAction?.Invoke();
+}

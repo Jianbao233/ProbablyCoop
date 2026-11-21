@@ -239,8 +239,6 @@ internal static partial class NetTests
         Check(local.Room.Status == "bad_code", "room-null-code");
         local.Room.CreateLan(Now, "nonsense");
         Check(local.Room.Status == "bad_address" && !local.Room.HasLobby, "room-bad-address");
-        local.Room.CreateLan(Now, "127.0.0.1");
-        Check(local.Room.Status == "bad_address" && !local.Room.HasLobby, "room-loopback-address-refused");
         local.Room.CreateLan(Now, null);
         Check(local.Room.Status == "bad_address" && !local.Room.HasLobby, "room-null-address");
         // Addresses that parse but cannot host: not IPv4, multicast, unspecified.
@@ -446,12 +444,13 @@ internal static partial class NetTests
 
     private static void RoomLanAddress()
     {
+        CheckLanRoom(IPAddress.Loopback);
         IPAddress address = LocalAddress();
-        if (address == null)
-        {
-            Console.WriteLine("info room-lan skipped (no LAN address)");
-            return;
-        }
+        if (address != null) CheckLanRoom(address);
+    }
+
+    private static void CheckLanRoom(IPAddress address)
+    {
         // Not a local test: Create would need a lobby, a direct room does not.
         var host = new RoomEnd(Plain(), false);
         var guest = new RoomEnd(Plain(), false);

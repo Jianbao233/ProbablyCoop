@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>ProbablyCoop</AssemblyName>
     <RootNamespace>ProbablyCoop</RootNamespace>
-    <Version>0.3.1</Version>
+    <Version>0.3.5</Version>
 
     <ModId>probably_coop</ModId>
     <OutDir>$(MSBuildThisFileDirectory)torelease\ProbablyCoop\</OutDir>
@@ -57,6 +57,9 @@
     <Compile Include="Tests\NativeLocalTraitsQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
     <Compile Include="Tests\NativeRequestedUiQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
     <Compile Include="Tests\NativeRequestedAppraisalQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeCaptureChangesQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeWorkshopMachineQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
+    <Compile Include="Tests\NativeWorkshopSelfLearningQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
   </ItemGroup>
 
   <Target Name="RequireGameReferences" BeforeTargets="ResolveAssemblyReferences">

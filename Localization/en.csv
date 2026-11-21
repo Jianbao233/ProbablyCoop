@@ -1,4 +1,23 @@
 title,Probably Coop
+paste_room_code,Paste room code
+show_lan_options,Host via IPv4 / virtual LAN…
+hide_lan_options,Hide IPv4 options
+coop_saves_heading,Co-op saves
+terminal_title,Connection
+terminal_show_details,Connection details
+terminal_hide_details,Hide details
+terminal_overview,Connection · {0} · {1} · {2}
+terminal_role_host,Host
+terminal_role_guest,Guest
+terminal_role_none,No room
+terminal_transport_steam,Steam P2P
+terminal_transport_ipv4,IPv4 direct
+terminal_transport_local,Local loopback
+terminal_transport_none,No transport
+terminal_packets,Packets · sent {0:N0} · received {1:N0}
+terminal_revision,World revision · {0:N0}
+terminal_batches,Checkpoint · {0:N0} / {1:N0} batches · {2:N0} KiB
+terminal_no_session,No packet data for the current connection.
 room_header,Create or join a shared shop
 native_header,Shared shop · Room controls
 native_hint,Use F7 for room controls and personal carry.
@@ -9,14 +28,14 @@ join_code_hint,Paste a room code
 join_room_heading,Join a room
 host_room_heading,Host a room
 join_from_menu,Return to the main menu to join with a room code.
-host_address_hint,Host's local IPv4
+host_address_hint,Local IPv4 (127.0.0.1 for frp on this PC)
 pause_entry,Multiplayer
 hide_nutrifruit_launcher,Hide floating Nutrifruit button
 perk_mixed_coop,Personal effects apply to your character. The host's perks govern starting gifts and automatic shop events.
 perk_gambling_coop,Gambling addiction persists over time. {0} removes one random addiction. {1} can remove this perk directly. The host's perks govern early lottery access and automatic purchases.
-ipv4_mapping_hint,For port forwarding use UDP and target the host's listening port.
-udp_port_hint,UDP port (blank for auto)
-mapped_address_hint,Mapped IPv4:port (optional)
+ipv4_mapping_hint,For frp on the host PC, enter 127.0.0.1 and a fixed port. Forward UDP to that local address and port. A remote guest pastes the original room code and enters the tunnel's public IPv4 and external port.
+udp_port_hint,UDP port (optional)
+mapped_address_hint,Tunnel IPv4:external port (for joining via a tunnel)
 udp_listening,IPv4 listening on {0} (UDP)
 status_bad_udp_port,Enter a UDP port from 1 to 65535 or leave it blank for automatic assignment.
 status_udp_port_in_use,That UDP port is already in use. Try a different port.
@@ -119,7 +138,7 @@ result_Busy,Host busy
 result_Failed,Operation failed
 shop_header,Shared shop · Click to move goods
 lan_create,Host via IPv4
-status_bad_address,Enter the host PC LAN or VPN IPv4 address.
+status_bad_address,Enter the host adapter IPv4 or use 127.0.0.1 for frp on this PC. The guest enters the public UDP tunnel endpoint.
 status_lan_waiting,LAN room ready. Copy the PSI room code for your partner.
 status_lan_connected,LAN partner connected.
 status_steam_unavailable,Steam is unavailable. Enter an IPv4 address to host on LAN.
@@ -128,6 +147,18 @@ travel_unavailable,The guest can currently travel to the Dumping Grounds.
 day_peer_outside,Your partner must return before settling the day.
 trade_current_offer,Current offer
 resume_run,Resume co-op
+solo_import,Create a co-op copy from a solo save
+solo_import_button,Import a solo save
+solo_import_hint,Choose a solo save. Your copy uses a new slot and preserves the original.
+solo_import_no_saves,No eligible solo saves were found.
+solo_import_row,{0} · Slot {1} · Day {2} · Cash {3:N0}
+solo_import_confirm,"Create and open a co-op copy of slot {0} (day {1}, cash {2:N0})? Your solo save will be preserved."
+solo_import_back,Back to co-op menu
+solo_import_failed,Couldn't create a co-op copy of this solo save.
+solo_import_failure_reason,Couldn't create a co-op copy: {0}
+sync_extension_missing_guest,Enable the required Mod on your client: {0}
+sync_extension_missing_host,The host is missing a Mod you enabled: {0}
+sync_extension_mismatch,The two clients have incompatible versions or settings for {0}.
 no_checkpoints,No readable co-op checkpoints.
 checkpoint_unavailable,Could not read that co-op checkpoint.
 cursor_location_0,Main menu
@@ -190,3 +221,70 @@ diff_guest_only,{0} {1}: partner only
 diff_version,"{0}: host {1}, partner {2}"
 diff_adapter,"{0} adapter protocol: host {1}, partner {2}"
 diff_more,and {0} more
+pointer_settings,Player Name and Notices
+pointer_settings_save,Save Player Name
+settings_pointer_name,Player Name
+settings_pointer_name_help,Your partner sees this name beside your cursor. Leave it blank to use your Steam name.
+settings_ping_binding,Item Ping Binding
+settings_ping_binding_help,Aim at an item and press this button to notify your partner. Defaults to middle mouse.
+settings_sync_notices,Show Co-op Sync Notices
+settings_sync_notices_help,Show ordinary wait and retry notices. Join errors and connection details stay on the co-op panel.
+item_ping_notice,Your partner marked {0}
+player_name,Player Name
+player_name_input,Enter player name (Steam name by default)
+change_player_name,Change Player Name
+player_name_changed,Player name updated
+contact_title,Contact
+contact_qq_group,QQ Group 1132567943
+contact_author_qq,Author QQ 1600597561
+contact_discord,Discord jianbao1954 (not often online)
+contact_bilibili,Bilibili (copy link)
+contact_qq_group_copied,QQ group number copied
+contact_author_qq_copied,Author QQ copied
+contact_discord_copied,Discord username copied
+contact_bilibili_copied,Bilibili link copied
+history_scan_deferred,Historical checkpoints are not scanned yet
+history_scan_complete,Historical checkpoints included
+scan_history,Scan History
+scan_checkpoints_loading,Finding cooperative saves…
+sync_fail_host_capture,Host could not capture the shop state
+sync_fail_host_encode,Host could not package the shop state
+sync_fail_guest_format,Guest received an invalid checkpoint page
+sync_fail_guest_budget,Checkpoint exceeded the guest transfer limit
+sync_fail_guest_apply,Guest could not decode or apply the shop state
+sync_previous_progress,Last recorded progress {0}
+day_bedroll_bell,Ring to remind the host to end the day
+day_settlement_unavailable,Cannot end the day yet. Resolve any pending shop event and make sure both players are back in the shop with empty hands.
+day_block_StoreOpen,Close the shop before ending the day.
+day_block_Outside,Both players need to be back at the shop before ending the day.
+day_block_InTransit,Wait for the scene change to finish.
+day_block_HoldingItem,Someone is still holding an item. Put it down and try again.
+day_block_MandatoryCustomer,A required customer or visitor still needs your attention.
+day_block_Activity,A call or another shop activity is still in progress. Finish it or close its window and try again.
+day_block_ActorState,The co-op players are still getting ready. Try again shortly.
+day_block_Services,The nightly service costs could not be read.
+day_block_Funds,There are not enough funds for the selected nightly services.
+day_block_MissingSave,The current co-op save could not be read. The night has not started.
+day_input_wait,The host is finishing the day and saving. Please wait.
+day_recovery_exit,Return to the main menu without saving again
+trip_block_busy,Wait for the scene change or nightly settlement to finish before leaving.
+trip_block_trade,A trade is still in progress. Finish or close it before leaving.
+diag_copy,Copy diagnostic
+diag_copied,Diagnostic copied
+diag_DAY-201,The new day was saved. Morning is still unconfirmed. Wait or return to the menu and resume the co-op save.
+diag_DAY-202,Morning completed. The new save is unverified. Wait or return to the last confirmed co-op save.
+diag_DAY-203,Save and morning are both unconfirmed. Wait for the host. If this persists, resume the last confirmed co-op save.
+diag_DAY-204,Save and morning are confirmed. The transition is still pending. Wait or return to the menu and resume.
+diag_DAY-206,The host could not write or verify the next day’s save. If it repeats after resuming, send the host log.
+diag_DAY-301,The host is still confirming the day. Ask the host for the DAY code in the co-op panel and wait in the shop.
+diag_reloaded_from,Returned to the menu. Resume the last confirmed co-op save from day {0}.
+diag_no_checkpoint,Returned to the menu. There is no confirmed save for this run. Start a new co-op game.
+diag_SYNC-101,The host could not collect shop state. Keep the host game open and rejoin once. If it repeats, send the host log.
+diag_SYNC-102,The host could not package shop state. Rejoin once with the original room code. If it repeats, send the host log.
+diag_SYNC-103,A checkpoint failed validation on the guest. Rejoin with the original code. If it repeats, send both logs.
+diag_SYNC-104,The checkpoint exceeded the guest transfer limit. Send both logs and a copy of the co-op save.
+diag_SYNC-105,The guest could not apply shop state. Verify the game and required mod versions on both sides and rejoin.
+diag_SYNC-106,The gameplay mods or their co-op interfaces do not match. Check the load log and rejoin.
+diag_SYNC-107,The connection timed out. Check the room and the UDP route or Steam connection before rejoining.
+status_udp_address_not_local,Use the host adapter IPv4 or 127.0.0.1 for frp on the same PC. The guest enters the public tunnel endpoint.
+player_options_heading,Player settings

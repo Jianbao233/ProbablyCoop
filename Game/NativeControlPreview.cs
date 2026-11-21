@@ -34,7 +34,7 @@ internal sealed partial class NativeWorld
         {
             if(controlPreviews.Count>=16)
             {
-                CommandNotice("待确认的设备操作过多，请稍后再试。");
+                CommandNotice("待确认的设备操作过多，请稍后再试。",sync:true);
                 return;
             }
             uint owner=(uint)command["owner"];
@@ -80,6 +80,13 @@ internal sealed partial class NativeWorld
             }
             RefreshSelection(entry.Key);
         }
+    }
+    private void RestoreSelectionPreviews()
+    {
+        if (controlPreviews.Count == 0) return;
+        var changed = controlPreviews.Keys.ToArray();
+        controlPreviews.Clear();
+        foreach (uint id in changed) RefreshSelection(id);
     }
     private void FlushControlPreview()
     {

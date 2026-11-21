@@ -37,7 +37,7 @@ internal sealed class LocalRoom : ICoopRoom
     internal void CreateLan(string address, string port = null)
     {
         if (HasLobby) return;
-        if (!DirectRoomEndpoint.TryParseIpv4(address.Trim(), out var ip))
+        if (!DirectRoomEndpoint.TryParseIpv4(address?.Trim(), out var ip))
         {
             Status = "bad_address";
             Detail = "";
@@ -87,7 +87,10 @@ internal sealed class LocalRoom : ICoopRoom
                 return;
             }
             Detail = ex.SocketErrorCode.ToString();
-            Status = code != null ? "join_failed" : "create_failed";
+            Status = code == null && ex.SocketErrorCode == SocketError.AddressNotAvailable
+                ? "udp_address_not_local" : code != null ? "join_failed" : "create_failed";
+            Debug.LogWarning($"[probably_coop] UDP {(code == null ? "bind" : "join")} failed: " +
+                $"{CoopIssueCode.DirectRoom(Status) ?? Status} ({ex.SocketErrorCode})");
             return;
         }
         guest = code != null;

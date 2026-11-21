@@ -3,7 +3,10 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
+using System.Threading.Tasks;
 using ES3Internal;
+using ES3Types;
 using HarmonyLib;
 using UnityEngine;
 
@@ -16,6 +19,14 @@ internal static class CoopRun
     internal static bool Armed { get; set; }
     private static PlayerStore creating;
     private static PreparedResume pendingResume;
+    private sealed class ReadCacheEntry
+    {
+        internal long Length;
+        internal long LastWriteUtcTicks;
+        internal Checkpoint Checkpoint;
+    }
+    private static readonly Dictionary<string,ReadCacheEntry> readCache =
+        new Dictionary<string,ReadCacheEntry>(StringComparer.OrdinalIgnoreCase);
     internal static bool IsCreating(PlayerStore store) => ReferenceEquals(creating, store) && store != null;
 
     internal sealed class Checkpoint
@@ -29,6 +40,7 @@ internal static class CoopRun
         internal string Locale;
         internal DateTime SavedAt;
         internal bool HasActors;
+        internal bool HasCoopData;
         internal bool NeedsRecovery;
         internal string RecoveryReason;
         internal bool UsesEffectReplication;
@@ -38,6 +50,7 @@ internal static class CoopRun
         internal PreparedResume Prepared;
         internal byte[] ImageDigest;
         internal SavePreviewData Preview;
+        internal bool PreviewOnly;
         internal bool Historical => File != SaveFiles.Slot(Slot);
     }
 
@@ -123,25 +136,216 @@ internal static class CoopRun
     internal static List<Checkpoint> ListCheckpoints(bool includeHistory = false, int? onlySlot = null)
     {
         var checkpoints = new List<Checkpoint>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach(var checkpoint in ScanCheckpoints(includeHistory,onlySlot))
+            if(checkpoint!=null) checkpoints.Add(checkpoint);
+        checkpoints.Sort((a, b) => b.SavedAt.CompareTo(a.SavedAt));
+        return checkpoints;
+    }
+
+    // Null steps still consume a scan budget: a large directory of solo or
+    // damaged saves must not become one uninterruptible MoveNext call.
+    internal static IEnumerable<Checkpoint> ScanCheckpoints(bool includeHistory,int? onlySlot=null,bool previews=false)
+    {
+        var registered = new Dictionary<int,HashSet<Guid>>();
         foreach (string key in ModHelper.ListModDataFiles(ModId))
         {
-            if (!TryParseRegistration(key,ModHelper.ReadModDataFileText(ModId,key),out var run,out int slot) ||
-                onlySlot.HasValue && slot!=onlySlot.Value) continue;
-            if(TryRead(slot,run,out var checkpoint) && seen.Add(checkpoint.File)) checkpoints.Add(checkpoint);
+            if(key.StartsWith(MarkerPrefix,StringComparison.Ordinal) && key.EndsWith(".txt",StringComparison.Ordinal) &&
+                TryParseRegistration(key,ModHelper.ReadModDataFileText(ModId,key),out var run,out int slot) &&
+                (!onlySlot.HasValue || onlySlot.Value==slot))
+            {
+                if(!registered.TryGetValue(slot,out var runs)) registered[slot]=runs=new HashSet<Guid>();
+                runs.Add(run);
+            }
+            yield return null;
+        }
+        foreach(var entry in registered)
+        {
+            string file=SaveFiles.Slot(entry.Key);
+            Checkpoint checkpoint=null;
+            if(previews && !includeHistory && entry.Value.Count==1)
+                foreach(var run in entry.Value) TryBuildRegisteredPreview(run,entry.Key,out checkpoint);
+            if(checkpoint!=null) yield return checkpoint;
+            else foreach(var parsed in ScanPreview(entry.Key,file,previews))
+                yield return parsed!=null && (parsed.HasActors || entry.Value.Contains(parsed.Run)) ? parsed : null;
         }
         // Discovery is deliberately read-only: native import/duplicate can
         // retain a valid two-actor payload while losing its external marker.
         foreach(string path in System.IO.Directory.EnumerateFiles(Application.persistentDataPath,"save_*.es3"))
         {
             string file=Path.GetFileName(path);
-            if (!TryFileSlot(file,out int slot,out bool history) || history && !includeHistory ||
-                onlySlot.HasValue && slot!=onlySlot.Value || seen.Contains(file)) continue;
-            if(TryRead(slot,Guid.Empty,out var checkpoint,file) && checkpoint.HasActors && seen.Add(file))
+            if(TryFileSlot(file,out int slot,out bool history) && (!history || includeHistory) &&
+                (!onlySlot.HasValue || onlySlot.Value==slot) && (history || !registered.ContainsKey(slot)))
+            {
+                foreach(var checkpoint in ScanPreview(slot,file,previews))
+                    yield return checkpoint?.HasActors==true ? checkpoint : null;
+            }
+            else yield return null;
+        }
+    }
+
+    private static IEnumerable<Checkpoint> ScanPreview(int slot,string file,bool previews)
+    {
+        if(!previews)
+        {
+            yield return TryRead(slot,Guid.Empty,out var full,file) ? full : null;
+            yield break;
+        }
+        string path=SaveFiles.AbsolutePath(file);
+        var info=new FileInfo(path);
+        if(!info.Exists) { yield return null; yield break; }
+        long length=info.Length, modified=info.LastWriteTimeUtc.Ticks;
+        if(readCache.TryGetValue(path,out var cached) && cached.Length==length && cached.LastWriteUtcTicks==modified)
+        {
+            if(cached.Checkpoint?.HasActors==true) SetRecovery(cached.Checkpoint);
+            yield return cached.Checkpoint;
+            yield break;
+        }
+        var settings=new ES3Settings(path);
+        if(settings.location!=ES3.Location.File || settings.format!=ES3.Format.JSON)
+        { yield return null; yield break; }
+        // Resolve game serializers here. The worker uses only ES3's lexical reader
+        // and these primitive readers, avoiding its shared type cache and Unity state.
+        var stringType=ES3TypeMgr.GetOrCreateES3Type(typeof(string));
+        var intType=ES3TypeMgr.GetOrCreateES3Type(typeof(int));
+        var preview=new Checkpoint { Slot=slot,StoredSlot=-1, Day=-1, File=file, SavedAt=info.LastWriteTime,
+            PreviewOnly=true };
+        using var cancel=new CancellationTokenSource();
+        var token=cancel.Token;
+        var work=Task.Run(() => ReadMenuPreview(path,settings,preview,stringType,intType,token));
+        try
+        {
+            while(!work.IsCompleted) yield return null;
+            if(work.GetAwaiter().GetResult() is Exception error)
+                Debug.LogWarning($"[probably_coop] slot {slot} checkpoint preview could not be read: {error.Message}");
+        }
+        finally { cancel.Cancel(); }
+        Checkpoint result=preview.Day>=0 && preview.StoredSlot>=0 && preview.Run!=Guid.Empty ? preview : null;
+        info.Refresh();
+        if(!info.Exists || info.Length!=length || info.LastWriteTimeUtc.Ticks!=modified) { yield return null; yield break; }
+        if(result?.HasActors==true) SetRecovery(result);
+        if(readCache.Count>=512) readCache.Clear();
+        readCache[path]=new ReadCacheEntry { Length=length, LastWriteUtcTicks=modified, Checkpoint=result };
+        yield return result;
+    }
+
+    private static Exception ReadMenuPreview(string path,ES3Settings settings,Checkpoint result,ES3Type stringType,
+        ES3Type intType,CancellationToken token)
+    {
+        try
+        {
+            using var reader=(ES3JSONReader)ES3Reader.Create(NativeActorPersistence.ReadFileImage(path),settings);
+            foreach(string key in reader.Properties)
+            {
+                token.ThrowIfCancellationRequested();
+                if(key!="playerStore" && key!="storeStation") { reader.Skip(); continue; }
+                ReadPreviewBrace(reader,'{');
+                string property=reader.ReadPropertyName();
+                if(property=="__type") { reader.Skip(); property=reader.ReadPropertyName(); }
+                if(property!="value") throw new InvalidDataException("Missing preview payload.");
+                ReadPreviewBrace(reader,'{');
+                foreach(string name in reader.Properties)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if(key=="storeStation")
+                    {
+                        if(name=="dayCounter") result.Day=reader.Read<int>(intType);
+                        else reader.Skip();
+                    }
+                    else switch(name)
+                    {
+                        case "saveSlotId": result.StoredSlot=reader.Read<int>(intType); break;
+                        case "runID": Guid.TryParse(reader.Read<string>(stringType),out result.Run); break;
+                        case "playerCash": result.Cash=reader.Read<int>(intType); break;
+                        case "storeName": result.Name=reader.Read<string>(stringType); break;
+                        case "startLocale": result.Locale=reader.Read<string>(stringType); break;
+                        case "modData":
+                            if(reader.baseReader.Peek()=='n') { reader.Skip(); break; }
+                            ReadPreviewBrace(reader,'{');
+                            foreach(string modKey in reader.Properties)
+                            {
+                                if(modKey==NativeActorCheckpoint.ModDataKey) result.HasActors=true;
+                                reader.Skip();
+                            }
+                            ReadPreviewBrace(reader,'}');
+                            break;
+                        default: reader.Skip(); break;
+                    }
+                }
+                ReadPreviewBrace(reader,'}');
+                ReadPreviewBrace(reader,'}');
+                if(result.Day>=0 && result.StoredSlot>=0 && result.Run!=Guid.Empty) break;
+            }
+            if(string.IsNullOrEmpty(result.Name)) result.Name="Cooperative store";
+            return null;
+        }
+        catch(OperationCanceledException) { return null; }
+        catch(Exception error) { result.Day=-1; return error; }
+    }
+
+    private static void ReadPreviewBrace(ES3JSONReader reader,char expected)
+    {
+        int next;
+        do { next=reader.baseReader.Read(); } while(next>=0 && char.IsWhiteSpace((char)next));
+        if(next!=expected) throw new InvalidDataException("Invalid preview object.");
+    }
+
+    private static bool TryBuildRegisteredPreview(Guid run,int slot,out Checkpoint checkpoint)
+    {
+        checkpoint=null;
+        if(run==Guid.Empty || slot<0) return false;
+        // The game's GetPreview also loads every other slot and can rebuild a damaged index.
+        SavePreviewData preview;
+        try { preview=ES3.Load<SavePreviewData>("preview_"+slot,SaveFiles.Index,default(SavePreviewData)); }
+        catch(Exception ex) when(ex is IOException or FormatException or ArgumentException) { return false; }
+        if(preview==null) return false;
+        string path=SaveFiles.AbsolutePath(SaveFiles.Slot(slot));
+        if(!File.Exists(path)) return false;
+        var modified=File.GetLastWriteTime(path);
+        if(preview.lastSaveDateTime.Year>1 &&
+            Math.Abs((modified-preview.lastSaveDateTime).TotalMinutes)>10) return false;
+        checkpoint=new Checkpoint {
+            Slot=slot,StoredSlot=slot,Run=run,Day=preview.dayCount,Cash=preview.credit,
+            Name=string.IsNullOrEmpty(preview.startName) ? "Cooperative store" : preview.startName,
+            Locale=preview.startLocale,SavedAt=modified,
+            HasActors=true,HasCoopData=true,File=SaveFiles.Slot(slot),Preview=preview,
+            PreviewOnly=true
+        };
+        return true;
+    }
+
+    internal static List<Checkpoint> ListSoloCheckpoints()
+    {
+        var registered = new HashSet<Guid>();
+        foreach (string key in ModHelper.ListModDataFiles(ModId))
+            if (TryParseRegistration(key, ModHelper.ReadModDataFileText(ModId, key), out var run, out _))
+                registered.Add(run);
+        var checkpoints = new List<Checkpoint>();
+        foreach (string path in System.IO.Directory.EnumerateFiles(Application.persistentDataPath, "save_*.es3"))
+        {
+            string file = Path.GetFileName(path);
+            if (TryFileSlot(file, out int slot, out bool history) && !history &&
+                TryRead(slot, Guid.Empty, out var checkpoint, file, soloOnly: true) &&
+                !registered.Contains(checkpoint.Run))
                 checkpoints.Add(checkpoint);
         }
         checkpoints.Sort((a, b) => b.SavedAt.CompareTo(a.SavedAt));
         return checkpoints;
+    }
+
+    internal static Checkpoint ImportSolo(Checkpoint selected, out string reason)
+    {
+        try
+        {
+            var imported = NativeCoopSaveRecovery.ImportSolo(selected);
+            reason = null;
+            return imported;
+        }
+        catch (Exception error)
+        {
+            Debug.LogWarning("[probably_coop] solo checkpoint import failed: " + error);
+            reason = error.Message;
+            return null;
+        }
     }
 
     internal static bool VerifyCheckpoint(PlayerStore store, int day)
@@ -179,6 +383,9 @@ internal static class CoopRun
     {
         current=null;
         if (checkpoint == null) return false;
+        if(checkpoint.PreviewOnly)
+            return TryRead(checkpoint.Slot,checkpoint.Run,out current,checkpoint.File,prepare) && current.HasActors &&
+                current.Day==checkpoint.Day && current.SavedAt==checkpoint.SavedAt;
         return TryRead(checkpoint.Slot,checkpoint.Run,out current,checkpoint.File,prepare) && current.HasActors &&
             current.Day==checkpoint.Day && current.Nonce==checkpoint.Nonce &&
             checkpoint.ImageDigest!=null && current.ImageDigest.AsSpan().SequenceEqual(checkpoint.ImageDigest);
@@ -235,7 +442,8 @@ internal static class CoopRun
 
     private static bool ValidFile(int slot,string file) => TryFileSlot(file,out int fileSlot,out _) && fileSlot==slot;
 
-    internal static bool TryRead(int slot, Guid expectedRun, out Checkpoint checkpoint,string file=null,bool prepare=false)
+    internal static bool TryRead(int slot, Guid expectedRun, out Checkpoint checkpoint,string file=null,bool prepare=false,
+        bool soloOnly=false)
     {
         checkpoint = null;
         if (slot < 0) return false;
@@ -250,15 +458,16 @@ internal static class CoopRun
             var settings = new ES3Settings(path);
             if (settings.location != ES3.Location.File || settings.format != ES3.Format.JSON) return false;
             var bytes = NativeActorPersistence.ReadFileImage(path);
-            NativeCoopSaveRecovery.ValidateRootNames(bytes,settings);
-            result.ImageDigest=Digest(bytes);
-            var entries = new List<KeyValuePair<string, ES3Data>>();
+            // The solo menu only lists candidates. Conversion still validates
+            // the full player/station graph, raw keys and selected file hash.
+            if(!soloOnly) NativeCoopSaveRecovery.ValidateRootNames(bytes,settings);
+            var entries = soloOnly ? null : new List<KeyValuePair<string, ES3Data>>();
             // Preview only scalar properties; never allocate a second PlayerStore
             // (even an uninitialized one) or run native gameplay hydration.
             using (var reader = ES3Reader.Create(bytes, settings))
                 foreach (var entry in NativeActorCheckpoint.ReadNativeEntries(reader))
                 {
-                    entries.Add(entry);
+                    entries?.Add(entry);
                     if (entry.Key != "playerStore" && entry.Key != "storeStation") continue;
                     using var body = ES3Reader.Create(entry.Value.bytes, new ES3Settings(false));
                     foreach (string name in body.Properties)
@@ -274,9 +483,12 @@ internal static class CoopRun
                             case "startLocale": result.Locale = body.Read<string>(); break;
                             case "startType": result.Preview.startType=body.Read<NewGameData.StartType>(); break;
                             case "startScenarioId": result.Preview.startScenarioId=body.Read<string>(); break;
-                            case "version": result.Preview.version=body.Read<string>(); break;
+                            case "version":
+                            case "saveVersion": result.Preview.version=body.Read<string>(); break;
                             case "modData":
                                 var data = body.Read<Dictionary<string, string>>();
+                                result.HasCoopData = NativeActorCheckpoint.HasCoopData(data);
+                                if(soloOnly && result.HasCoopData) return false;
                                 result.HasActors = data?.ContainsKey(NativeActorCheckpoint.ModDataKey) == true;
                                 result.UsesEffectReplication = data != null &&
                                     data.TryGetValue(NativeEffectCampaign.SaveKey, out string schema) &&
@@ -288,6 +500,7 @@ internal static class CoopRun
                 }
             if(result.StoredSlot<0 || result.Run==Guid.Empty || expectedRun!=Guid.Empty && result.Run!=expectedRun ||
                 result.Day<0) return false;
+            result.ImageDigest=Digest(bytes);
             if(result.HasActors)
                 try
                 {
@@ -296,12 +509,7 @@ internal static class CoopRun
                     if(envelope.PartnerSetup!=null && !NativeActorPartnerSetup.IsComplete(envelope.PartnerSetup,result.Run))
                         throw new InvalidDataException("伙伴角色创建记录未通过校验。");
                     result.Nonce=envelope.Checkpoint;
-                    result.NeedsRecovery=result.Historical || result.StoredSlot!=slot || !IsRegistered(result.Run,slot);
-                    result.RecoveryReason=result.Historical
-                        ? "历史合作检查点将在独立新槽位继续，保留历史档和当前档。"
-                        : result.StoredSlot!=slot
-                        ? "文件槽位与内部身份不一致；继续时将创建独立的合作恢复副本，保留原档。"
-                        : result.NeedsRecovery ? "合作数据完整，但本机缺少合作登记；继续时验证并补登记。" : null;
+                    SetRecovery(result);
                     if(prepare) result.Prepared=new PreparedResume(path,bytes,envelope);
                 }
                 catch(Exception error)
@@ -319,6 +527,16 @@ internal static class CoopRun
             Debug.LogWarning($"[probably_coop] slot {slot} checkpoint could not be read: {ex.Message}");
             return false;
         }
+    }
+
+    private static void SetRecovery(Checkpoint result)
+    {
+        result.NeedsRecovery=result.Historical || result.StoredSlot!=result.Slot || !IsRegistered(result.Run,result.Slot);
+        result.RecoveryReason=result.Historical
+            ? "历史合作检查点将在独立新槽位继续，保留历史档和当前档。"
+            : result.StoredSlot!=result.Slot
+                ? "文件槽位与内部身份不一致；继续时将创建独立的合作恢复副本，保留原档。"
+                : result.NeedsRecovery ? "合作数据完整，但本机缺少合作登记；继续时验证并补登记。" : null;
     }
 
     internal static string SlotPath(PlayerStore store) => SaveFiles.AbsolutePath(SaveFiles.Slot(store.saveSlotId));

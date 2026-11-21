@@ -20,7 +20,7 @@ namespace ProbablyCoop;
 /// can cross back into native business methods; factories and saves never run on a guest.</summary>
 internal sealed partial class NativeWorld
 {
-    private const int WorldSchema=22;
+    private const int WorldSchema=23;
     private int captureCompositionSamples;
     private readonly NativeModelContext model = new NativeModelContext();
     private readonly NativeDeferredFields.StockCache frozenStock=new NativeDeferredFields.StockCache();
@@ -50,6 +50,7 @@ internal sealed partial class NativeWorld
     private bool closed;
     private bool peerConnected;
     private bool pagedCheckpoint;
+    private bool encodingUsesBasis;
     private ulong peerGeneration,encodingGeneration;
     private NativeCaptureComparison.Bucket encodingComparison;
     private sealed class EncodedSnapshot
@@ -63,6 +64,8 @@ internal sealed partial class NativeWorld
         internal ulong MinimumRevision;
         internal Exception Error;
         internal double Milliseconds;
+        internal HashSet<uint> ConfirmedRecords;
+        internal HashSet<uint> UntrackedRecords;
     }
     private sealed class DecodedSnapshot
     {
@@ -91,7 +94,7 @@ internal sealed partial class NativeWorld
     internal bool HasPendingWork => !Ready || gesture!=null || handActions.Count>0 || releasedHands.Count>0 ||
         cancelledHands.Count>0 || orphanHandRequests.Count>0 || documentReads.Count>0 || documentReadAttempt!=null ||
         placementPreviews.Count>0 || controlPreviews.Count>0 || controlDrafts.Count>0 || continuousPreviews.Count>0 || pendingChoice!=null || HasUiRequests ||
-        link?.HasUnacknowledgedRequests==true;
+        pendingModActions.Count!=0 || link?.HasUnacknowledgedRequests==true;
     internal ShopView View { get; private set; }
     internal string[] MorningReport { get; private set; }=Array.Empty<string>();
     internal int MorningReportDay { get; private set; }
@@ -107,7 +110,7 @@ internal sealed partial class NativeWorld
     internal NativeWorld(bool host)
     {
         this.host=host;
-        if (host) { Host=this; model.Captured=CaptureExtra; model.CapturingItem=PrepareCaptureTooltips; }
+        if (host) { Host=this; model.Captured=CaptureExtra; model.CapturingItem=PrepareCaptureTooltips; model.CapturedIdentity=ObserveCaptureIdentity; }
         else { Guest=this; model.Applied=ApplyExtra; }
     }
     internal void Close()
@@ -130,6 +133,7 @@ internal sealed partial class NativeWorld
 
     private void CloseSession()
     {
+        CloseModExtensions();
         CloseShooting();
         StopReplicaRingtone();
         ResetDynamicChoice();
@@ -155,6 +159,7 @@ internal sealed partial class NativeWorld
         sortProofs.Clear(); sortProofRows.Clear();
         contentsProofs.Clear(); contentsProofRows.Clear();
         decodeLifetime.Cancel(); decodeLifetime.Dispose();
+        ResetCaptureChanges();
         decoding=null; encoding=null;
         awaitingFull=null; authorityBasis=null; guestBasis=null; guestBaseBytes=null;
         if(ReferenceEquals(Guest,this)) { ReleaseReplicaCustomer(); Guest=null; }
@@ -191,9 +196,10 @@ internal sealed partial class NativeWorld
             {
                 if(packed.Error!=null)
                 {
-                    FailHostSynchronization(connection,"encode",packed.Error);
+                    RecoverHostSynchronization(connection,NativeSyncFailure.HostEncode,packed.Error,encodingUsesBasis);
                     return;
                 }
+                ConfirmCapturedRecords(packed);
                 NativePerformance.Sample("host.pack_worker",packed.Milliseconds);
                 encodingComparison?.worker.Add(packed.Milliseconds);
                 if(packed.Markers!=null) availableMarkers=packed.Markers;
@@ -235,6 +241,7 @@ internal sealed partial class NativeWorld
         }
         if(Time.realtimeSinceStartupAsDouble<nextCapture) { PrefetchTooltipReads(); return; }
         nextCapture=Time.realtimeSinceStartupAsDouble+0.25;
+        var basis=connection.NeedsFull || connection.Revision-authorityBaseRevision>=96 ? null : authorityBasis;
         JObject snapshot;
         ShopView shopView; byte[] shopBytes;
         var comparison=NativeCaptureComparison.Current;
@@ -262,7 +269,7 @@ internal sealed partial class NativeWorld
         }
         catch(Exception error)
         {
-            FailHostSynchronization(connection,"capture",error);
+            RecoverHostSynchronization(connection,NativeSyncFailure.HostCapture,error,basis!=null);
             return;
         }
         finally { captureTooltips.Clear(); prefetched.Clear(); capturedControlOwner=null; capturedControlOwnerProof=null; }
@@ -280,16 +287,24 @@ internal sealed partial class NativeWorld
         encodingGeneration=peerGeneration;
         encodingStamp=connection.CaptureStamp();
         var cancellation=decodeLifetime.Token;
-        var basis=connection.NeedsFull || connection.Revision-authorityBaseRevision>=96 ? null : authorityBasis;
+        encodingUsesBasis=basis!=null;
         ulong baseRevision=authorityBaseRevision;
         var auditBasis=NativeBackgroundQa.Enabled && verifiedRecordPublish<3 ? connection.FullState : null;
         bool preferPages=pagedCheckpoint;
         encoding=Task.Run(()=>EncodeSnapshot(snapshot,fields,cancellation,basis,baseRevision,auditBasis,preferPages));
     }
-    private static void FailHostSynchronization(ReplicaLink connection,string phase,Exception error)
+    private void RecoverHostSynchronization(ReplicaLink connection,NativeSyncFailure phase,Exception error,bool usedBasis)
     {
+        if(usedBasis)
+        {
+            Debug.LogWarning($"[probably_coop] incremental snapshot failed during {phase} at revision {connection.Revision}; retrying with a complete checkpoint. {error}");
+            authorityBasis=null;
+            ResetCaptureChanges();
+            nextCapture=0;
+            return;
+        }
         Debug.LogWarning($"[probably_coop] guest synchronization failed during host {phase}. Host shop and room retained. {error}");
-        connection.FailSynchronization();
+        connection.FailSynchronization(phase);
     }
     // Install command handlers before transport polling. Full capture runs
     // after polling, so it observes those commands in this same Unity tick.
@@ -299,14 +314,16 @@ internal sealed partial class NativeWorld
         shop=authority; link=connection; link.Execute=Execute; link.AcceptPresence=ReceiveViews;
         BindActorSession();
         ObserveOperationContext();
+        InitializeHostModExtensions();
     }
     internal bool TickGuest(ReplicaLink connection, Dictionary<uint,GameItemElement> legacyReplicas)
     {
         if(closed) return false;
         if(NativeBackgroundQa.Enabled) VerifyRetiredGrid();
         link=connection; link.AcceptTooltip=ReceiveFastTooltip;
+        DrainModActionReplies();
         commandProjection.Expire(CommandClock());
-        CheckCommandReply(); TickGuestHand(); FlushEndingContinue(); FlushWildClose(); FlushNews(); TickContinuousControls();
+        CheckCommandReply(); TickGuestHand(); FlushBedrollBells(); FlushEndingContinue(); FlushWildClose(); FlushNews(); TickContinuousControls();
         FlushControlPreview(); FlushDynamicChoice();
         PumpBubblePresentation(); TickShootingPresentation();
         PublishViews();
@@ -350,6 +367,7 @@ internal sealed partial class NativeWorld
         using var performance=NativePerformance.Measure("guest.apply",NativePerformance.FrameWork.Apply);
         var data=decoded.Data;
         if((int)data["schema"]!=WorldSchema) throw new InvalidDataException("Unknown native world schema");
+        var extensionProjection=PrepareModExtensionProjection(data["modExtensions"]);
         if(data["commandThrough"]?.Type!=JTokenType.Integer || !ulong.TryParse(data["commandThrough"].ToString(),out ulong commandThrough))
             throw new InvalidDataException("Invalid native command watermark");
         if(data["commandResult"]?.Type!=JTokenType.Integer || !ushort.TryParse(data["commandResult"].ToString(),out ushort commandResult) ||
@@ -474,6 +492,7 @@ internal sealed partial class NativeWorld
             ApplyFrontends((JArray)data["frontends"]);
             ApplyTooltipWatermark((ulong)data["tooltipThrough"]);
             projection.EndBatch();
+            ProjectModExtensions(extensionProjection);
             // No observable watermark advances until every native view above has
             // accepted this complete projection. Failure leaves the guest closed
             // to input; it is not claimed to be an in-place rollback.
@@ -495,6 +514,7 @@ internal sealed partial class NativeWorld
             ReconcileContinuous(commandThrough);
             RemoteHostDragging=(bool)data["hostDragging"];
             commandProjection.Applied(commandThrough,CommandClock(),applied);
+            modActionsProjectedThrough=commandThrough;
             published=true;
             if(personalNotifications!=null)
                 actorNotifications.Apply(personalNotifications,(text,color)=>StoreUIManager.Instance.Notify(text,color));
@@ -509,7 +529,14 @@ internal sealed partial class NativeWorld
 
     private JObject Capture(NativeDeferredFields fields,out ShopView shopView,out byte[] shopBytes)
     {
-        denseTooltips=(HasActorProjection ? CaptureOwnershipGraph().PlacedItemCount : model.Objects.Count)>=DenseTooltipThreshold;
+        var store=PlayerStore.Instance;
+        var blueprint=store.currentClientInstance?.GetClientBlueprint();
+        var client=CaptureClient(blueprint);
+        var actors=CaptureActors();
+        BeginChangedCapture(actors,client);
+        // A full baseline still validates the complete physical ownership graph.
+        // Routine publications retain unchanged subgraphs without walking them.
+        denseTooltips=(!incrementalCapture && HasActorProjection ? CaptureOwnershipGraph().PlacedItemCount : model.Objects.Count)>=DenseTooltipThreshold;
         useNativeAbilityGuards=denseTooltips && ReplicaItemAbility.NativeReturnContractUnmodified();
         var roots=new JArray(); model.Seen.Clear();
         using(model.Enter(fields))
@@ -528,20 +555,18 @@ internal sealed partial class NativeWorld
                         item.contentWindow==null && item.examineWindow==null && item.itemFeatures.Count==0
                         ? "host.plain_item" : "host.nested_or_featured_item") : default;
                     captureRoot=item;
-                    items.Add(new JObject { ["legacyId"]=shop.ItemId(item), ["data"]=NativeMirrorProbe.Capture(item) });
+                    items.Add(new JObject { ["legacyId"]=shop.ItemId(item), ["data"]=CaptureChangedRoot(item,fields) });
                 }
                 roots.Add(new JObject { ["place"]=binding.Key.Place, ["key"]=binding.Key.ToString(), ["entity"]=rootId, ["items"]=items,
                     ["inventoryState"]=NativeMirrorProbe.CaptureInventoryState(inventory),
                     ["shape"]=inventory is GameGridInventory grid ? RootShape(grid.inventoryShape,fields) : null });
             }
         }
+        EndChangedCapture();
         model.Sweep(false);
         moveProofs.Retain(model.Seen);
         sortProofs.Retain(model.Seen);
         contentsProofs.Retain(model.Seen);
-        var store=PlayerStore.Instance;
-        var blueprint=store.currentClientInstance?.GetClientBlueprint();
-        var client=CaptureClient(blueprint);
         var customerMotion=CaptureCustomerMotion();
         using(EnterPartnerOperation())
             if(client!=null) client["itemQueries"]=CaptureClientItemQueries(blueprint);
@@ -560,7 +585,7 @@ internal sealed partial class NativeWorld
             shopView=shop.Capture(); shopBytes=ShopProtocol.Encode(shopView);
             snapshot["view"]=Convert.ToBase64String(shopBytes);
         }
-        snapshot["actors"]=CaptureActors();
+        snapshot["actors"]=actors;
         snapshot["partnerSetupRequired"]=PartnerSetupRequired();
         snapshot["personalNotifications"]=NativeActorSession.Current?.PersonalUi.CaptureNotifications();
         snapshot["world"]=fields.Capture(store,HasActorProjection ? SharedWorldFields : WorldFields); snapshot["scene"]=CaptureSharedScene();
@@ -585,6 +610,7 @@ internal sealed partial class NativeWorld
         using(EnterPartnerOperation()) snapshot["choice"]=CaptureDynamicChoice();
         using(EnterPartnerOperation()) snapshot["frontends"]=CaptureFrontends();
         snapshot["documentRead"]=DocumentReadProof();
+        snapshot["modExtensions"]=CaptureModExtensions();
         return snapshot;
     }
     internal bool AuditProjection(out string detail)
@@ -680,10 +706,14 @@ internal sealed partial class NativeWorld
         // after business and item hydration, never from guest bootstrap defaults.
         bool tap=EmporiumEntry.IsWaterTapUnlocked();
         string scene=MapUIManager.Instance.Current?.Id ?? "";
-        if(e.faucet!=null && (presentedTap!=tap || presentedFixtureScene!=scene || !ReferenceEquals(presentedFaucet,e.faucet)))
+        var faucetView=e.faucetWindow?.rectTransform;
+        bool showTap=inStore && tap;
+        if(e.faucet!=null && faucetView!=null &&
+            (presentedTap!=tap || presentedFixtureScene!=scene || !ReferenceEquals(presentedFaucet,e.faucet) ||
+            faucetView.gameObject.activeSelf!=showTap))
         {
-            e.LoadFaucetUpdate(PlayerStore.Instance);
-            e.faucetWindow.rectTransform.gameObject.SetActive(inStore && tap);
+            e.ApplyFaucetState(tap);
+            if(!showTap && faucetView.gameObject.activeSelf) e.faucetWindow.Hide();
             presentedTap=tap; presentedFixtureScene=scene; presentedFaucet=e.faucet;
         }
         StoreVendingMachine.Instance.gameObject.SetActive(inStore && e.vendingMachineElement.childItem!=null);
@@ -741,6 +771,7 @@ internal sealed partial class NativeWorld
     }
     private void PrepareCaptureTooltips(GameItem value)
     {
+        ObserveCapturedItem(value);
         if(value is not GameItemElement item || captureTooltips.ContainsKey(item)) return;
         var ticket=new TooltipTicket(item,captureRoot,captureTooltipKey);
         captureTooltips.Add(item,denseTooltips ? ReadDenseTooltip(ticket) : ReadTooltipForCapture(item));
@@ -953,6 +984,7 @@ internal sealed partial class NativeWorld
     private ushort Execute(byte[] payload)
     {
         if(!NativeCommandEnvelope.TryRead(payload,out var command)) return (ushort)ShopResult.Unavailable;
+        if ((string)command["kind"] == "bedrollBell") return ReceiveBedrollBell(command);
         var previousHand=hostHand;
         var previousUiExecution=RemoteUiExecution;
         var previousOrigins=remoteChoiceOrigins;
@@ -990,6 +1022,7 @@ internal sealed partial class NativeWorld
             return (ushort)ShopResult.Busy;
         if(EndingActive) return (ushort)ShopResult.Busy;
         if((bool)AccessTools.Field(typeof(MapUIManager),"inTransit").GetValue(MapUIManager.Instance)) return (ushort)ShopResult.Busy;
+        if((string)command["kind"]=="modExtension") return ExecuteModAction(command);
         if(NativeBackgroundQa.Enabled) Debug.Log("[probably_coop QA] native request kind="+(string)command["kind"]+" action="+(string)command["action"]+" id="+(string)command["id"]);
         if((string)command["kind"]=="shooting") return ExecuteShooting(command);
         if(ShootingOwnsCustomer && (string)command["kind"] is "trade" or "barterOffer" or "bargain" or "bell" or "security") return (ushort)ShopResult.Busy;
@@ -1119,6 +1152,8 @@ internal sealed partial class NativeWorld
             result.Elided=fields.ElidedRows;
             result.Markers=fields.Markers;
             result.ReusedMarkers=fields.ReusedMarkers;
+            result.ConfirmedRecords=fields.ConfirmedRecords;
+            result.UntrackedRecords=fields.UntrackedRecords;
         }
         catch(Exception error) { result.Error=error; }
         result.Milliseconds=timer.Elapsed.TotalMilliseconds;

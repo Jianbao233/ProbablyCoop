@@ -28,7 +28,7 @@ internal sealed partial class NativeWorld
         uint id=(uint)data["entity"];
         if(!controlDrafts.TryGetValue(id,out var draft))
         {
-            if(controlDrafts.Count>=16) { CommandNotice("待确认的机器设置过多，请稍后再试。"); return; }
+            if(controlDrafts.Count>=16) { CommandNotice("待确认的机器设置过多，请稍后再试。",sync:true); return; }
             draft=new ControlDraft { Control=control, Request=new JObject { ["kind"]="control",["id"]=id,["owner"]=data["owner"], ["token"]=data["controlToken"] } };
             controlDrafts.Add(id,draft);
         }

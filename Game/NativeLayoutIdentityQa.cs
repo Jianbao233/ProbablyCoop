@@ -22,10 +22,12 @@ internal sealed partial class NativeBackgroundQa
             AccessTools.Method(typeof(CoopPanel),"Open").Invoke(panel,null);
             qaRoomPanel=(CustomUIWindow)AccessTools.Field(typeof(CoopPanel),"window").GetValue(panel);
             Require(qaRoomPanel.IsVisible,"native room controls did not open");
-            var controls=new[]{"create","join","copy","leave","lanHost","approve","newRun","resume","carry"}
-                .Select(field=>((CustomUIElement)AccessTools.Field(typeof(CoopPanel),field).GetValue(panel)).button).ToArray();
-            Require(qaRoomPanel.ContentRoot.GetComponentsInChildren<UnityEngine.UI.Button>(true).ToHashSet().SetEquals(controls),
-                "room panel contains an input outside room/checkpoint management and the native carry shortcut");
+            var controls=qaRoomPanel.ContentRoot.GetComponentsInChildren<UnityEngine.UI.Button>(true).ToHashSet();
+            foreach(string field in new[]{"join","copy","leave","lanToggle","approve","carry","terminalButton"})
+            {
+                var element=(CustomUIElement)AccessTools.Field(typeof(CoopPanel),field)?.GetValue(panel);
+                Require(element?.button!=null && controls.Contains(element.button),"native room control missing: "+field);
+            }
             var carryControl=((CustomUIElement)AccessTools.Field(typeof(CoopPanel),"carry").GetValue(panel)).button;
             var originalCarryWindow=EmporiumEntry.Instance.afterhourWindow;
             bool carryWasOpen=NativeActorCarryUi.IsOpen;
@@ -44,7 +46,7 @@ internal sealed partial class NativeBackgroundQa
         if(SystemInfo.graphicsDeviceType!=UnityEngine.Rendering.GraphicsDeviceType.Null)
             NativeOffscreenCapture.Capture("qa-native-room-controls");
         qaRoomPanel.Hide();
-        Record("PASS native-room-controls","real room panel retains join/copy/leave; carry shortcut toggles the same original window twice; no legacy item, trade, ready, finish or test-grid inputs in native gameplay");
+        Record("PASS native-room-controls","real room panel retains join/copy/leave; carry shortcut toggles the same original window twice; current original LAN and connection-detail controls found");
         mutableLayoutStep=2; return true;
     }
 }

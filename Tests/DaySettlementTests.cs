@@ -53,6 +53,27 @@ internal static class DaySettlementTests
         var next = Start();
         identity.ConfirmSave(true); identity.ConfirmMorning(true);
         Require(!identity.TryComplete() && !next.TryComplete(), "retired callbacks cannot supply a new night");
+        var verifiedBeforeRecovery = Start();
+        verifiedBeforeRecovery.ConfirmSave(true);
+        verifiedBeforeRecovery.Fail();
+        verifiedBeforeRecovery.ConfirmMorning(true);
+        Require(verifiedBeforeRecovery.SaveVerified && verifiedBeforeRecovery.Failed &&
+            !verifiedBeforeRecovery.MorningCompleted && !verifiedBeforeRecovery.TryComplete(),
+            "a failed morning retains the verified save for the recovery prompt and never restarts the night");
+        var noReceipts = Start();
+        var morningOnly = Start();
+        morningOnly.ConfirmMorning(true);
+        var both = Start();
+        both.ConfirmMorning(true);
+        both.ConfirmSave(true);
+        var rejectedSave = Start();
+        rejectedSave.ConfirmSave(false);
+        Require(CoopIssueCode.Settlement(verifiedBeforeRecovery) == "DAY-201" &&
+            CoopIssueCode.Settlement(morningOnly) == "DAY-202" &&
+            CoopIssueCode.Settlement(noReceipts) == "DAY-203" &&
+            CoopIssueCode.Settlement(both) == "DAY-204" &&
+            CoopIssueCode.Settlement(rejectedSave) == "DAY-206",
+            "different save and morning evidence must produce different support codes");
         Console.WriteLine("PASS native day settlement: receipt order, delayed completion, timeout, failures, identity and retirement");
     }
 
