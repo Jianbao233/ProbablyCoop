@@ -51,6 +51,9 @@ internal static class NativeActorCarryQueries
         };
     }
 
+    [HarmonyPrepare]
+    private static bool Prepare() => NativePlatform.SupportsHosting;
+
     private static IEnumerable<MethodBase> TargetMethods()
     { VerifyNativeContract(); return Contract.Value.Select(target=>(MethodBase)target.Method); }
 

@@ -6,14 +6,16 @@ namespace ProbablyCoop.Core;
 // snapshots must neither advance its sample serial nor restart the local timer.
 internal sealed class RunClockSync
 {
-    private const double Interval=5,Correction=0.25;
+    private const double Correction=0.25;
     internal ulong Serial { get; private set; }
     internal float Seconds { get; private set; }
     private double sampleAt;
     internal float At(double now) => Seconds+(float)Math.Max(0,now-sampleAt);
-    internal void Sample(float seconds,double now)
+    internal void Sample(float seconds,double now,bool accompanyingChange)
     {
-        if(Serial!=0 && now>=sampleAt && now-sampleAt<Interval && Math.Abs(At(now)-seconds)<Correction) return;
+        // A correction rides the next shop change or checkpoint. The clock
+        // alone must never turn an otherwise identical inventory into a packet.
+        if(Serial!=0 && (!accompanyingChange || now>=sampleAt && Math.Abs(At(now)-seconds)<Correction)) return;
         Receive(checked(Serial+1),seconds,now);
     }
     internal void Receive(ulong serial,float seconds,double now)

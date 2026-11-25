@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using HarmonyLib;
+using ProbablyCoop.Core;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -15,6 +16,11 @@ internal sealed partial class NativeBackgroundQa
     private string workshopApprovalObserved;
     private bool workshopCheckedMod;
     private double workshopStarted;
+    private const string TowerMod = "hydroponic_tower";
+    private const string TowerBottleTag = "QA_WORKSHOP_TOWER_BOTTLE";
+    private GameItem workshopTower, workshopTowerBottle;
+    private GameSlotInventory workshopTowerWaterSlot;
+    private bool workshopTowerMoved, workshopTowerHostVerified;
 
     private static string ReadWorkshopMachineArgument()
     {
@@ -109,9 +115,90 @@ internal sealed partial class NativeBackgroundQa
             workshopStarted = now;
         }
         Require(now-workshopStarted < 135, "Workshop pilot timed out: " + workshopMachine);
-        if (workshopMachine != SelfLearningMod)
-            throw new InvalidOperationException("Unknown Workshop pilot: " + workshopMachine);
-        if (authority) TickWorkshopSelfLearningHost(room,now);
-        else TickWorkshopSelfLearningGuest(room,now);
+        switch (workshopMachine)
+        {
+            case SelfLearningMod:
+                if (authority) TickWorkshopSelfLearningHost(room,now);
+                else TickWorkshopSelfLearningGuest(room,now);
+                break;
+            case TowerMod:
+                if (authority) TickWorkshopTowerHost();
+                else TickWorkshopTowerGuest(room);
+                break;
+            default:
+                throw new InvalidOperationException("Unknown Workshop pilot: " + workshopMachine);
+        }
+    }
+
+    private void TickWorkshopTowerHost()
+    {
+        if (workshopTower == null)
+        {
+            workshopTower = DirectoryMaster.Item(TowerMod);
+            Require(workshopTower?.contentWindow != null, "Workshop tower factory did not build its original window");
+            var shop = EmporiumEntry.Instance;
+            Require(GraphUtils.TryAcceptAll(shop.invElement, workshopTower) == 0 ||
+                GraphUtils.TryAcceptAll(shop.backInvinvElement, workshopTower) == 0, "tower does not fit in the shop");
+            var root = (GridPixelElement)workshopTower.contentWindow.childElement;
+            var switches = (GridPixelElement)root.GetElement(0, 3);
+            Require(switches.GetElement(0, 0).GetType().Assembly != typeof(SelectableElement).Assembly,
+                "fixture did not exercise a third-party control");
+            var plant = DirectoryMaster.Item("hydroponic");
+            Require(GraphUtils.TryAcceptAll((GameGridInventory)root.GetElement(0, 1), plant) == 0,
+                "tower work grid rejected the original hydroponic machine");
+            workshopTowerWaterSlot = MachineHydroponic.GetWaterSlot(plant);
+            workshopTowerBottle = SeedFrontendItem("bottled_water", TowerBottleTag);
+            Record("TRACE workshop-fixture", TowerMod + " custom switch row, nested native water slot and bottle");
+            return;
+        }
+
+        if (workshopTowerHostVerified || !ReferenceEquals(workshopTowerWaterSlot.childItem, workshopTowerBottle)) return;
+        workshopTowerHostVerified = true;
+        Record("PASS workshop-host", TowerMod + " guest moved the bottle into the original nested water slot");
+    }
+
+    private void TickWorkshopTowerGuest(RoomSelector room)
+    {
+        var world = NativeWorld.Guest;
+        if (world?.Ready != true || world.HasPendingWork || QaWaiting(room.Session.Native)) return;
+        var tower = world.Objects.Values.OfType<GameItemElement>()
+            .SingleOrDefault(item => item.parentInventory != null && item.identifier == TowerMod);
+        if (tower?.contentWindow == null) return;
+
+        var root = (GridPixelElement)tower.contentWindow.childElement;
+        var row = (GridPixelElement)root.GetElement(0, 3);
+        for (int i = 0; i < 4; i++)
+        {
+            var control = row.GetElement(i, 0) as MachineryButton;
+            Require(control?.isDisabled == true && world.TryData(control, out var data) && data["controlToken"] == null,
+                $"unsupported switch {i} must be disabled and have no authority token");
+            // Select invokes the native callback even for disabled controls when
+            // called directly. The placeholder must never acquire that callback.
+            control.Select();
+            Require(!QaWaiting(room.Session.Native), $"unsupported switch {i} submitted an action");
+        }
+        var workGrid = (GameGridInventory)root.GetElement(0, 1);
+        var plant = workGrid.childItems.Single(item => item.IsTag("HYDROPONIC_MACHINE_TAG"));
+        var slot = MachineHydroponic.GetWaterSlot(plant);
+        var bottle = FindSelfLearningItem(world, TowerBottleTag);
+        Require(slot != null && bottle != null, "native nested item or slot was lost during projection");
+
+        if (workshopMachineRejoin || workshopTowerMoved)
+        {
+            if (!workshopMachineRejoin)
+                Require(QaResult(room.Session.Native) == (ushort)ShopResult.Applied, "native nested slot request failed");
+            if (!ReferenceEquals(slot.childItem, bottle)) return;
+            Require(world.AuditProjection(out var detail), detail);
+            Finish((workshopMachineRejoin ? "PASS workshop-rejoin " : "PASS workshop-guest ") + TowerMod);
+            return;
+        }
+
+        tower.contentWindow.Show();
+        Require(tower.contentWindow.IsVisible(), "guest could not open the mixed machine window");
+        var target = slot.TryFindOneValidInventorySlot(bottle);
+        Require(target?.IsValid() == true, "native nested slot did not accept the bottle");
+        target.TryAcceptOnce(1);
+        Require(QaWaiting(room.Session.Native), "native nested slot did not submit to the room");
+        workshopTowerMoved = true;
     }
 }

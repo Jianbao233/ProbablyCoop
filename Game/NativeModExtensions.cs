@@ -36,6 +36,7 @@ internal sealed partial class NativeWorld
     }
 
     private Dictionary<string,ModExtension> modExtensions;
+    private JArray roomMods;
     private readonly Dictionary<ulong,ModActionPending> pendingModActions = new Dictionary<ulong,ModActionPending>();
     private ulong modActionsProjectedThrough;
     private bool modExtensionExecuting;
@@ -146,6 +147,11 @@ internal sealed partial class NativeWorld
                 throw new InvalidDataException("Cooperative extension is no longer enabled: " + extension.Contract.Id);
             rows.Add(extension.Contract.Write(ReadModExtensionState(extension)));
         }
+#if PROBABLY_COOP_GRID_QA
+        if (NativeBackgroundQa.Enabled && NativeBackgroundQa.IsHostProduct && NativeJoinWizardQa.Enabled && NativeJoinWizardQa.Blocked)
+            rows.Add(new JObject { ["id"]="qa_missing_expansion", ["version"]="1.4", ["protocol"]="qa_1",
+                ["actions"]=new JArray("activate"), ["revision"]=1, ["payload"]="{}" });
+#endif
         return rows;
     }
 
@@ -162,10 +168,24 @@ internal sealed partial class NativeWorld
 
     // Check before opening the native perk picker, so a rejected join cannot
     // commit a new partner character. Discovering a contract has no session effects.
-    internal static void CheckModExtensionJoin(JToken token,ref Dictionary<string,ModExtensionContract> contracts)
+    internal static Dictionary<string,string> ReviewModExtensionJoin(JToken token,ref Dictionary<string,ModExtensionContract> contracts)
     {
         contracts ??= DiscoverModExtensions().ToDictionary(row=>row.Key,row=>row.Value.Contract,StringComparer.Ordinal);
-        CheckModExtensionRows(token,contracts,contract=>contract,null,null);
+        var rows = ModExtensionContract.ReadRows(token);
+        var blockers = new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach (string id in rows.Keys)
+            if (!contracts.ContainsKey(id) || !ModHelper.IsModRunning(id))
+                blockers[id] = "sync_extension_missing_guest";
+        foreach (var contract in contracts.Values)
+        {
+            if (!rows.TryGetValue(contract.Id, out var row)) blockers[contract.Id] = "sync_extension_missing_host";
+            else if (!blockers.ContainsKey(contract.Id))
+            {
+                try { contract.Read(row, null); }
+                catch (InvalidDataException) { blockers[contract.Id] = "sync_extension_mismatch"; }
+            }
+        }
+        return blockers;
     }
 
     private static void CheckModExtensionRows<T>(JToken token,Dictionary<string,T> extensions,
@@ -284,10 +304,18 @@ internal sealed partial class NativeWorld
         finally { modExtensionExecuting = false; }
     }
 
-    private static string ReadModAuthorityState(ModExtension extension)
+    private string ReadModAuthorityState(ModExtension extension)
     {
-        using var authority = NativeActorSession.Current?.Enter(NativeActorRun.Slot.Host);
-        return extension.Registration.ReadState();
+        // A host UI read can enter here outside an action. Keep session calls
+        // unavailable inside any state callback, including reads of another extension.
+        bool executing = modExtensionExecuting;
+        modExtensionExecuting = true;
+        try
+        {
+            using var authority = NativeActorSession.Current?.Enter(NativeActorRun.Slot.Host);
+            return extension.Registration.ReadState();
+        }
+        finally { modExtensionExecuting = executing; }
     }
 
     private void DrainModActionReplies()

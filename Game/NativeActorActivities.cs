@@ -310,7 +310,14 @@ internal static class NativeActorContinuations
         var lease = activities.Begin(line, "dialogue-flow", actor,
             () => manager is UnityEngine.Object unity && unity != null && Epoch(manager) == epoch);
         if (line.endAction != null && !line.isEndActionExecuted && activities.Find(line, "dialogue-end") == null)
-            activities.Begin(line, "dialogue-end", actor, () => !line.isEndActionExecuted, true);
+        {
+            NativeActorActivities.Lease consequence = null;
+            consequence = activities.Begin(line, "dialogue-end", actor, () => !line.isEndActionExecuted &&
+                (consequence?.HasScheduledContinuation == true ||
+                    manager is UnityEngine.Object owner && owner != null &&
+                    (ReferenceEquals(line, Line(manager)) ||
+                     manager is DialogUIManager customer && ReferenceEquals(line, PausedLine(customer)))), true);
+        }
         return lease;
     }
     internal static NativeActorActivities.Lease Phone(PhoneUIManager ui, bool adoptCaller)

@@ -25,7 +25,8 @@ internal static class RoomConnectionStatus
         };
         string phase = room.IsHost && native?.SynchronizationFailed == true ? "status_sync_host_failed" :
             syncPhase is "sync_connecting" or "status_await_approval" or "sync_preparing" or "sync_receiving" or
-                "sync_checking" or "sync_installing" or "sync_ready" or "sync_failed" ? syncPhase : "status_" + room.Status;
+                "sync_checking" or "sync_installing" or "sync_ready" or "sync_failed" ? syncPhase :
+                NativePlatform.IsAndroid && room.Status is "idle" or "local_idle" ? "status_android_idle" : "status_" + room.Status;
         string summary = Loc("terminal_overview",Loc(role),Loc(transport),Loc(phase));
 
         var rows = new List<string>(3);

@@ -84,6 +84,13 @@ internal static class PartnerSetupTests
         using var defaults = new NativeActorRun(Store(), NativeActorState.CreateDefault());
         var empty = NativeActorPartnerSetup.Prepare(defaults, NativeActorPartnerSetup.CreateDraft(defaults.Run, Array.Empty<string>()), null);
         Check(NativeActorPartnerSetup.IsComplete(empty.Commit(), defaults.Run) && defaults.Partner.startingPerks.Count == 0, "empty draft is a persistent completed choice");
+        using var opening = new NativeActorRun(Store(), NativeActorState.CreateDefault());
+        string[] personal = { "lucky", "tinkerer", "diplomatic" };
+        Reject<InvalidDataException>(() => NativeActorPartnerSetup.PrepareOpening(opening, personal), "full opening validates the actual budget");
+        var paired = NativeActorPartnerSetup.PrepareOpening(opening, personal.Append("bad_lease"));
+        Check(NativeActorPartnerSetup.IsComplete(paired.Commit(), opening.Run) &&
+            opening.Partner.startingPerks.Select(perk => perk.id).SequenceEqual(personal),
+            "the shared drawback funds the complete opening draft and is not a personal perk");
         Check(typeof(NewGamePerksUI).GetMethod("OnContinueClicked", BindingFlags.NonPublic | BindingFlags.Static) != null && typeof(NewGamePerksUI).GetMethod("OnWindowClosed", BindingFlags.NonPublic | BindingFlags.Static) != null, "native picker interception metadata exists");
         var session = new NativeActorSession(run) { Store = store }; NativeActorSession.Current = session;
         var shared = StartingPerkList.WorkingPipes(); store.startingPerks.Add(shared);

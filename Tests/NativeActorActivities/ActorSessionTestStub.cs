@@ -19,6 +19,13 @@ internal sealed class NativeWorld
     internal static NativeWorld Guest { get; set; }
     internal bool HasActorProjection { get; set; }
     internal NativeActorState RemoteHostActor { get; set; }
+    internal System.Collections.Generic.Dictionary<string, StartingPerk> OpeningSharedPerks { get; set; }
+}
+internal static class NativeOpening
+{
+    internal static StartingPerk SharedStartingPerk(string id) => null;
+    internal static System.Collections.Generic.Dictionary<string, StartingPerk> SharedPerks(PlayerStore store) => null;
+    internal static bool HasMixedBenefit(string id) => false;
 }
 internal static class NativeInventoryPilot
 {

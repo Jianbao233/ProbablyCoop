@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;
+using ProbablyCoop.Api;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
@@ -206,9 +207,70 @@ internal static partial class NativeMirrorProbe
                     ["spaceY"] = (int)ControlFields.GridYSpacing.GetValue(grid),
                     ["minimums"] = JArray.FromObject((ValueTuple<int,int>[])ControlFields.GridChildMinimumSize.GetValue(grid)),
                     ["cells"] = cells };
-            default: throw new NotSupportedException("Native layout adapter missing: " + element.GetType().FullName);
+            default: return CaptureUnsupportedWidget(element);
         }
     }
+
+    private static JObject CaptureDeclaredStorage(PixelElement wrapper, ICoopNativeStorageLayout layout)
+    {
+        if (wrapper is not GraphNodeStorage owner || wrapper is GameInventory ||
+            wrapper.GetType().Assembly == typeof(SelectableElement).Assembly ||
+            !ModLoader.Mods.Any(mod => mod?.IsEnabled == true && mod.Assembly == wrapper.GetType().Assembly))
+            throw new NotSupportedException("Cooperative storage must be declared by its active custom graph owner.");
+
+        var slots = layout.CoopStorage;
+        var children = owner.children;
+        if (slots == null || slots.Count == 0 || slots.Count > 24 || children == null || children.Count != slots.Count)
+            throw new NotSupportedException("Cooperative storage must declare every direct native inventory exactly once.");
+
+        var visited = new HashSet<GameInventory>();
+        var rows = new JArray();
+        foreach (var slot in slots)
+        {
+            if (slot == null || !visited.Add(slot) ||
+                slot.GetType() != typeof(GameSlotInventory) && slot.GetType() != typeof(GameGridInventory) &&
+                slot.GetType() != typeof(GameGridScrollableInventory) ||
+                !children.Any(child => ReferenceEquals(child, slot)) ||
+                slot.parents?.Any(parent => ReferenceEquals(parent, wrapper)) != true)
+                throw new NotSupportedException("A declared cooperative slot is not native storage owned by the layout.");
+            rows.Add(CaptureElement((PixelElement)slot));
+        }
+
+        // Match the standard native stack record. This carries real storage
+        // IDs, not the wrapper's callbacks or custom transfer behaviour.
+        return new JObject { ["kind"] = "stack", ["vertical"] = true, ["gap"] = 4,
+            ["align"] = (int)MachineryStack.Align.Start, ["mainAlign"] = (int)MachineryStack.Align.Start,
+            ["children"] = rows };
+    }
+
+    private static JObject CaptureUnsupportedWidget(PixelElement element)
+    {
+        // Irreplaceable storage and child layouts must still fail validation.
+        // A third-party selectable leaf can fall back to an inert native button.
+        if (element is not SelectableElement selectable || element is not MachineryWidget ||
+            element is MachineryContainer || element is GraphNodeStorage ||
+            element.GetType().Assembly == typeof(SelectableElement).Assembly ||
+            selectable.handler == null ||
+            selectable.handler.GetComponentsInChildren<TreeNodeRender>(true).Any(node =>
+                node.window != null || node.element != null && !ReferenceEquals(node.element, element)))
+            throw new NotSupportedException("Native layout adapter missing: " + element.GetType().FullName);
+
+        return new JObject
+        {
+            ["kind"] = "button",
+            ["text"] = "Co-op",
+            ["description"] = "此控件需要联机适配 / This control needs a co-op adapter.",
+            ["audio"] = "",
+            ["icon"] = null,
+            ["faces"] = new JArray(JValue.CreateNull(), JValue.CreateNull(), JValue.CreateNull(), JValue.CreateNull()),
+            ["fill"] = false,
+            ["w"] = Math.Clamp(selectable.widthPixels, 1, 4096),
+            ["h"] = Math.Clamp(selectable.heightPixels, 1, 4096),
+            ["disabled"] = true,
+            ["hidden"] = selectable.isHidden
+        };
+    }
+
     private static PixelElement ReadExtraLayout(JObject data)
     {
         switch ((string)data["kind"])

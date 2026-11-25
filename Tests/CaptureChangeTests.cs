@@ -40,6 +40,15 @@ internal static class CaptureChangeTests
             var expanded=NativeRecordBasis.ExpandForAudit(NativeRecordFrame.Body(delta.Single,7),full.Single);
             Check(JToken.DeepEquals(expected,NativeSnapshotBinary.Unpack(expanded)),"borrowed root changed its fields/children");
         }
+        var rotation=new NativeDeferredFields(workerItems:true);
+        var rotationRoot=new JObject { ["roots"]=new JArray(new JObject { ["items"]=new JArray(new JObject {
+            ["legacyId"]=1,["data"]=rotation.BorrowRecord(basis,1) }) }) };
+        rotation.Seal();
+        var rotated=rotation.PackFrame(rotationRoot,default,true,null,0,out var rotatedBasis,out int references,
+            preferPages:true,completeCaptureBasis:basis);
+        Check(rotated.Full && references==0 && rotatedBasis!=null && rotatedBasis.Contains(1)
+            && JToken.DeepEquals(expected,NativeSnapshotPages.Unpack(rotated,default)),
+            "rotated full checkpoint must be self-contained with identical nested records");
         // Exceed the delta topology heuristic. Restoring the borrowed record on
         // the worker must retain frozen nested fields and support paged output.
         foreach(bool paged in new[]{false,true})
@@ -62,7 +71,7 @@ internal static class CaptureChangeTests
             Check(repeated.Delta,"copy mutated previous acknowledged basis");
         }
         NestedSiblingCapture();
-        Console.WriteLine("PASS change-driven capture: mutation stamps, shared/cyclic dependencies, cleanup, reconnect, nested sibling borrowing, differential audit and paged fallback");
+        Console.WriteLine("PASS change-driven capture: mutation stamps, shared/cyclic dependencies, cleanup, reconnect, nested sibling borrowing, differential audit, paged fallback and full checkpoint rotation");
     }
     private static JObject World(NativeDeferredFields fields,bool plain,uint id)=>new JObject {
         ["roots"]=new JArray(new JObject { ["items"]=new JArray(new JObject { ["legacyId"]=id,["data"]=Item(fields,id,plain) }) }) };

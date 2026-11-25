@@ -75,6 +75,8 @@ public sealed class CoopExtensionSession
     private readonly int gameThread = Environment.CurrentManagedThreadId;
 
     public CoopExtensionActor LocalActor { get; }
+    /// <summary>Whether this handle has permanently expired. Inspect it on the game thread.</summary>
+    public bool IsClosed => ready == null;
     public bool IsReady => Environment.CurrentManagedThreadId == gameThread && ready?.Invoke() == true;
     public CoopExtensionState CurrentState => IsReady ? state?.Invoke() : null;
 

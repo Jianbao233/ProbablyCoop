@@ -13,6 +13,7 @@ internal sealed partial class NativeWorld
     private double nextViews,viewsExpiry;
     private uint lastTool;
     private uint lastHover,remoteHover;
+    private byte[] capturedViewInterest;
     private readonly ProbablyCoop.Core.TooltipReadOrder readOrder=new ProbablyCoop.Core.TooltipReadOrder();
     private uint publishedInterest,remoteInterest,servedInterest;
     private GameItemElement readItem;
@@ -54,6 +55,11 @@ internal sealed partial class NativeWorld
     }
     private void ReceiveViews(byte[] bytes)
     {
+        if(capturedViewInterest==null || !bytes.AsSpan().SequenceEqual(capturedViewInterest))
+        {
+            capturedViewInterest=(byte[])bytes.Clone();
+            captureWake=true;
+        }
         remoteViews.Clear(); remoteTools.Clear(); viewsExpiry=Time.realtimeSinceStartupAsDouble+3;
         remoteHover=bytes.Length>=8 ? BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(0,4)) : 0;
         remoteInterest=bytes.Length>=8 ? BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(4,4)) : 0;

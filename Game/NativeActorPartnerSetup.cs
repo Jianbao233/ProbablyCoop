@@ -44,25 +44,25 @@ internal static class NativeActorPartnerSetup
 
     // Native factories here construct definition records only. No item/world
     // factory, mod provider, global Perks list or persisted data is modified.
-    internal static Dictionary<string, StartingPerk> Catalog()
+    internal static Dictionary<string, StartingPerk> Catalog(bool fullOpening = false)
     {
         var result = new Dictionary<string, StartingPerk>(StringComparer.Ordinal);
         foreach (var definition in StartingPerkList.AllPerkDefinitions())
         {
             if (Classify(definition.id) is PerkScope.Unknown or PerkScope.RetiredDefinition)
                 throw new InvalidDataException("Unreviewed native perk definition: " + definition.id);
-            if (!IsPersonalChoice(definition.id) || StartingPerkList.GetModPerk(definition.id) != null || !string.IsNullOrEmpty(definition.source)) continue;
+            if ((!fullOpening && !IsPersonalChoice(definition.id)) || StartingPerkList.GetModPerk(definition.id) != null || !string.IsNullOrEmpty(definition.source)) continue;
             result.Add(definition.id, definition);
         }
         return result;
     }
-    internal static StartingPerk[] ValidateSelection(IEnumerable<string> ids)
+    internal static StartingPerk[] ValidateSelection(IEnumerable<string> ids, bool fullOpening = false)
     {
         if (ids == null) throw new InvalidDataException("Missing partner perk draft.");
         var selected = ids.Take(17).ToArray();
         if (selected.Length > 16 || selected.Any(id => string.IsNullOrEmpty(id) || id.Length > 256) || selected.Distinct(StringComparer.Ordinal).Count() != selected.Length)
             throw new InvalidDataException("Invalid or duplicate partner perks.");
-        var catalog = Catalog();
+        var catalog = Catalog(fullOpening);
         var perks = selected.Select(id => catalog.TryGetValue(id, out var perk) ? perk : throw new InvalidDataException("Partner perk is not a supported personal definition: " + id)).ToArray();
         int points = 0, slots = NewGamePerksUI.BASE_PERK_COUNT;
         foreach (var perk in perks) { points = checked(points + perk.cost); slots = checked(slots + perk.maxSlot); }
@@ -122,6 +122,20 @@ internal static class NativeActorPartnerSetup
             return new Prepared(run.Partner, null, persistedReceipt);
         }
         var perks = ValidateSelection(ids);
+        return PreparePersonal(run, perks, proof);
+    }
+
+    internal static Prepared PrepareOpening(NativeActorRun run, IEnumerable<string> fullSelection)
+    {
+        // Points and slots are spent across the complete native draft. The
+        // personal subset stored per actor does not buy those perks a second time.
+        var personal = ValidateSelection(fullSelection, fullOpening: true)
+            .Where(perk => IsPersonalChoice(perk.id)).ToArray();
+        return PreparePersonal(run, personal, SelectionProof(personal.Select(perk => perk.id)));
+    }
+
+    private static Prepared PreparePersonal(NativeActorRun run, StartingPerk[] perks, string proof)
+    {
         if (run.Partner.startingPerks.Count != 0) throw new InvalidDataException("Unmarked partner already has perks; explicit migration required.");
         var receipt = new JObject { ["schema"] = 1, ["run"] = run.Run.ToString("D"), ["slot"] = 1,
             ["ids"] = new JArray(perks.Select(perk => perk.id).OrderBy(id => id, StringComparer.Ordinal)), ["selection"] = proof, ["completed"] = true };
@@ -198,11 +212,11 @@ internal static class NativeActorPartnerSetup
         internal List<StartingPerk> Draft => Handle.Draft;
         internal Action<string[]> Accept;
         internal Action Cancel;
-        internal bool Ready, Submitted;
+        internal bool Ready, Submitted, FullOpening;
     }
     internal static bool TryOpenDraft(Action<string[]> accept, Action cancel, out string reason)
         => TryOpenDraft(accept, cancel, out reason, out _);
-    internal static bool TryOpenDraft(Action<string[]> accept, Action cancel, out string reason, out DraftHandle owner)
+    internal static bool TryOpenDraft(Action<string[]> accept, Action cancel, out string reason, out DraftHandle owner, bool fullOpening = false)
     {
         reason = null; owner = null;
         if (accept == null) throw new ArgumentNullException(nameof(accept));
@@ -213,7 +227,7 @@ internal static class NativeActorPartnerSetup
         { reason = "原版主菜单尚未就绪。"; return false; }
         if (data == null || ui == null || ui.newGamePerksPrefab == null)
         { reason = $"原版天赋窗口尚未就绪（开局数据={data != null}，界面管理器={ui != null}，窗口资源={ui != null && ui.newGamePerksPrefab != null}）。"; return false; }
-        var setup = new Pending { Handle = new DraftHandle(data), Accept = accept, Cancel = cancel };
+        var setup = new Pending { Handle = new DraftHandle(data), Accept = accept, Cancel = cancel, FullOpening = fullOpening };
         owner = setup.Handle;
         pending = setup; data.startingPerks = setup.Draft;
         var previousWindow = Window.GetValue(null);
@@ -222,16 +236,7 @@ internal static class NativeActorPartnerSetup
             NewGamePerksUI.Open();
             setup.Handle.Window = Window.GetValue(null) as CustomUIWindow;
             if (!NewGamePerksUI.IsOpen || Frame.GetValue(null) is not NewGamePerksFrame frame) { reason = "原版天赋窗口未能打开。"; Restore(setup); return false; }
-            var sorted = (List<StartingPerk>)Sorted.GetValue(null);
-            sorted.Clear();
-            sorted.AddRange(Catalog().Values.OrderByDescending(perk => perk.cost).ThenBy(perk => perk.id, StringComparer.Ordinal));
-            // The native first-run lock belongs to the single-player tutorial.
-            // This is an independent partner draft; no index/save value changes.
-            FirstRun.SetValue(null, false);
-            frame.headerTitle.text = "合伙人个人天赋";
-            frame.instruction.text = "分别选择个人天赋；全店开局配置由房主确定。混合天赋不重复发放店铺赠品。";
-            frame.instruction.color = NewGameStyle.DESCRIPTION;
-            Rebuild.Invoke(null, null);
+            ConfigurePicker(frame, partner: true, fullOpening);
             setup.Ready = true;
             return true;
         }
@@ -241,6 +246,34 @@ internal static class NativeActorPartnerSetup
             if (opened != null && !ReferenceEquals(opened, previousWindow)) setup.Handle.Window = opened;
             CancelDraft(setup.Handle); throw;
         }
+    }
+    internal static void ConfigureHostOpeningPicker()
+    {
+        if (NewGamePerksUI.IsOpen && Frame.GetValue(null) is NewGamePerksFrame frame)
+            ConfigurePicker(frame, partner: false, fullOpening: true);
+    }
+
+    private static void ConfigurePicker(NewGamePerksFrame frame, bool partner, bool fullOpening)
+    {
+        var sorted = (List<StartingPerk>)Sorted.GetValue(null);
+        sorted.Clear();
+        sorted.AddRange(Catalog(fullOpening).Values.OrderByDescending(perk => perk.cost).ThenBy(perk => perk.id, StringComparer.Ordinal));
+        // The native first-run gate reads the solo save index. A paired
+        // opening can allow selection on both seats without writing that index.
+        FirstRun.SetValue(null, false);
+        if (!partner) frame.instruction.text = LocHelper.GetLocalizedMainMenu("new_perk_instruction");
+        else if (fullOpening)
+        {
+            frame.headerTitle.text = ModHelper.GetLocalized("probably_coop", "opening_partner_perks");
+            frame.instruction.text = ModHelper.GetLocalized("probably_coop", "opening_partner_perks_hint");
+        }
+        else
+        {
+            frame.headerTitle.text = "合伙人个人天赋";
+            frame.instruction.text = "分别选择个人天赋；全店开局配置由房主确定。混合天赋不重复发放店铺赠品。";
+        }
+        frame.instruction.color = NewGameStyle.DESCRIPTION;
+        Rebuild.Invoke(null, null);
     }
     private static void Restore(Pending setup)
     {
@@ -268,7 +301,7 @@ internal static class NativeActorPartnerSetup
         if (!ReferenceEquals(NewGameData.Instance, setup.Handle.Data) || !ReferenceEquals(NewGameData.Instance.startingPerks, setup.Draft))
         { CancelDraft(setup.Handle); setup.Cancel?.Invoke(); return false; }
         string[] ids;
-        try { ids = ValidateSelection(setup.Draft.Select(perk => perk.id)).Select(perk => perk.id).ToArray(); }
+        try { ids = ValidateSelection(setup.Draft.Select(perk => perk.id), setup.FullOpening).Select(perk => perk.id).ToArray(); }
         catch (InvalidDataException error)
         {
             if (Frame.GetValue(null) is NewGamePerksFrame frame) frame.instruction.text = "天赋组合无效：" + error.Message;

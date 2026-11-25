@@ -1,4 +1,5 @@
 using System;
+using ProbablyCoop.Api;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -158,11 +159,38 @@ internal static partial class NativeMirrorProbe
         var feature=FindExisting(data) as ItemFeature ?? new ItemFeature();
         ApplyFields(feature, FeatureFields, (JObject)data["fields"]);
         feature.realCondition=null; feature.fakeCondition=null;
-        if (data["real"] is JObject real) { feature.realCondition = new ItemCondition(); ApplyFields(feature.realCondition, ConditionFields, real); }
-        if (data["fake"] is JObject fake) { feature.fakeCondition = new ItemCondition(); ApplyFields(feature.fakeCondition, ConditionFields, fake); }
+        feature.realCondition = ReadCondition(data["real"] as JObject, feature.category);
+        feature.fakeCondition = ReadCondition(data["fake"] as JObject, feature.category);
         Remember(feature,data);
         return feature;
     }
+
+    private static ItemCondition ReadCondition(JObject data, string category)
+    {
+        if (data == null) return null;
+        var condition = new ItemCondition();
+        ApplyFields(condition, ConditionFields, data);
+        // The host supplies the condition and its numeric effects. The local
+        // catalogue supplies the caption for a known condition.
+        string key = condition.category ?? category;
+        if (NativeGuest.Active && !string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(condition.identifier) &&
+            ItemConditionList.conditionLookup.TryGetValue(key, out var choices))
+            foreach (var choice in choices)
+                if (choice.identifier == condition.identifier)
+                {
+                    condition.display = choice.display;
+                    break;
+                }
+        return condition;
+    }
+
+    internal static bool UsesLocalLabelerText(string id) =>
+        NativeGuest.Active && id is "labeler" or "labeler_blue";
+
+    internal static string ReplicaItemName(string id, string hostName) =>
+        UsesLocalLabelerText(id)
+            ? LocHelper.GetLocalizedOrDefault("Item", "item_" + id + "_name", hostName)
+            : hostName;
     internal static JObject FeatureData(ItemFeature feature,NativeModelContext identities) => Feature(feature,identities,false);
 
     internal static bool FeatureMatches(ItemFeature current, ItemFeature expected)
@@ -307,6 +335,8 @@ internal static partial class NativeMirrorProbe
     private static JObject CaptureElement(PixelElement element)
     {
         if (element == null) return null;
+        if (element is ICoopNativeStorageLayout layout)
+            return Annotate(element, CaptureDeclaredStorage(element, layout));
         JObject data;
         switch (element)
         {
@@ -580,6 +610,28 @@ internal static partial class NativeMirrorProbe
     }
     internal static GameItemElement Hydrate(JObject data)
     {
+        try
+        {
+#if PROBABLY_COOP_GRID_QA
+            if (NativeBackgroundQa.Enabled && NativeBackgroundQa.IsGuestProduct && NativeGuest.Active &&
+                NativeJoinWizardQa.Enabled && NativeJoinWizardQa.LateFailure &&
+                (string)data?["fields"]?["<identifier>k__BackingField"] == "water_jug")
+                throw new System.IO.InvalidDataException("QA guest projection fault");
+#endif
+            return HydrateCore(data);
+        }
+        catch (Exception error) when (error is System.IO.InvalidDataException or InvalidOperationException or KeyNotFoundException
+            or NullReferenceException or ArgumentException)
+        {
+            var fields = data?["fields"] as JObject;
+            var provider = fields?["<useSpriteFromMod>k__BackingField"]?.Type == JTokenType.Boolean &&
+                (bool)fields["<useSpriteFromMod>k__BackingField"] ? fields["<spriteAtlasPath>k__BackingField"] : null;
+            throw new NativeItemProjectionException(fields?["<identifier>k__BackingField"], provider, error);
+        }
+    }
+
+    private static GameItemElement HydrateCore(JObject data)
+    {
         if (FindUnchanged(data) is GameItemElement same) return same;
         var values = (JObject)data["fields"];
         var item = FindExisting(data) as GameItemElement;
@@ -600,6 +652,11 @@ internal static partial class NativeMirrorProbe
         if(fieldsChanged)
         {
             ApplyFields(item, ItemFields, values);
+            if (UsesLocalLabelerText(item.identifier))
+            {
+                item.name = ReplicaItemName(item.identifier, item.name);
+                item.shortDescription = LocHelper.GetLocalizedOrDefault("Item", "item_" + item.identifier + "_desc", item.shortDescription);
+            }
             AccessTools.Property(typeof(GameItem), "spriteChanged").SetValue(item, true);
         }
         bool localCassette=NativeLocalCassette.IsDeck(item);

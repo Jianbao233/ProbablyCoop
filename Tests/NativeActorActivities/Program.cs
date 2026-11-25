@@ -160,6 +160,19 @@ internal static class Probe
         Check(scheduledCustomerAction.IsAlive, "discarding a customer line preserves its scheduled end action");
         scheduledCustomerAction.Wrap(() => suspended.isEndActionExecuted = true)();
         Check(!activities.HasActiveBusiness, "scheduled customer action releases its hold after running");
+        // A native line can be replaced without going through RemoveCurrentDialog.
+        // Its lease must follow the current/paused line unless a timer is scheduled.
+        typeof(UnityEngine.Object).GetField("m_CachedPtr", BindingFlags.Instance | BindingFlags.NonPublic)
+            .SetValue(customerUi, new IntPtr(1));
+        var replaced = new Dialogue { endAction = () => throw new Exception("abandoned customer action ran") };
+        customerUi.currentDialog = replaced;
+        NativeActorContinuations.BindLine(customerUi, false);
+        Check(activities.HasActiveBusiness, "current consequence blocks a checkpoint");
+        pausedField.SetValue(customerUi, replaced);
+        customerUi.currentDialog = null;
+        Check(activities.HasActiveBusiness, "paused consequence still belongs to its native window");
+        pausedField.SetValue(customerUi, null);
+        Check(!activities.HasActiveBusiness && !replaced.isEndActionExecuted, "abandoned unscheduled consequence releases its checkpoint gate");
         var cancelledPhoneLine = new Dialogue { endAction = () => throw new Exception("cancelled phone end ran") };
         var cancelledPhone = activities.Begin(cancelledPhoneLine, "dialogue-end", NativeActorRun.Slot.Partner,
             () => !cancelledPhoneLine.isEndActionExecuted, true);

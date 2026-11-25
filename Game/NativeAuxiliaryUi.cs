@@ -16,11 +16,18 @@ internal sealed partial class NativeWorld
     private JArray clientelePredictions=new JArray();
     private JObject itemNames=new JObject(),clientNames=new JObject();
     internal static bool RefreshingCalendar;
+    private readonly Dictionary<GameItem,(string Id,string Name)> capturedItemNames=new Dictionary<GameItem,(string,string)>();
+    private bool refreshItemNames=true;
     private JObject CaptureAuxiliary()
     {
-        foreach(var item in model.Objects.Values.OfType<GameItem>()) if(!string.IsNullOrEmpty(item.identifier)) itemNames[item.identifier]=item.name;
+        if(refreshItemNames || !borrowCapturedRecords)
+        {
+            foreach(var item in model.Objects.Values.OfType<GameItem>())
+                if(!string.IsNullOrEmpty(item.identifier)) itemNames[item.identifier]=item.name;
+            refreshItemNames=false;
+        }
         CaptureAppraisalNames();
-        runClock.Sample(PlayerStore.Instance.GetCurrentRunPlayTime(),UnityEngine.Time.realtimeSinceStartupAsDouble);
+        runClock.Sample(PlayerStore.Instance.GetCurrentRunPlayTime(),UnityEngine.Time.realtimeSinceStartupAsDouble,anchorClockThisCapture);
         return new JObject { ["clockSerial"]=runClock.Serial,["runSeconds"]=runClock.Seconds,["calendarRevision"]=calendarRevision,["predictions"]=clientelePredictions.DeepClone(),["itemNames"]=itemNames.DeepClone(),["clientNames"]=clientNames.DeepClone() };
     }
     internal List<(string,int,string)> ClientelePredictions() => clientelePredictions.Cast<JArray>().Select(r=>((string)r[0],(int)r[1],(string)r[2])).ToList();

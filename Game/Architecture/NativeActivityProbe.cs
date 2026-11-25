@@ -134,9 +134,9 @@ internal static class NativeActivityProbe
                 evidence = "Actual Unity coroutine delays and native end-action idempotence; no real dialogue choice or network coverage" });
 
             int retiredCallbacks = 0, retainedCallbacks = 0;
-            scope.Execute(jacksonToken, _ => DialoguePhoneUIManager.Instance.StartCoroutine(
+            scope.Execute(jacksonToken, _ => ModHelper.StartCoroutine("probably_coop",
                 MetaHelper.WaitAndDo(0.05f, () => retiredCallbacks++)));
-            scope.Execute(storeToken, _ => DialogUIManager.Instance.StartCoroutine(
+            scope.Execute(storeToken, _ => ModHelper.StartCoroutine("probably_coop",
                 MetaHelper.WaitAndDo(0.08f, () => retainedCallbacks++)));
             scope.Close(jacksonToken); scope.Register(2, jackson);
             deadline = Time.realtimeSinceStartupAsDouble + 5;

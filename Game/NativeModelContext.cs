@@ -26,6 +26,8 @@ internal sealed class NativeModelContext
     internal NativeSnapshotIndex Prepared { get; private set; }
     internal NativeDeferredFields Deferred { get; private set; }
     internal uint Id(object value) => value == null ? 0 : ids.GetValue(value, _ => new Identity { Id = ++next }).Id;
+    internal bool IsCaptured(object value) => value!=null && ids.TryGetValue(value,out var known) &&
+        Objects.TryGetValue(known.Id,out var current) && ReferenceEquals(current,value);
     internal void RetainCaptured(object value,uint id)
     { Objects[id]=value; Seen.Add(id); CapturedIdentity?.Invoke(value,id); }
     internal uint ReplicaId(object value)

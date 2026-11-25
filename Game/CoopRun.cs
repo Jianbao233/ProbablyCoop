@@ -210,8 +210,7 @@ internal static class CoopRun
         var preview=new Checkpoint { Slot=slot,StoredSlot=-1, Day=-1, File=file, SavedAt=info.LastWriteTime,
             PreviewOnly=true };
         using var cancel=new CancellationTokenSource();
-        var token=cancel.Token;
-        var work=Task.Run(() => ReadMenuPreview(path,settings,preview,stringType,intType,token));
+        var work=CoopBackgroundWork.Start(cancel.Token, token => ReadMenuPreview(path,settings,preview,stringType,intType,token));
         try
         {
             while(!work.IsCompleted) yield return null;

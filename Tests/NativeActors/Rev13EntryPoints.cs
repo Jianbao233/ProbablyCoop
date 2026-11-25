@@ -21,6 +21,7 @@ internal static class Rev13EntryPoints
         Check(typeof(PlayerStore).GetField("VERSION_NUMBER")?.GetRawConstantValue() as string == "VERSION 100-Rev13",
             "installed game must be Rev13");
         CheckSteamJoinArguments(mod);
+        CheckOpeningCareerRegion(mod);
         InOrder(Read(Get(typeof(InputActionManager),"Update")),
             Get(typeof(InputActionHandler),nameof(InputActionHandler.UpdateRelease)),
             Get(typeof(InputActionHandler),nameof(InputActionHandler.UpdateMouseMove)));
@@ -168,6 +169,38 @@ internal static class Rev13EntryPoints
         ?? throw new MissingMethodException(type.FullName,name);
     private static IEnumerable<MethodBase> Targets(Type type) =>
         (IEnumerable<MethodBase>)Get(type,"TargetMethods").Invoke(null,null)!;
+    private static void CheckOpeningCareerRegion(Assembly mod)
+    {
+        var opening = mod.GetType("ProbablyCoop.NativeOpening", true)!;
+        var getter = Get(opening, "CareerOnly");
+        var original = typeof(NewGameData).GetMethod(nameof(NewGameData.HandleInitialItem))!;
+        var source = PatchProcessor.GetOriginalInstructions(original, out var generator);
+        var rewrite = Get(Nested(opening, "NativeItems"), "Transpiler");
+        var code = ((IEnumerable<CodeInstruction>)rewrite.Invoke(null, new object[] { source, generator })!).ToList();
+        var replayGates = code.Select((row, index) => (row, index)).Where(pair => pair.row.Calls(getter)).ToArray();
+        Check(replayGates.Length == 2, "only two replay guards on the native career region");
+        var entryGate = replayGates[0].index;
+        var exitGate = replayGates[1].index;
+        var careerStart = (Label)code[entryGate + 1].operand;
+        var returnTarget = (Label)code[exitGate + 1].operand;
+        int careerIndex = code.FindIndex(i => i.labels.Contains(careerStart));
+        int returnIndex = code.FindIndex(i => i.labels.Contains(returnTarget));
+        var blackscreen = Get(typeof(StoreUIManager), "FinishBlackscreenSequence");
+        int sharedIndex = code.FindIndex(i => i.Calls(blackscreen));
+        Check(entryGate < sharedIndex && sharedIndex < careerIndex && careerIndex < exitGate && returnIndex == code.Count - 1,
+            "secondary career jumps past common setup and to the original return");
+        InOrder(code, Get(opening, "ApplySecondCareer"), Get(typeof(StartingPerk), nameof(StartingPerk.IsSentinel)),
+            Get(typeof(ModHook), "FireOnNewGameStarted"));
+        Check(code.Count(i => i.Calls(Get(typeof(ModHook), "FireOnNewGameStarted"))) == 1,
+            "shared native opening hook exists once");
+        var cartelGate = Nested(opening, "CartelCareerGate");
+        foreach (var entry in Targets(cartelGate))
+        {
+            var cartel = Transform(cartelGate, "Transpiler", entry);
+            InOrder(cartel, typeof(PlayerStore).GetMethod(nameof(PlayerStore.IsStartType))!);
+        }
+    }
+
     private static List<CodeInstruction> Read(MethodBase method) => PatchProcessor.GetOriginalInstructions(method);
     private static List<CodeInstruction> Transform(Type type,string method,MethodBase original) =>
         ((IEnumerable<CodeInstruction>)Get(type,method).Invoke(null,new object[]{Read(original)})!).ToList();

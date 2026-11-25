@@ -47,13 +47,13 @@ internal sealed class RoomSelector : ICoopRoom
 
     public void Create()
     {
-        if (Select(localTest)) active.Create();
+        if (CanHost() && Select(localTest)) active.Create();
         NativeRoomPacing.Update(this);
     }
 
     internal void CreateLan(string address, string port = null)
     {
-        if (Select(direct: true)) ((LocalRoom)active).CreateLan(address, port);
+        if (CanHost() && Select(direct: true)) ((LocalRoom)active).CreateLan(address, port);
         NativeRoomPacing.Update(this);
     }
 
@@ -91,14 +91,23 @@ internal sealed class RoomSelector : ICoopRoom
     public void Decline() => active?.Decline();
     public void SetAcceptingJoins(bool enabled) => active?.SetAcceptingJoins(enabled);
 
+    private bool CanHost()
+    {
+        if (HasLobby || Busy) return false;
+        if (NativePlatform.SupportsHosting) return true;
+        DisposeActive();
+        selectionStatus = "android_guest_only";
+        return false;
+    }
+
     private bool Select(bool direct)
     {
         if (HasLobby || Busy) return false;
         if (active != null && (active is LocalRoom) == direct) return true;
         DisposeActive();
-        if (!direct && !SteamManager.Initialized)
+        if (!direct && (NativePlatform.IsAndroid || !SteamManager.Initialized))
         {
-            selectionStatus = "steam_unavailable";
+            selectionStatus = NativePlatform.IsAndroid ? "android_guest_only" : "steam_unavailable";
             return false;
         }
 

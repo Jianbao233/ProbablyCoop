@@ -61,7 +61,11 @@ internal sealed partial class NativeBackgroundQa
         if(!saveRoundTrip) return true;
         if(now<dayNext) return false;
         if(dayStep==0) { originalDay=StoreStation.Instance.dayCounter; dayUntil=now+30; dayStep=1; }
-        Require(now<dayUntil,"native end-day flow timed out; phase="+session.Shop.View.Phase);
+        var world=NativeWorld.Guest;
+        var calendar=AdvCalendarUIManager.Instance;
+        Require(now<dayUntil,$"native end-day flow timed out; phase={session.Shop.View.Phase}; " +
+            $"shop={session.Shop.View.Day}; world={world?.View?.Day}; report={world?.MorningReportDay}; " +
+            $"calendar={calendar?.UIPanel?.activeInHierarchy}; nightly={calendar?.nightlyReportSection?.activeInHierarchy}");
         if(dayStep==1)
         {
             if(session.Shop.View.Phase!=ShopDay.Ready) return false;
@@ -75,9 +79,11 @@ internal sealed partial class NativeBackgroundQa
         if(session.Shop.View.Phase==ShopDay.SaveUnverified) throw new InvalidOperationException("native save rejected/unverified");
         if(session.Shop.View.Phase!=ShopDay.Saved || StoreStation.Instance.dayCounter!=originalDay+1) return false;
         if(dayStep==2) { dayStep=3; dayNext=now+1; return false; }
-        Require(AdvCalendarUIManager.Instance.UIPanel.activeInHierarchy && AdvCalendarUIManager.Instance.nightlyReportSection.activeInHierarchy,"guest current native morning report tab missing");
         Require(PlayerStore.Instance.saveSlotId==-1,"guest gained save identity");
-        if(NativeWorld.Guest.HasPendingWork) return false;
+        // The SaveGame receipt and native facts travel separately. Only assert
+        // against the current report after both deliveries have been applied.
+        if(world?.MorningReportDay!=originalDay+1 || world.HasPendingWork ||
+            calendar?.UIPanel?.activeInHierarchy!=true || calendar?.nightlyReportSection?.activeInHierarchy!=true) return false;
         CheckActorGameplayCheckpointGuest();
         var expected=NativeWorld.Guest.MorningReport.Select(line=>"-"+line).ToArray();
         var actual=StartOfDayUIManager.Instance.contentGroupObject.GetComponentsInChildren<TMPro.TextMeshProUGUI>().Where(t=>t.gameObject.activeInHierarchy).Select(t=>t.text).ToArray();

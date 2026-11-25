@@ -10,10 +10,11 @@ namespace ProbablyCoop;
 
 // Room management only. All economic inputs belong to the original game UI;
 // the old transport test protocol remains available to offline tests, not here.
-internal sealed class CoopPanel : IDisposable
+internal sealed partial class CoopPanel : IDisposable
 {
     private readonly RoomSelector room;
     private readonly bool localTest;
+    private readonly CoopOpeningLobby opening;
     private GameObject menuButton;
     private TextMeshProUGUI menuLabel, originalMenuLabel;
     private readonly RoomPanelEntries entries = new();
@@ -28,23 +29,24 @@ internal sealed class CoopPanel : IDisposable
     private bool checkpointHistory;
     private int checkpointStartFrame;
     private CustomUIElement code, roomCode, status, join, copy, leave, approve, decline, access;
-    private CustomUIElement shopStatus, heading, carry, steamHint, playerNameInput;
+    private CustomUIElement shopStatus, heading, carry, steamHint, playerNameInput, newRun, reopenOpening;
     private RectTransform panelBody;
     private ScrollRect panelScroll;
     private CustomUIElement lanToggle, joinFromMenu;
     private CustomUIElement joinProgressLabel, joinHistory, joinHistoryToggle;
     private RectTransform joinProgressFill;
     private GameObject joinProgressTrack;
-    private CustomUIElement terminalSummary, terminalButton, terminalDetails, copyIssue, recoverDay;
+    private CustomUIElement terminalSummary, terminalDetails, copyIssue, recoverDay;
     private NativeShop dayShop;
     private DaySettlement recoveryAttempt;
+    private NativeShop.MutationFault mutationFault;
     private bool hostDayPending;
     private (string Code, int? Day)? recoveryExit;
     private string joinFailureCode;
     private bool issueCopied;
     private GameObject setupRow, joinColumn, lanControls, saveRow, roomActions, approvalRow, joinLog,
-        terminalLog, recoveryActions, progressSection;
-    private bool showLanOptions, showTerminalDetails;
+        progressSection;
+    private bool showLanOptions;
     private double nextTerminalRefresh;
     private readonly Queue<string> joinSteps=new Queue<string>();
     private CoopSession joinSession;
@@ -60,16 +62,22 @@ internal sealed class CoopPanel : IDisposable
     private double copiedUntil;
     private double steamJoinBusyUntil;
     private string displaySignature;
+    private int? joinRequestedFrame;
+    private bool partnerPickerVisible, restoreAfterPartnerPicker;
 
-    internal CoopPanel(RoomSelector room,bool localTest) { this.room=room; this.localTest=localTest; }
+    internal CoopPanel(RoomSelector room,bool localTest,CoopOpeningLobby opening)
+    { this.room=room; this.localTest=localTest; this.opening=opening; }
     private static string Loc(string key)=>ModHelper.GetLocalized("probably_coop",key);
 
     internal void SetContext(bool menu,bool shop)
     {
         if(menu==inMenu && shop==inShop) return;
         inMenu=menu; inShop=shop;
+        joinRequestedFrame=null;
+        partnerPickerVisible=restoreAfterPartnerPicker=false;
         reopenJoinPanel |= joinPanelWasVisible && joinPhase!=null && room.IsGuest;
         if(window?.IsAlive==true) window.Close();
+        CloseDiagnosticsWindows();
         entries.Dispose();
         if(checkpoints?.IsAlive==true) checkpoints.Close();
         if(menuButton!=null) UnityEngine.Object.Destroy(menuButton);
@@ -79,9 +87,30 @@ internal sealed class CoopPanel : IDisposable
         nextTerminalRefresh=0;
         displaySignature=null;
     }
+    internal void SetPartnerPickerVisible(bool visible)
+    {
+        if(partnerPickerVisible==visible) return;
+        partnerPickerVisible=visible;
+        if(visible)
+        {
+            // The join window can cover the original modal on the Android port.
+            restoreAfterPartnerPicker=window?.IsVisible==true;
+            if(restoreAfterPartnerPicker) window.Hide();
+        }
+        else if(restoreAfterPartnerPicker)
+        {
+            restoreAfterPartnerPicker=false;
+            if(inMenu && window?.IsAlive==true) Open();
+        }
+    }
+
     internal void Tick()
     {
         if(CustomUIManager.Instance==null) return;
+        TickConnectionDetails();
+#if PROBABLY_COOP_GRID_QA
+        TickJoinReviewQa();
+#endif
         CoopNewGameFlow.CancelIfClosed();
         if(inMenu && menuButton==null) CreateMenuButton();
         if(reopenJoinPanel)
@@ -97,6 +126,11 @@ internal sealed class CoopPanel : IDisposable
         }
         entries.Tick(inMenu, menuButton != null, window?.IsVisible == true, Open);
         TickCheckpointScan();
+        if(joinRequestedFrame is int frame && frame!=Time.frameCount)
+        {
+            joinRequestedFrame=null;
+            if(window?.IsVisible==true) Join();
+        }
         if(Input.GetKeyDown(KeyCode.F7) && !InputFocused(code) && !ipv4.InputFocused && !InputFocused(roomCode))
         {
             if(checkpoints?.IsVisible==true) checkpoints.Close();
@@ -142,6 +176,7 @@ internal sealed class CoopPanel : IDisposable
 
     private void Open()
     {
+        if(partnerPickerVisible) return;
         // Do this only in response to opening the co-op panel. Keeping the
         // native report open while waiting is otherwise harmless.
         if(recoveryAttempt!=null && AdvCalendarUIManager.Instance is { } report &&
@@ -164,22 +199,10 @@ internal sealed class CoopPanel : IDisposable
         builder.BeginRow(12,TextAnchor.MiddleLeft);
         builder.AddHeader(Loc("terminal_title"));
         builder.AddFlexibleSpace();
-        builder.AddButton(Loc("terminal_show_details"),()=>
-        {
-            showTerminalDetails=!showTerminalDetails;
-            nextTerminalRefresh=0;
-            Refresh();
-        }); terminalButton=builder.Last;
+        builder.AddButton(Loc("terminal_details_title"),OpenConnectionDetails,"connection_details");
         builder.End();
         builder.AddLabel(""); terminalSummary=builder.Last; terminalSummary.text.richText=false;
-        builder.BeginColumn(10);
-        terminalLog=builder.CurrentContainer.gameObject;
-        builder.AddLabel(""); terminalDetails=builder.Last; terminalDetails.text.richText=false;
-        builder.BeginRow(12);
-        recoveryActions=builder.CurrentContainer.gameObject;
-        builder.AddButton(Loc("diag_copy"),CopyIssue,"copy_issue"); copyIssue=builder.Last;
-        builder.AddButton(Loc("day_recovery_exit"),RecoverDay,"recover_day"); recoverDay=builder.Last;
-        builder.End().End().End();
+        builder.End();
 
         builder.BeginPanel(alignment:TextAnchor.UpperLeft,padding:16,spacing:10);
         progressSection=builder.CurrentContainer.gameObject;
@@ -217,15 +240,17 @@ internal sealed class CoopPanel : IDisposable
         builder.AddHeader(Loc("join_room_heading"));
         builder.AddInput(Loc("join_code_hint"),onTyping:_=>RefreshAvailability()); code=builder.Last;
         code.input.characterLimit=64;
-        code.input.onSubmit.AddListener(_=>Join());
+        code.input.onSubmit.AddListener(_=>RequestJoin());
         builder.BeginRow(6);
         builder.AddButton(Loc("paste_room_code"),PasteRoomCode);
-        builder.AddButton(Loc("join"),Join); join=builder.Last;
+        builder.AddButton(Loc("join"),RequestJoin); join=builder.Last;
         builder.End();
-        ipv4.AddMapping(builder, Join);
+        ipv4.AddMapping(builder, RequestJoin);
+        if(NativePlatform.IsAndroid) builder.AddLabel(Loc("status_android_guest_only"));
         builder.End();
 
         BeginSection(builder, balanced:true);
+        var hostColumn=builder.CurrentContainer.gameObject;
         builder.AddHeader(Loc("host_room_heading"));
         builder.AddButton(Loc(localTest ? "local_create" : "create"),()=>{room.Create();Refresh();});
         builder.AddButton(Loc("show_lan_options"),()=>{
@@ -235,6 +260,7 @@ internal sealed class CoopPanel : IDisposable
         builder.BeginColumn(10);
         lanControls=builder.CurrentContainer.gameObject;
         ipv4.AddHost(builder, HostLan, compact:true);
+        hostColumn.SetActive(NativePlatform.SupportsHosting);
         builder.End().End().End();
         builder.AddLabel(Loc("join_from_menu")); joinFromMenu=builder.Last;
 
@@ -245,6 +271,7 @@ internal sealed class CoopPanel : IDisposable
         builder.AddButton(Loc("copy"),CopyRoomCode); copy=builder.Last;
         builder.AddButton(Loc("leave"),LeaveRoom); leave=builder.Last;
         builder.End();
+        builder.AddButton(Loc("opening_reopen"),opening.Reopen); reopenOpening=builder.Last;
         builder.AddButton(Loc("pause_joins"),()=>{ room.SetAcceptingJoins(!room.AcceptingJoins); Refresh(); }); access=builder.Last;
         builder.BeginRow(6);
         approvalRow=builder.CurrentContainer.gameObject;
@@ -256,10 +283,11 @@ internal sealed class CoopPanel : IDisposable
         saveRow=builder.CurrentContainer.gameObject;
         builder.AddHeader(Loc("coop_saves_heading"));
         builder.BeginRow(12);
-        builder.AddButton(Loc("new_run"),StartCoopGame);
+        builder.AddButton(Loc("new_run"),StartCoopGame,"coop_new_run"); newRun=builder.Last;
         builder.AddButton(Loc("resume_run"),()=>OpenCheckpoints());
         builder.AddButton(Loc("solo_import_button"),OpenSoloCheckpoints,"import_solo");
-        builder.End().End();
+        builder.End();
+        builder.End();
         BeginSection(builder);
         builder.AddHeader(Loc("player_options_heading"));
         builder.BeginRow(12,TextAnchor.MiddleLeft);
@@ -407,6 +435,7 @@ internal sealed class CoopPanel : IDisposable
         joinSession=null; joinPhase=null; joinPages=0; joinPercentage=0; joinCounters=joinFailureReason="";
         joinSteps.Clear();
         joinFailureCode=null;
+        triedWithDifferences=false;
         issueCopied=false;
     }
     private void NoteReceivedPages(int count,int total,int bytes)
@@ -422,6 +451,8 @@ internal sealed class CoopPanel : IDisposable
         if(joinPhase==phase) return;
         joinPhase=phase;
         AddJoinStep(Loc(phase));
+        AddConnectionEvent(phase=="sync_failed" ? "ERROR" : "INFO",
+            Loc(phase=="sync_ready" && triedWithDifferences ? "join_mod_ready" : phase));
     }
     private void AddJoinStep(string line)
     {
@@ -457,16 +488,16 @@ internal sealed class CoopPanel : IDisposable
         bool showProgress=joinPhase!=null;
         bool showHistory=showProgress && joinHistoryOpen;
         bool showAccess=room.IsHost && room.HasLobby;
-        bool showSaves=inMenu && !room.IsGuest;
+        bool showSaves=NativePlatform.SupportsHosting && inMenu && !room.IsGuest;
         var issue = CurrentIssue();
-        bool expandedTerminal=showTerminalDetails;
-        RefreshTerminal(expandedTerminal,issue);
+        var connectionState=RoomConnectionStatus.Format(room,joinPhase,joinCounters);
+        terminalSummary.SetText(issue.Code==null ? connectionState.Summary : $"[{issue.Code}] {issue.Advice}");
         string history=showHistory ? string.Join("\n",joinSteps) : "";
         Vector2 available=PanelViewport();
         var endpoint = room.Ipv4HostEndpoint;
         string signature=$"{room.Status}/{room.Detail}/{room.Code}/{room.Busy}/{room.CanApprove}/"+
             $"{room.PartnerName}/{session?.State}/{real}/{inShop}/{NativeActorCarryUi.Available}/{MapUIManager.Instance?.IsOutside}/{justCopied}/{steamJoinBusy}/{room.FriendsCanJoin}/{showMapping}"+
-            $"/{joinPhase}/{joinPercentage:F3}/{joinCounters}/{joinFailureReason}/{history}/{showHistory}/{session?.Native.SynchronizationFailed}/{room.AcceptingJoins}/{showLan}/{expandedTerminal}/{issue.Code}/{available}";
+            $"/{joinPhase}/{joinPercentage:F3}/{joinCounters}/{joinFailureReason}/{history}/{showHistory}/{session?.Native.SynchronizationFailed}/{room.AcceptingJoins}/{showLan}/{issue.Code}/{opening.HasGuestDraft}/{available}";
         if(signature==displaySignature) return;
         displaySignature=signature;
         heading.SetText(Loc(inShop || real ? "native_header" : "room_header"));
@@ -515,12 +546,17 @@ internal sealed class CoopPanel : IDisposable
         joinLog.SetActive(showHistory);
         if(showHistory) joinHistory.SetText(history);
         saveRow.SetActive(showSaves);
+        bool pairedOpening=NativeOpening.CanHost && room.IsHost;
+        bool waitingForPartner=pairedOpening && session?.State!=LinkState.Connected;
+        newRun.SetText(Loc(pairedOpening ? "opening_title" : "new_run"));
+        newRun.SetInteractable(!waitingForPartner);
+        reopenOpening.SetVisible(inMenu && room.IsGuest && opening.HasGuestDraft);
         carry.SetVisible(!inMenu && NativeActorCarryUi.Available);
         carry.SetInteractable(MapUIManager.Instance?.IsOutside==false);
         if(playerNameInput?.input?.isFocused!=true && playerNameInput.GetString()!=CoopSettings.PointerName)
             playerNameInput.SetString(CoopSettings.PointerName);
         shopStatus.SetVisible(inShop || inMenu && room.IsHost);
-        shopStatus.SetText(Loc(inShop ? "native_hint" : "host_start_hint"));
+        shopStatus.SetText(Loc(inShop ? "native_hint" : waitingForPartner ? "opening_connect_partner" : "host_start_hint"));
         RefreshAvailability();
         ResizePanel(available);
     }
@@ -553,31 +589,18 @@ internal sealed class CoopPanel : IDisposable
         LayoutRebuilder.ForceRebuildLayoutImmediate(rect);
     }
 
-    private void RefreshTerminal(bool expanded,(string Code,string Advice,string Context) issue)
-    {
-        terminalLog.SetActive(expanded);
-        recoveryActions.SetActive(expanded && (issue.Code!=null || recoveryAttempt!=null));
-        copyIssue.SetVisible(expanded && issue.Code!=null);
-        recoverDay.SetVisible(expanded && recoveryAttempt!=null);
-        copyIssue.SetText(Loc(issueCopied ? "diag_copied" : "diag_copy"));
-        double now=Time.realtimeSinceStartupAsDouble;
-        if(now<nextTerminalRefresh) return;
-        nextTerminalRefresh=now+0.5;
-        var state=RoomConnectionStatus.Format(room,joinPhase,joinCounters);
-        terminalSummary.SetText(issue.Code==null ? state.Summary : $"[{issue.Code}] {issue.Advice}");
-        terminalButton.SetText(Loc(expanded ? "terminal_hide_details" : "terminal_show_details"));
-        if(expanded)
-        {
-            string connection = string.IsNullOrEmpty(state.Details) ? Loc("terminal_no_session") : state.Details;
-            terminalDetails.SetText(issue.Code==null ? connection : issue.Context+"\n"+connection);
-        }
-    }
-
     internal void ObserveDay(NativeShop shop,bool guestWaiting,(string Code,int? Day)? lastRecovery)
     {
         var attempt=shop?.RecoveryCandidate;
+        var fault=shop?.FailedMutation;
         if(ReferenceEquals(dayShop,shop) && ReferenceEquals(recoveryAttempt,attempt) &&
-            hostDayPending==guestWaiting && recoveryExit==lastRecovery) return;
+            ReferenceEquals(mutationFault,fault) && hostDayPending==guestWaiting && recoveryExit==lastRecovery) return;
+        if (!ReferenceEquals(mutationFault,fault))
+        {
+            pendingMutationRecovery = null;
+            if (fault!=null) AddConnectionEvent("ERROR", $"{fault.Code}  {fault.Operation}  ·  {fault.Reason}");
+        }
+        mutationFault=fault;
         dayShop=shop; recoveryAttempt=attempt; hostDayPending=guestWaiting; recoveryExit=lastRecovery;
         nextRefresh=nextTerminalRefresh=0;
         issueCopied=false;
@@ -585,6 +608,9 @@ internal sealed class CoopPanel : IDisposable
 
     private (string Code,string Advice,string Context) CurrentIssue()
     {
+        if (mutationFault is { } fault)
+            return (fault.Code,Loc("diag_"+fault.Code),
+                $"role=host day={StoreStation.GetDayCounter()} operation={fault.Operation} reason={fault.Reason}");
         if(recoveryAttempt is DaySettlement attempt)
         {
             string code=CoopIssueCode.Settlement(attempt);
@@ -594,9 +620,15 @@ internal sealed class CoopPanel : IDisposable
         }
         if(hostDayPending)
             return ("DAY-301",Loc("diag_DAY-301"),$"role=guest day={room.Session?.Shop.View.Day} phase=SaveUnverified");
-        if(dayShop?.LastNightBlocker is NativeShop.NightBlocker blocker && blocker!=NativeShop.NightBlocker.None)
-            return ($"DAY-{(int)blocker}",Loc("day_block_"+blocker),
-                $"role=host day={StoreStation.GetDayCounter()} rejected_before_settlement={blocker}");
+        if(dayShop?.PendingSettlement == true)
+            return ("DAY-200",Loc("diag_DAY-200"),$"role=host day={StoreStation.GetDayCounter()} phase=Settling");
+        if(dayShop?.CurrentNightBlocker is NativeShop.NightBlocker blocker && blocker!=NativeShop.NightBlocker.None)
+        {
+            string context = $"role=host day={StoreStation.GetDayCounter()} rejected_before_settlement={blocker}";
+            if (blocker == NativeShop.NightBlocker.Activity && NativeActorSession.Current?.Activities.BlockingChannel is string channel)
+                context += " activity=" + channel;
+            return ($"DAY-{(int)blocker}",Loc("day_block_"+blocker),context);
+        }
         if(joinFailureCode!=null)
             return (joinFailureCode,Loc("diag_"+joinFailureCode),$"role=guest progress={joinCounters}");
         if(room.IsHost && room.Session?.Native is { SynchronizationFailed:true } native)
@@ -605,7 +637,7 @@ internal sealed class CoopPanel : IDisposable
             return (hostCode,Loc("diag_"+hostCode),$"role=host revision={native.Revision} reason={native.FailureReason}");
         }
         if(CoopIssueCode.DirectRoom(room.Status) is string directCode)
-            return (directCode,Loc("status_"+room.Status),$"transport=udp status={room.Status} {room.Detail}".TrimEnd());
+            return (directCode,Loc("status_"+room.Status),$"transport=udp status={room.Status}");
         if(recoveryExit is { } result)
         {
             string resume=result.Day.HasValue ?
@@ -619,20 +651,34 @@ internal sealed class CoopPanel : IDisposable
     private static string FormatIssue((string Code,string Advice,string Context) issue) =>
         $"[{issue.Code}] {issue.Advice}\n{issue.Context}";
 
-    private void CopyIssue()
-    {
-        var issue=CurrentIssue();
-        if(issue.Code==null) return;
-        GUIUtility.systemCopyBuffer=FormatIssue(issue);
-        issueCopied=true;
-        Refresh();
-    }
-
     private void RecoverDay()
     {
+        if (mutationFault is { } fault && dayShop!=null)
+        {
+            SetMutationRecoveryPrompt(fault);
+            return;
+        }
         if(recoveryAttempt==null || dayShop==null) return;
         var issue=CurrentIssue();
         dayShop.RequestSettlementRecovery(recoveryAttempt,FormatIssue(issue));
+    }
+
+    private void SetMutationRecoveryPrompt(NativeShop.MutationFault fault)
+    {
+        pendingMutationRecovery = fault;
+        nextTerminalRefresh = 0;
+        TickConnectionDetails();
+    }
+
+    private void ConfirmMutationRecovery()
+    {
+        var fault = pendingMutationRecovery;
+        SetMutationRecoveryPrompt(null);
+        if (fault == null || !ReferenceEquals(fault, mutationFault) || dayShop == null) return;
+        if (dayShop.RequestMutationRecovery(fault)) return;
+        string message = Loc("mutation_recovery_unavailable");
+        AddConnectionEvent("ERROR", message);
+        StoreUIManager.Instance?.Notify(message);
     }
 
     private bool CanConnect=>!room.HasLobby && !room.Busy;
@@ -640,6 +686,13 @@ internal sealed class CoopPanel : IDisposable
     private void RefreshAvailability()
     {
         join?.SetInteractable(inMenu && CanConnect && !string.IsNullOrWhiteSpace(code.GetString()));
+    }
+
+    private void RequestJoin()
+    {
+        // Let TextMeshPro finish handling the soft keyboard before hiding its input.
+        if(NativePlatform.IsAndroid) joinRequestedFrame=Time.frameCount;
+        else Join();
     }
 
     private void Join()
@@ -688,7 +741,7 @@ internal sealed class CoopPanel : IDisposable
 
     private void OpenCheckpoints(bool includeHistory=false)
     {
-        if (!inMenu || room.IsGuest) return;
+        if (!NativePlatform.SupportsHosting || !inMenu || room.IsGuest) return;
         if (checkpoints?.IsAlive == true) checkpoints.Close();
         var builder = CustomUIManager.Window("probably_coop_checkpoints", Loc("resume_run"), "menu")
             .SetSize(540, 440).Center().SetDraggable(true).SetCloseOnEscape()
@@ -772,7 +825,7 @@ internal sealed class CoopPanel : IDisposable
 
     private void OpenSoloCheckpoints()
     {
-        if (!inMenu || room.IsGuest) return;
+        if (!NativePlatform.SupportsHosting || !inMenu || room.IsGuest) return;
         if (checkpoints?.IsAlive == true) checkpoints.Close();
         var builder = CustomUIManager.Window("probably_coop_solo_checkpoints", Loc("solo_import"), "menu")
             .SetSize(610, 460).Center().SetDraggable(true).SetCloseOnEscape()
@@ -852,7 +905,7 @@ internal sealed class CoopPanel : IDisposable
         label.SetVisible(true);
     }
 
-    private void Resume(CoopRun.Checkpoint checkpoint)
+    internal void Resume(CoopRun.Checkpoint checkpoint)
     {
         var menu = MainMenuUIController.Instance;
         if (!inMenu || menu == null || room.IsGuest) return;
@@ -888,12 +941,28 @@ internal sealed class CoopPanel : IDisposable
     private void StartCoopGame()
     {
         var menu=MainMenuUIController.Instance;
-        if(!inMenu || room.IsGuest || menu==null || !CoopNewGameFlow.Begin(menu)) return;
+        if(!NativePlatform.SupportsHosting || !inMenu || room.IsGuest || menu==null) return;
+        bool paired=NativeOpening.CanHost && room.IsHost;
+        if(paired && room.Session?.State!=LinkState.Connected) return;
+        Action<MainMenuUIController, NewGameData> open = paired ? (controller,data) =>
+        {
+            if(!opening.BeginHost(room,controller,data))
+                throw new InvalidOperationException(Loc("opening_rejected"));
+        } : null;
+        if(!CoopNewGameFlow.Begin(menu,open)) return;
         checkpoints?.Close();
         window.Hide();
     }
 
 #if PROBABLY_COOP_GRID_QA
+    internal void QaStartPairedOpening()
+    {
+        Open();
+        window.Get("coop_new_run").button.onClick.Invoke();
+    }
+
+    internal CoopOpeningLobby QaOpeningLobby => opening;
+
     internal void QaVerifyLauncherOption() => entries.QaVerifyLauncherOption(Open);
     internal bool QaSelectSoloImport(int slot)
     {
@@ -909,6 +978,7 @@ internal sealed class CoopPanel : IDisposable
     public void Dispose()
     {
         if(window?.IsAlive==true) window.Close();
+        CloseDiagnosticsWindows();
         entries.Dispose();
         if(checkpoints?.IsAlive==true) checkpoints.Close();
         if(menuButton!=null) UnityEngine.Object.Destroy(menuButton);

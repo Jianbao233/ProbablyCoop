@@ -21,18 +21,30 @@ internal static class NativeJoinSnapshot
     internal static (Guid Run, bool Required, JToken Extensions) Read(NativeSnapshotFrame frame,NativeSnapshotFrame full,ulong fullRevision,
         CancellationToken cancellation=default)
     {
+        var review=ReadForReview(frame,full,fullRevision,cancellation);
+        return (review.Run, review.Required, review.Extensions);
+    }
+
+    internal static (Guid Run, bool Required, JToken Extensions, JToken Mods) ReadForReview(
+        NativeSnapshotFrame frame, NativeSnapshotFrame full, ulong fullRevision, CancellationToken cancellation=default)
+    {
         if(frame.Delta && full?.Full!=true) throw new InvalidDataException("Missing cooperative join checkpoint");
         var metadata=frame.Delta ? NativeRecordFrame.Body(frame.First,fullRevision) : frame.First;
         var state=frame.Count==1 ? NativeSnapshotCodec.Unpack(metadata,cancellation) :
             NativeSnapshotPages.ReadMetadata(frame,cancellation);
         var join=ReadContract(state);
         var extensions=state["modExtensions"];
+        var mods=state[RoomModManifest.Field];
         state.Remove("modExtensions");
-        return (join.Run,join.Required,extensions);
+        state.Remove(RoomModManifest.Field);
+        return (join.Run,join.Required,extensions,mods);
     }
 
     private static (Guid Run, bool Required) ReadContract(JObject state)
     {
+        // The pre-store draft can be acknowledged before the first shop state
+        // replaces it on the same reliable stream.
+        if(state["openingDraftV1"] is JObject && state.Count==1) return (Guid.Empty, false);
         if (state["actors"] is not JObject actors || actors["run"]?.Type != JTokenType.String ||
             !Guid.TryParse((string)actors["run"], out var run) || run == Guid.Empty ||
             state["partnerSetupRequired"]?.Type != JTokenType.Boolean)

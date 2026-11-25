@@ -34,6 +34,15 @@ internal sealed partial class NativeWorld
     private readonly uint[] tripBags=new uint[2];
     private readonly string[] tripBagProofs={"",""};
     private CustomUIWindow tripUi;
+    private readonly TravelSiteLedger<GameGridInventory> siteLedger = new TravelSiteLedger<GameGridInventory>();
+
+    private void ObservePairedTravel()
+    {
+        var entry = EmporiumEntry.Instance;
+        var map = MapUIManager.Instance;
+        if (!map.IsInTransit)
+            siteLedger.ObservePaired(StoreStation.Instance.dayCounter, map.Current?.Id, () => entry.afterhourInventory);
+    }
     internal static bool NativeTravelExecution;
     internal string ProposedTrip => proposedTrip;
     internal byte TripReady => tripReady;
@@ -41,12 +50,15 @@ internal sealed partial class NativeWorld
     internal bool IsDiscovered(string id,out bool value)=>discovered.TryGetValue(id,out value);
     private JObject CaptureSharedScene()
     {
+        ObservePairedTravel();
         var store=PlayerStore.Instance;
+        var partnerPosition = siteLedger.Where((int)NativeActorRun.Slot.Partner);
         var places=new JObject();
-        foreach(var id in new[]{AfterhourLocation.DUMPING_GROUND,AfterhourLocation.COMMISSARY,AfterhourLocation.DR_JACKSON})
-            places[id]=AfterhourLocation.Get(id)?.IsDiscovered()==true;
-        var data=new JObject { ["location"]=MapUIManager.Instance.Current?.Id ?? "",["playerLocation"]=(int)store.playerLocation,
-            ["proposed"]=proposedTrip,["ready"]=tripReady,["proof"]=TravelProof(),["visits"]=store.visitLeftTonight,["discovered"]=places,
+        using (EnterPartnerOperation())
+            foreach(var id in new[]{AfterhourLocation.DUMPING_GROUND,AfterhourLocation.COMMISSARY,AfterhourLocation.DR_JACKSON})
+                places[id]=AfterhourLocation.Get(id)?.IsDiscovered()==true;
+        var data=new JObject { ["location"]=partnerPosition.Site,["playerLocation"]=(int)store.playerLocation,
+            ["proposed"]=proposedTrip,["ready"]=tripReady,["proof"]=TravelProof(partnerPosition),["visits"]=store.visitLeftTonight,["discovered"]=places,
             ["backpack"]=proposedBackpack,["backpackProof"]=proposedBackpackProof,
             ["actorBackpacks"]=new JArray(tripBags),["actorBackpackProofs"]=new JArray(tripBagProofs),["initiator"]=tripInitiator,
             ["searches"]=ScavHelper.GetScavTimeLeft(),["minor"]=ScavHelper.GetMinorWoundChance(),["major"]=ScavHelper.GetMajorWoundChance(),
@@ -81,9 +93,24 @@ internal sealed partial class NativeWorld
         else Submit(new JObject { ["kind"]="travel",["destination"]=destination,["proof"]=remoteTripProof,
             ["backpack"]=backpack,["backpackProof"]=contents });
     }
-    private string TravelProof() => HashData(new JObject { ["scene"]=MapUIManager.Instance.Current?.Id ?? "",
-        ["day"]=StoreStation.Instance.dayCounter,["state"]=(int)PlayerStore.Instance.storeState,["visits"]=PlayerStore.Instance.visitLeftTonight,
-        ["ground"]=new JArray(EmporiumEntry.Instance.afterhourInventory.childItems.Select(MoveToken)) });
+    private string TravelProof()
+    {
+        ObservePairedTravel();
+        return TravelProof(siteLedger.Where((int)NativeActorRun.Slot.Host));
+    }
+    private string TravelProof(TravelSiteLedger<GameGridInventory>.Position position)
+    {
+        var ground = siteLedger.At(position.Site);
+        return HashData(new JObject { ["scene"]=position.Site,
+            ["day"]=StoreStation.Instance.dayCounter,["state"]=(int)PlayerStore.Instance.storeState,
+            ["visits"]=PlayerStore.Instance.visitLeftTonight,["visitGeneration"]=position.Generation,
+            ["ground"]=ground == null ? new JArray() : new JArray(ground.childItems.Select(MoveToken)) });
+    }
+    private bool HasPartnerTravelProof(string expected)
+    {
+        var position = siteLedger.Where((int)NativeActorRun.Slot.Partner);
+        return expected == TravelProof(position);
+    }
     private void ValidateTripReadiness()
     {
         if(HasActorProjection)
@@ -118,7 +145,7 @@ internal sealed partial class NativeWorld
         if(map.IsInTransit) return (ushort)ShopResult.Busy;
         if(destination=="cancel") { ResetActorTrip(); return (ushort)ShopResult.Applied; }
         string proof=TravelProof();
-        if(actor==2 && expected!=proof) return (ushort)ShopResult.Stale;
+        if(actor==2 && !HasPartnerTravelProof(expected)) return (ushort)ShopResult.Stale;
         GameItem selectedBackpack=null;
         if(destination=="return")
         { if(!map.IsOutside) return (ushort)ShopResult.Unavailable; }
@@ -160,7 +187,7 @@ internal sealed partial class NativeWorld
         if(session==null || map.IsInTransit) return (ushort)ShopResult.Busy;
         if(destination=="cancel") { ResetActorTrip(); return (ushort)ShopResult.Applied; }
         string proof=TravelProof();
-        if(actor==2 && expected!=proof) return (ushort)ShopResult.Stale;
+        if(actor==2 && !HasPartnerTravelProof(expected)) return (ushort)ShopResult.Stale;
         bool first=proposedTrip!=destination || tripInitiator==0;
         var initiator=first ? actor : tripInitiator;
         var store=PlayerStore.Instance;

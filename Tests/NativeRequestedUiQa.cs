@@ -336,8 +336,10 @@ internal sealed partial class NativeBackgroundQa
         observedConnection|=connected;
         if(observedConnection) CheckHostShootingQa();
         CheckShootingQaConnection(connected,now);
-        if(ShootingQaHostDone && mechanismsHostFinishAt==0) mechanismsHostFinishAt=now+3;
-        if(mechanismsHostFinishAt!=0 && now>=mechanismsHostFinishAt) Finish("PASS requested-shooting host");
+        if (!ShootingQaHostDone) return;
+        if (!connected) { Finish("PASS requested-shooting host"); return; }
+        if (mechanismsHostFinishAt == 0) mechanismsHostFinishAt = now + 25;
+        Require(now < mechanismsHostFinishAt, "guest did not finish observing the last shooting result");
     }
 
     private bool TickRequestedShootingGuest(ReplicaLink link,double now)

@@ -18,6 +18,29 @@ internal static partial class NativeMirrorProbe
             : Context.Deferred.Capture(item,ItemFields,ItemReaders.Freeze);
     }
 
+    internal static bool MatchesStockSample(GameItem item,NativeDeferredFields.StockCache cache)
+    {
+        if(!cache.ItemFields.TryGetValue(item,out var fields) || !ReferenceEquals(fields.Contract,ItemFields) ||
+            !ItemReaders.Matches(item,fields.Values)) return false;
+        // Cassette playback is local. Its capture uses filtered dictionaries,
+        // so the live dictionaries are not comparable to those cached samples.
+        if(NativeLocalCassette.IsDeck(item) || TagLayout==null) return true;
+        return TagsMatch(item.state) && TagsMatch(item.modifiedState);
+
+        bool TagsMatch(TagSystem system)
+        {
+            if(!cache.Tags.TryGetValue(system.dict,out var table) || table.Rows==null) return false;
+            if(table.Rows.Length!=system.dict.Count) return false;
+            int index=0;
+            foreach(var entry in system.dict)
+            {
+                var row=CaptureTag(entry.Value);
+                if(table.Keys[index]!=entry.Key || !table.Rows[index++].SameValues(in row)) return false;
+            }
+            return true;
+        }
+    }
+
     // Use backing fields from the existing reflection contract, including for
     // virtual names. Reading a property could invoke an item's custom getter.
     private static class ItemReaders
@@ -51,6 +74,12 @@ internal static partial class NativeMirrorProbe
                 if(previous is T prior && EqualityComparer<T>.Default.Equals(current,prior)) return previous;
                 return current;
             };
+        }
+        internal static bool Matches(GameItem item,object[] row)
+        {
+            for(int i=0;i<Readers.Length;i++)
+                if(!NativeRecordBasis.ScalarEqual(Readers[i](item,row[i]),row[i])) return false;
+            return true;
         }
         private static void Copy(GameItem item,object[] row)
         {

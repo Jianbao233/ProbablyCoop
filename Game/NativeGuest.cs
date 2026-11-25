@@ -88,7 +88,8 @@ internal sealed class NativeGuest
         NativeWorld.Guest?.Close();
         NativeGuestTrade.Reset();
         NativeGuestEvents.Reset();
-        if (SceneManager.GetActiveScene().name == "InventoryScene")
+        string scene = SceneManager.GetActiveScene().name;
+        if (scene == "InventoryScene")
         {
             EmporiumEntry.ResetData();
             PlayerStore.ResetData();
@@ -96,6 +97,13 @@ internal sealed class NativeGuest
             NewGameData.HardReset();
             SceneManager.LoadScene("EmporiumMenu", LoadSceneMode.Single);
             return;
+        }
+        if (scene == "EmporiumMenu")
+        {
+            // Unloading the original shop can recreate its lazy singletons
+            // after the first reset. Discard these before releasing guest mode.
+            PlayerStore.ResetData();
+            StoreStation.ResetData();
         }
         Active = false;
         MenuExitRequested = false;

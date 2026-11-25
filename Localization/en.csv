@@ -4,6 +4,7 @@ show_lan_options,Host via IPv4 / virtual LAN…
 hide_lan_options,Hide IPv4 options
 coop_saves_heading,Co-op saves
 terminal_title,Connection
+terminal_details_title,Connection Details
 terminal_show_details,Connection details
 terminal_hide_details,Hide details
 terminal_overview,Connection · {0} · {1} · {2}
@@ -61,6 +62,7 @@ leave,Leave
 approve,Accept
 pending,Waiting for host
 status_idle,Create a room or paste a room code.
+status_android_idle,Enter a room code from the PC host.
 status_local_idle,Start a room for a local test guest.
 status_local_waiting,Local room ready. Copy the PSL code for the guest.
 status_local_connected,Local test guest connected.
@@ -142,6 +144,7 @@ status_bad_address,Enter the host adapter IPv4 or use 127.0.0.1 for frp on this 
 status_lan_waiting,LAN room ready. Copy the PSI room code for your partner.
 status_lan_connected,LAN partner connected.
 status_steam_unavailable,Steam is unavailable. Enter an IPv4 address to host on LAN.
+status_android_guest_only,The Android port can join as a guest. Create an IPv4 room on a PC and paste the room code here.
 day_peer_waiting,Waiting for your partner to join or reconnect
 travel_unavailable,The guest can currently travel to the Dumping Grounds.
 day_peer_outside,Your partner must return before settling the day.
@@ -267,16 +270,30 @@ day_block_Funds,There are not enough funds for the selected nightly services.
 day_block_MissingSave,The current co-op save could not be read. The night has not started.
 day_input_wait,The host is finishing the day and saving. Please wait.
 day_recovery_exit,Return to the main menu without saving again
+day_block_Transition,A scene change or a non-interruptible event such as a shootout or arrest is in progress. Let it finish before ending the day.
+day_block_Busy,An end-of-day transition or recovery is already in progress. Check Connection Details for its status.
+force_day,Force End of Day
+force_day_confirm,Confirm End of Day
+force_day_confirm_text,"This cancels any pending trip, hangs up the phone, and releases the guest’s uncommitted drag before running the normal end-of-day process. The host must put down held items and finish any required events first."
+force_day_started,The host started the normal end-of-day process. Waiting for the save to be verified.
+force_day_stale,This end-of-day request is no longer available. Check Connection Details again.
 trip_block_busy,Wait for the scene change or nightly settlement to finish before leaving.
 trip_block_trade,A trade is still in progress. Finish or close it before leaving.
 diag_copy,Copy diagnostic
 diag_copied,Diagnostic copied
-diag_DAY-201,The new day was saved. Morning is still unconfirmed. Wait or return to the menu and resume the co-op save.
+diag_DAY-200,The native end-of-day process is running. Wait for the save and morning report.
+diag_DAY-201,The new day was saved. Morning is still unconfirmed. Wait or resume the last verified co-op save.
 diag_DAY-202,Morning completed. The new save is unverified. Wait or return to the last confirmed co-op save.
 diag_DAY-203,Save and morning are both unconfirmed. Wait for the host. If this persists, resume the last confirmed co-op save.
 diag_DAY-204,Save and morning are confirmed. The transition is still pending. Wait or return to the menu and resume.
 diag_DAY-206,The host could not write or verify the next day’s save. If it repeats after resuming, send the host log.
-diag_DAY-301,The host is still confirming the day. Ask the host for the DAY code in the co-op panel and wait in the shop.
+diag_DAY-207,An inventory operation failed. Open Connection Details to recover the last verified co-op save.
+diag_DAY-208,The trade's cash or items could not be verified. Open Connection Details to recover the last verified co-op save.
+diag_DAY-209,A shop operation failed. Open Connection Details to recover the last verified co-op save.
+mutation_recovery_resume,Recover Last Verified Co-op Save
+mutation_recovery_confirm,The room will close. Unsaved progress will be discarded and the last verified co-op save will load.
+mutation_recovery_unavailable,No co-op save matched the last verified checkpoint. Send the connection report and host log to the author.
+diag_DAY-301,The host's shop or day transition is paused. Ask the host for the DAY code in Connection Details and wait in the shop.
 diag_reloaded_from,Returned to the menu. Resume the last confirmed co-op save from day {0}.
 diag_no_checkpoint,Returned to the menu. There is no confirmed save for this run. Start a new co-op game.
 diag_SYNC-101,The host could not collect shop state. Keep the host game open and rejoin once. If it repeats, send the host log.
@@ -288,3 +305,53 @@ diag_SYNC-106,The gameplay mods or their co-op interfaces do not match. Check th
 diag_SYNC-107,The connection timed out. Check the room and the UDP route or Steam connection before rejoining.
 status_udp_address_not_local,Use the host adapter IPv4 or 127.0.0.1 for frp on the same PC. The guest enters the public tunnel endpoint.
 player_options_heading,Player settings
+opening_title,Two-player start
+opening_connect_partner,Start a two-player run once your partner joins the room.
+join_mod_title,Room Mod Check
+join_mod_can_try,Mod differences found · you can try joining
+join_mod_blocked,A required co-op extension is not ready
+join_mod_resolve,Resolve the highlighted extension issues first. Restart the game when prompted after enabling or updating a mod.
+join_mod_explain,Players can use different mods. You can resolve these differences or try joining with the current setup.
+join_mod_versions,Host {0}   ·   Local {1}
+join_mod_Missing,Missing locally · obtain the same version
+join_mod_Disabled,Installed · enable in Modifications and restart
+join_mod_Version,Different versions
+join_mod_Files,Same version · different files
+join_mod_LocalOnly,Enabled only on this side
+join_mod_Extension,Co-op extension required on both sides
+join_mod_unsubscribed,Not subscribed
+join_mod_downloading,Subscribed · waiting for Steam to install
+join_mod_restart,Installed · waiting for the game to reload
+join_mod_workshop,Open Workshop
+join_mod_warning,Try joining with these differences. If content cannot load the guest goes back to the menu with a diagnostic record.
+join_mod_cancel,Cancel
+join_mod_confirm,Confirm Join
+join_mod_force,Join Anyway
+join_mod_recheck,Check Again
+join_mod_consent,Guest accepted the current mod differences
+join_mod_ready,Joined with the current mod setup
+join_mod_count,{0} mod differences found
+join_diag_mod,{0}  ·  Host {1} / Local {2}  ·  {3}
+diag_build,Game {0}  ·  Probably Coop {1}  ·  Protocol {2}
+diag_connection_state,Connection {0}  ·  {1}
+join_diag_load,Synchronization failed · {0}
+join_diag_item,Item {0} · asset source {1} · {2}
+opening_reopen,Return to two-player setup
+opening_host_role,Host career · {0}
+opening_partner_role,Partner career · {0}
+opening_rent_term,Starting debt repayment
+opening_rent_waive,Waive the shortfall
+opening_rent_one,Pay in the next week
+opening_rent_weeks,Spread over {0} weeks
+opening_waiting_partner,Waiting for the partner to choose a career and perks.
+opening_launch,Start the new co-op shop
+opening_cancel,Cancel setup
+opening_choose_perks,Choose perks
+opening_rejected,The opening draft was rejected. Check for career or shop-perk conflicts and try again.
+opening_sending,Selection submitted. Waiting for the host.
+opening_no_debt,Starting funds cover both careers.
+opening_debt_waived,Starting shortfall waived · {0}
+opening_debt_schedule,Starting debt {0} · Weekly rent additions {1}
+opening_partner_perks,Partner's starting perks
+opening_partner_perks_hint,Choose personal and shop perks. Shared effects and gifts are applied once.
+opening_rent_calendar,Next rent {0} (opening installment {1} · arrears {2}) · Due in {3} days

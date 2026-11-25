@@ -222,6 +222,7 @@ internal sealed partial class NativeBackgroundQa
             if (workshopApproval) { TickWorkshopApproval(inMenu,now); return; }
             if (localTraitsQa) { TickLocalTraits(room, shop, inMenu, now); return; }
             if (soloImportQa) { TickSoloImport(room, panel, inMenu); return; }
+            if (pairedOpeningQa) { TickPairedOpening(room, panel, shop, inMenu, now); return; }
 #endif
             if(VerifyGuestRoomExit(room,inMenu,now)) return;
             if(waterMerchantQa) { TickWaterMerchant(room,shop,inMenu,now); return; }

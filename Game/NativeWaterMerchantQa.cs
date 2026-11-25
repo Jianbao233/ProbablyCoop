@@ -20,6 +20,7 @@ internal sealed partial class NativeBackgroundQa
         string role=host ? "Host" : "Guest";
         Require(Application.productName=="Probably Stolen Coop RegressionRev12Water "+role &&
             !Application.isBatchMode,"water merchant QA requires its fresh isolated GPU profile");
+        if(waterMerchantRecorded) return;
         Require(now-started<95,"water merchant QA did not reach the observation on "+role);
 
         if(host && !loaded && inMenu && room.IsHost)
@@ -54,7 +55,6 @@ internal sealed partial class NativeBackgroundQa
             return;
         }
         if(now<waterMerchantVisibleAt) return;
-        if(waterMerchantRecorded) return;
 
         var store=PlayerStore.Instance;
         Require(store.startType==NewGameData.StartType.WATER_MERCHANT &&

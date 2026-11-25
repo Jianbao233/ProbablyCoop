@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using ProbablyCoop.Api;
@@ -9,6 +10,7 @@ namespace ProbablyCoopExtensionProbe;
 public sealed class ProbeMod : IMod
 {
     private const string ModId = "probably_coop_extension_probe";
+    private const string StorageProbeName = "Co-op declared storage probe";
     private CoopExtensionSession session;
     private GameObject runner;
     private int count;
@@ -45,8 +47,15 @@ public sealed class ProbeMod : IMod
     {
         if(sender!="probably_coop") return;
         var registration = new CoopExtensionRegistration("counter-v1",new[] { "increment" },
-            () => count.ToString(CultureInfo.InvariantCulture),Execute,Project,Attach);
+            ReadState,Execute,Project,Attach);
         ModHelper.SendMessage(ModId,CoopExtensionApi.RegistrationChannel,registration);
+    }
+
+    private string ReadState()
+    {
+        if(session?.IsReady==true)
+            throw new InvalidOperationException("An extension session must stay unavailable inside ReadState.");
+        return count.ToString(CultureInfo.InvariantCulture);
     }
 
     private void Attach(CoopExtensionSession next)
@@ -75,11 +84,13 @@ public sealed class ProbeMod : IMod
 
     private void Update()
     {
+        if(session?.IsClosed==true) session=null;
         if(session?.IsReady!=true) return;
         if(session.LocalActor==CoopExtensionActor.Host)
         {
             if(!sawHostSession)
             {
+                if (!InstallStorageFixture()) return;
                 Debug.Log("[coop-extension-probe] PASS native host discovery");
                 sawHostSession=true;
             }
@@ -87,6 +98,8 @@ public sealed class ProbeMod : IMod
         }
         var state=session.CurrentState;
         if(state==null || phase!=0) return;
+        if (!VerifyStorageFixture()) return;
+        Debug.Log("[coop-extension-probe] PASS custom wrapper declared native slot order and ownership");
         if(forceReconnect)
         {
             if(state.Payload=="1" && displayed==1)
@@ -100,6 +113,41 @@ public sealed class ProbeMod : IMod
         firstRevision=state.Revision;
         if(session.Request("increment","1",firstRevision,ConfirmIncrement)!=CoopActionSubmission.Queued) return;
         phase=1;
+    }
+
+    private static bool InstallStorageFixture()
+    {
+        var shop = EmporiumEntry.Instance;
+        if (shop?.invElement == null) return false;
+        var item = DirectoryMaster.Item("labeler");
+        var layout = new DeclaredStorage();
+        var window = new PixelWindow(true, StorageProbeName);
+        window.Attach(layout);
+        item.SetContentWindow(window);
+        GeneralHelper.SetItemOwned(item, true);
+        GeneralHelper.SetCustomName(item, StorageProbeName);
+        var water = DirectoryMaster.Item("small_bottled_water");
+        GeneralHelper.SetItemOwned(water, true);
+        if (GraphUtils.TryAcceptAll(layout.CoopStorage[1], water) != 0 ||
+            (GraphUtils.TryAcceptAll(shop.invElement, item) != 0 && GraphUtils.TryAcceptAll(shop.backInvinvElement, item) != 0))
+            throw new InvalidOperationException("Could not place the declared-storage fixture.");
+        return true;
+    }
+
+    private static bool VerifyStorageFixture()
+    {
+        var shop = EmporiumEntry.Instance;
+        var item = shop.invElement.childItems.Concat(shop.backInvinvElement.childItems)
+            .FirstOrDefault(candidate => GeneralHelper.GetCustomName(candidate) == StorageProbeName);
+        if (item?.contentWindow == null) return false;
+        var window = item.contentWindow;
+        if (window.childElement is not MachineryStack stack || stack.elements.Count != 2 ||
+            stack.elements[0] is not GameSlotInventory first || first.childItem != null ||
+            stack.elements[1] is not GameSlotInventory second || second.childItem?.identifier != "small_bottled_water" ||
+            !window.children.Contains(second) || !second.parents.Contains(window) ||
+            !ReferenceEquals(second.childItem.parentInventory, second))
+            throw new InvalidOperationException("The declared native slots lost their order or graph ownership.");
+        return true;
     }
 
     private void ConfirmIncrement(CoopActionResult result)
@@ -124,6 +172,22 @@ public sealed class ProbeMod : IMod
             Debug.Log("[coop-extension-probe] PASS native partner action, projected receipt and stale rejection");
         else Debug.LogError("[coop-extension-probe] FAIL stale request "+result);
         phase=3;
+    }
+}
+
+internal sealed class DeclaredStorage : MachineryPanelRow, ICoopNativeStorageLayout
+{
+    public IReadOnlyList<GameInventory> CoopStorage { get; }
+
+    internal DeclaredStorage()
+    {
+        var filled = new GameSlotInventory(2, 3);
+        var empty = new GameSlotInventory(2, 3);
+        // The visible order differs from the base row's insertion order.
+        Add(new MachineryPanel("Filled", filled));
+        Add(new MachineryPanel("Empty", empty));
+        SetDisplayOrder(1, 0);
+        CoopStorage = new GameInventory[] { empty, filled };
     }
 }
 

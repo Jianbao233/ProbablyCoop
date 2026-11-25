@@ -83,13 +83,21 @@ internal sealed class NativeActorSession : IDisposable
         if (Current != null) return EnsureForExisting(store);
         var partner = NativeActorState.CreateDefault();
         partner.playerName = "Partner";
-        return new NativeActorSession(store, new NativeActorRun(store, partner), EmporiumEntry.Instance, true);
+        var session = new NativeActorSession(store, new NativeActorRun(store, partner), EmporiumEntry.Instance, true);
+        try { NativeOpening.InitializePartner(session); }
+        catch
+        {
+            session.Dispose();
+            throw;
+        }
+        return session;
     }
 
     internal static NativeActorSession Restore(PlayerStore store, NativeActorCheckpoint.Envelope checkpoint)
     {
         if (!CoopRun.IsRegistered(store)) throw new InvalidOperationException("Actor restoration requires a registered cooperative run.");
         if (Current != null) throw new InvalidOperationException("Retire the previous native scene before restoring actors.");
+        NativeOpening.RestorePartnerCareerReputation(store);
         var result = new NativeActorSession(store, NativeActorRun.RestorePersonalCheckpoint(store, checkpoint.Personal), EmporiumEntry.Instance, false);
         result.Hydrating = true;
         return result;

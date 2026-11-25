@@ -38,6 +38,12 @@ internal sealed partial class NativeWorld
     {
         partnerLease.Reset(); ClearPartnerRecords();
     }
+    internal void ReleasePartnerHandForNight()
+    {
+        if(!PartnerHasHand) return;
+        partnerLease.Release(partnerLease.ActiveSerial, HandClock);
+        ClearPartnerRecords();
+    }
     private void TickPartnerHand()
     {
         using var actorScope=EnterPartnerOperation();

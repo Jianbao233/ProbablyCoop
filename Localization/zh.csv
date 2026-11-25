@@ -4,6 +4,7 @@ show_lan_options,IPv4 / 虚拟局域网建房…
 hide_lan_options,收起 IPv4 建房
 coop_saves_heading,合作存档
 terminal_title,连接状态
+terminal_details_title,连接详情
 terminal_show_details,连接详情
 terminal_hide_details,收起详情
 terminal_overview,连接状态 · {0} · {1} · {2}
@@ -61,6 +62,7 @@ leave,退出
 approve,接受
 pending,等待主机
 status_idle,创建房间或粘贴房间码。
+status_android_idle,请填写电脑房主提供的房间码。
 status_local_idle,开启一个仅供本机副机加入的测试房间。
 status_local_waiting,本机房间已创建，复制 PSL 房间码给副机。
 status_local_connected,本机副机已连接。
@@ -142,6 +144,7 @@ status_bad_address,请输入本机网卡 IPv4。同机运行 frp 时也可填 12
 status_lan_waiting,局域网房间已创建。复制 PSI 房间码给合伙人。
 status_lan_connected,局域网合伙人已连接。
 status_steam_unavailable,Steam 尚未就绪。可输入 IPv4 开局域网房间。
+status_android_guest_only,安卓移植版可作为客机。请由电脑创建 IPv4 房间，再粘贴房间码加入。
 day_peer_waiting,等待合伙人加入或重连
 travel_unavailable,此版本的副机暂可前往垃圾倾倒场。
 day_peer_outside,合伙人还在外面，回店后才能日结。
@@ -267,16 +270,30 @@ day_block_Funds,资金不足以支付所选的夜间服务。
 day_block_MissingSave,无法读取当前合作存档，本次日结尚未开始。
 day_input_wait,房主正在结算并保存，请稍等。
 day_recovery_exit,返回主菜单（本次不再保存）
+day_block_Transition,正在处理场景切换、枪战、拘捕或其他不可中断的事件。请等待流程完成。
+day_block_Busy,已经有一次日结或恢复正在处理。请在连接详情查看进度。
+force_day,强制结算
+force_day_confirm,确认结算
+force_day_confirm_text,将取消未出发的行程、结束通话并解除客机尚未提交的拖放，再按原版规则结算。请先放下房主手中的物品并处理必须完成的事件。
+force_day_started,房主已启动原版日结，正在等待存档确认。
+force_day_stale,当前已无法发起这次日结，请重新查看连接详情。
 trip_block_busy,场景或日结正在处理中，请稍后再确认出行。
 trip_block_trade,交易还在进行中，请完成或关闭交易后再出行。
 diag_copy,复制诊断
 diag_copied,诊断已复制
-diag_DAY-201,新一天已保存，晨间流程尚未确认。可以继续等待，或返回主菜单后继续合作档。
+diag_DAY-200,正在进行原版日结。请等待存档和晨间报告完成。
+diag_DAY-201,新一天已保存，晨间流程尚未确认。可以继续等待，或恢复最近已确认的合作档。
 diag_DAY-202,晨间流程已完成，新一天的存档尚未核验。可以继续等待，或退回最近已确认的合作档。
 diag_DAY-203,存档与晨间流程均未确认。先等待房主游戏响应；状态持续时可恢复最近已确认的合作档。
 diag_DAY-204,存档与晨间流程已确认，切换尚未结束。先等待；状态持续时可返回主菜单并读档。
 diag_DAY-206,房主未能写入或读回验证新一天的合作档。恢复后若仍出现，请附上房主日志。
-diag_DAY-301,房主仍在确认日结。请房主查看联机面板里的 DAY 状态码，客机先留在店内等候。
+diag_DAY-207,库存操作失败，日结已暂停。请在连接详情恢复最近已确认的合作档。
+diag_DAY-208,交易的资金或物品结果未通过校验，日结已暂停。请在连接详情恢复最近已确认的合作档。
+diag_DAY-209,店铺操作发生异常，日结已暂停。请在连接详情恢复最近已确认的合作档。
+mutation_recovery_resume,恢复最近已确认的合作档
+mutation_recovery_confirm,房间将关闭。游戏会丢弃未保存的进度并载入最近已确认的合作档。
+mutation_recovery_unavailable,没有找到与最近确认记录一致的合作档。请将连接诊断和房主日志发给作者。
+diag_DAY-301,房主的店铺或日结已暂停。请房主查看连接详情里的 DAY 状态码，客机先在店内等候。
 diag_reloaded_from,已返回主菜单。请用「继续合作档」读取最近已确认的第 {0} 天。
 diag_no_checkpoint,已返回主菜单。本局暂无已确认的合作档，请新建合作局。
 diag_SYNC-101,房主未能收集店铺状态。房主保持当前游戏，客机重进一次；若再次失败请提供房主日志。
@@ -288,3 +305,53 @@ diag_SYNC-106,双方的玩法 Mod 或联机适配不一致。请按加载记录�
 diag_SYNC-107,连接没有在时限内响应。请确认房间仍开启，检查 UDP 路由或 Steam 连接，再用原码重进。
 status_udp_address_not_local,无法监听此地址。房主请填自己网卡的 IPv4，或为同机 frp 填 127.0.0.1。客机在映射栏填节点公网地址。
 player_options_heading,玩家设置
+opening_title,双人开局
+opening_connect_partner,伙伴加入房间后即可开始双人开局。
+opening_reopen,返回双人开局
+opening_host_role,房主职业 · {0}
+opening_partner_role,伙伴职业 · {0}
+opening_rent_term,开局欠款的房租分摊方式
+opening_rent_waive,免除差额
+opening_rent_one,下一周付清
+opening_rent_weeks,分 {0} 周
+opening_waiting_partner,等待伙伴选择职业和天赋。
+opening_launch,开始双人新局
+opening_cancel,取消开局
+opening_choose_perks,选择天赋
+opening_rejected,开局选择未通过。请查看双方职业和店铺天赋是否冲突再试。
+opening_sending,已提交选择，等待房主确认。
+opening_no_debt,开局资金足够支付职业费用。
+opening_debt_waived,免除开局差额 {0}。
+opening_debt_schedule,开局欠款 {0} · 每周附加房租 {1}
+opening_partner_perks,合伙人开局天赋
+opening_partner_perks_hint,选择个人和店铺天赋。共享赠品和设施只发放一次。
+opening_rent_calendar,下次租金 {0}（含开局分摊 {1} · 已欠 {2}） · 距离交租 {3} 天
+join_mod_title,入房向导
+join_mod_can_try,发现 Mod 差异 · 可以尝试加入
+join_mod_blocked,有必需的联机扩展尚未就绪
+join_mod_resolve,处理标出的扩展问题后再检查。启用或更新 Mod 后请按原版提示重启。
+join_mod_explain,双方的 Mod 可以不同。你可以处理下列差异，或继续尝试进入房间。
+join_mod_versions,房主 {0}   ·   本机 {1}
+join_mod_Missing,本机未安装 · 手动取得同版
+join_mod_Disabled,已安装 · 请在改装件菜单启用并重启
+join_mod_Version,版本不同
+join_mod_Files,版本相同 · 文件不同
+join_mod_LocalOnly,仅本机启用
+join_mod_Extension,需要共同加载的联机扩展
+join_mod_unsubscribed,未订阅
+join_mod_downloading,已订阅 · 等待 Steam 安装
+join_mod_restart,已安装 · 等待游戏重新加载
+join_mod_workshop,打开工坊
+join_mod_warning,将以当前 Mod 组合尝试。遇到无法载入的内容时，客机会返回菜单并保留诊断。
+join_mod_cancel,取消
+join_mod_confirm,确认加入
+join_mod_force,强制加入
+join_mod_recheck,重新检查
+join_mod_consent,客机确认按当前 Mod 差异尝试加入
+join_mod_ready,已按当前 Mod 组合载入房间
+join_mod_count,发现 {0} 项 Mod 差异
+join_diag_mod,{0}  ·  房主 {1} / 本机 {2}  ·  {3}
+diag_build,游戏 {0}  ·  合伙店 {1}  ·  联机协议 {2}
+diag_connection_state,连接 {0}  ·  {1}
+join_diag_load,处理同步时失败 · {0}
+join_diag_item,物品 {0} · 资源来源 {1} · {2}

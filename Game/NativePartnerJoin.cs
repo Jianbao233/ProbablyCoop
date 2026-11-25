@@ -23,17 +23,21 @@ internal sealed class NativePartnerJoin : IDisposable
     private string[] draft;
     private double retry, pickerDeadline;
     private string pickerFailure;
-    private Task<(Guid Run,bool Required,JToken Extensions)> reading;
+    private Task<(Guid Run,bool Required,JToken Extensions,JToken Mods)> reading;
     private Dictionary<string,ModExtensionContract> extensions;
+    private RoomModManifest review, acceptedReview;
+    private bool refreshReview;
     private CancellationTokenSource readLifetime;
     private ulong readingRevision;
+
+    internal bool PickerVisible => picker;
 
     internal void ObserveConnection(bool valid)
     {
         if(!valid && (link!=null || picker)) Dispose();
     }
 
-    internal bool Ready(RoomSelector room)
+    internal bool Ready(RoomSelector room, CoopPanel panel)
     {
         var connection=room.Session?.Native;
         if(connection==null) { Dispose(); return false; }
@@ -42,7 +46,7 @@ internal sealed class NativePartnerJoin : IDisposable
             Dispose(); link=connection; stamp=connection.CaptureStamp();
         }
         if(connection.Snapshot==null || connection.Revision==0) return false;
-        if(observed!=connection.Revision)
+        if(observed!=connection.Revision || refreshReview)
         {
             if(reading==null)
             {
@@ -52,8 +56,9 @@ internal sealed class NativePartnerJoin : IDisposable
                 ulong baseRevision=connection.FullRevision;
                 readingRevision=connection.Revision;
                 readLifetime=new CancellationTokenSource();
-                var cancellation=readLifetime.Token;
-                reading=Task.Run(()=>NativeJoinSnapshot.Read(snapshot,full,baseRevision,cancellation));
+                reading=CoopBackgroundWork.Start(readLifetime.Token,
+                    cancellation=>NativeJoinSnapshot.ReadForReview(snapshot,full,baseRevision,cancellation));
+                refreshReview=false;
                 return false;
             }
             if(!reading.IsCompleted) return false;
@@ -62,11 +67,37 @@ internal sealed class NativePartnerJoin : IDisposable
             readLifetime.Dispose();
             readLifetime=null;
             var metadata=completed.GetAwaiter().GetResult();
-            NativeWorld.CheckModExtensionJoin(metadata.Extensions,ref extensions);
+            if(metadata.Run==Guid.Empty)
+            {
+                observed=readingRevision;
+                return false;
+            }
             var incoming=metadata.Run;
             if(run!=Guid.Empty && run!=incoming) throw new InvalidDataException("Cooperative character run changed during join");
             run=incoming; required=metadata.Required; observed=readingRevision;
+            var blockers=NativeWorld.ReviewModExtensionJoin(metadata.Extensions,ref extensions);
+            var report=RoomModManifest.Compare(RoomModManifest.Read(metadata.Mods),NativeRoomModManifest.Local(),blockers);
+            if(!report.Same(review))
+            {
+                acceptedReview=null;
+                review=report;
+                panel.RecordModReview(report);
+            }
         }
+        if(run==Guid.Empty) return false;
+        if(review != null && (review.Blocked || review.NeedsConsent && !ReferenceEquals(acceptedReview,review)))
+        {
+            var current = review;
+            panel.ShowModReview(current, () =>
+            {
+                if(current.Blocked || !ReferenceEquals(review,current) || !stamp.IsCurrent(connection) ||
+                    !ReferenceEquals(room.Session?.Native,connection)) return;
+                acceptedReview=current;
+                panel.RecordModConsent();
+            }, () => { extensions=null; refreshReview=true; }, () => room.Leave());
+            return false;
+        }
+        panel.CloseModReview();
         if(!required) return true;
         if(sent)
         {
@@ -160,10 +191,8 @@ internal sealed class NativePartnerJoin : IDisposable
         {
             readLifetime?.Cancel();
             readLifetime?.Dispose();
-            // A task from a departed epoch cannot update this join.
-            if(reading!=null)
-                _=reading.ContinueWith(task=>{ _=task.Exception; },TaskContinuationOptions.OnlyOnFaulted);
-            reading=null; readLifetime=null; extensions=null;
+            // The loader-owned job cannot update a join once its task is discarded.
+            reading=null; readLifetime=null; extensions=null; review=acceptedReview=null; refreshReview=false;
             link=null; observed=0; run=Guid.Empty; required=picker=sent=false; pickerOwner=null; draft=null; retry=pickerDeadline=0; pickerFailure=null; disposing=false;
         }
     }

@@ -20,8 +20,10 @@ internal sealed class CoopRuntime : MonoBehaviour
     private NativePointer pointer;
     private readonly NativeDayUi dayUi = new NativeDayUi();
     private readonly NativePartnerJoin partnerJoin = new NativePartnerJoin();
+    private readonly CoopOpeningLobby opening = new CoopOpeningLobby();
     private bool returningGuest;
     private (string Code, int? Day)? recoveryExit;
+    private CoopRun.Checkpoint mutationResume;
     private PlayerStore checkedStore;
     private bool stopped;
     private Action captureAfterReceive;
@@ -40,7 +42,8 @@ internal sealed class CoopRuntime : MonoBehaviour
             if(NativeActorFaultRecovery.TryReturnToMenu(CloseSession, day =>
             {
                 var attempt = shop?.RecoveryCandidate;
-                recoveryExit = (attempt == null ? "DAY-205" : CoopIssueCode.Settlement(attempt), day);
+                mutationResume = shop?.MutationResume;
+                recoveryExit = (shop?.FailedMutation?.Code ?? (attempt == null ? "DAY-205" : CoopIssueCode.Settlement(attempt)), day);
             })) return;
             var scene = SceneManager.GetActiveScene().name;
             bool inMenu = scene == "EmporiumMenu" || MainMenuUIController.Instance != null &&
@@ -96,7 +99,7 @@ internal sealed class CoopRuntime : MonoBehaviour
             {
                 var fingerprint = ReadFingerprint();
                 room = new RoomSelector(fingerprint, localTest);
-                panel = new CoopPanel(room, localTest);
+                panel = new CoopPanel(room, localTest, opening);
                 pointer = new NativePointer(room);
                 if (inMenu && localTest)
                 {
@@ -113,7 +116,14 @@ internal sealed class CoopRuntime : MonoBehaviour
             }
             shop?.Tick(room.Session?.State == LinkState.Connected);
             panel.SetContext(inMenu, shop != null || guest != null);
-            if (!localTest)
+            if (inMenu && mutationResume != null && MainMenuUIController.Instance != null)
+            {
+                var target = mutationResume;
+                mutationResume = null;
+                panel.Resume(target);
+                return;
+            }
+            if (!localTest && !NativePlatform.IsAndroid)
             {
                 steamJoin.Listen(args);
                 if (inMenu && steamJoin.TryTake(out var lobby))
@@ -139,13 +149,17 @@ internal sealed class CoopRuntime : MonoBehaviour
             captureAfterReceive ??= CaptureHostAfterReceive;
             room.Tick(captureAfterReceive);
             var connection = room.Session;
+            opening.Tick(room, inMenu);
             panel.ObserveJoin(guest!=null,NativeWorld.Guest?.Ready==true);
             if(room.IsGuest && connection?.Native.SynchronizationFailed==true)
             {
                 FailGuestSynchronization();
                 return;
             }
-            partnerJoin.ObserveConnection(room.IsGuest && connection?.State==LinkState.Connected && connection.Shop.View.Active);
+            bool reviewingGuest = inMenu && guest == null && room.IsGuest && connection?.State==LinkState.Connected && connection.Shop.View.Active;
+            partnerJoin.ObserveConnection(reviewingGuest);
+            if(!reviewingGuest) panel.CloseModReview();
+            panel.SetPartnerPickerVisible(partnerJoin.PickerVisible || opening.CoversRoomPanel);
             // Transport callbacks may replace/drop the peer during room.Tick.
             // Clear consent/ownership now, before later UI callbacks in this frame.
             if(world!=null)
@@ -172,7 +186,12 @@ internal sealed class CoopRuntime : MonoBehaviour
             {
                 try
                 {
-                    if(!partnerJoin.Ready(room)) { panel.Tick(); return; }
+                    if(!partnerJoin.Ready(room,panel))
+                    {
+                        panel.SetPartnerPickerVisible(partnerJoin.PickerVisible);
+                        panel.Tick();
+                        return;
+                    }
                     guest = NativeGuest.Enter(connection);
                 }
                 catch(Exception error) { FailGuestSynchronization(error); return; }
@@ -209,6 +228,7 @@ internal sealed class CoopRuntime : MonoBehaviour
             $"reason={native?.FailureReason} receivedRevision={native?.Revision} fullRevision={native?.FullRevision} {error}");
         panel.JoinFailed(error as ModExtensionJoinException,native?.FailureReason ?? NativeSyncFailure.None,
             error!=null, duringPlay:guest?.EnteredShop==true);
+        panel.RecordProjectionFailure(error,native?.FailureReason ?? NativeSyncFailure.None);
         partnerJoin.Dispose();
         if(guest!=null || NativeGuest.Active) LeaveGuest("sync_failed");
         else room.Leave("sync_failed");
@@ -274,6 +294,7 @@ internal sealed class CoopRuntime : MonoBehaviour
 
     private void CloseSession()
     {
+        opening.Dispose();
         NativeActorCarryUi.Reset();
         partnerJoin.Dispose();
         dayUi.Reset();

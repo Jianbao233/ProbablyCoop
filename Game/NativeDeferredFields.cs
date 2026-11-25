@@ -637,7 +637,7 @@ internal sealed class NativeDeferredFields
 
     internal Core.NativeSnapshotFrame PackFrame(JObject root,CancellationToken cancellation,bool records,NativeRecordBasis basis,
         ulong revision,out NativeRecordBasis checkpoint,out int referenced,byte[] auditBasis=null,
-        bool allowPages=true,bool preferPages=false)
+        bool allowPages=true,bool preferPages=false,NativeRecordBasis completeCaptureBasis=null)
     {
         if(!sealedCapture || Interlocked.Exchange(ref consumed,1)!=0)
             throw new InvalidOperationException("Deferred capture is not available for encoding");
@@ -655,8 +655,8 @@ internal sealed class NativeDeferredFields
             int itemCount=0;
             if(records) foreach(JObject parent in (JArray)root["roots"]) itemCount+=((JArray)parent["items"]).Count;
             bool incremental=records && basis!=null && Math.Abs(itemCount-basis.Count)<=Math.Max(8,basis.Count/3);
-            if(borrowedRecords.Count!=0 && (!records || !ReferenceEquals(basis,borrowedBasis)))
-                throw new InvalidOperationException("Borrowed records require their exact acknowledged basis");
+            if(borrowedRecords.Count!=0 && (!records || !ReferenceEquals(basis ?? completeCaptureBasis,borrowedBasis)))
+                throw new InvalidOperationException("Borrowed records require their exact capture basis");
             HashSet<JToken> verified=null,components=null;
             if(incremental && EarlyPlain && itemRows.Count!=0)
             {

@@ -1,4 +1,6 @@
-using System.Linq;
+using System.Collections.Generic;
+using System.Reflection;
+using DG.Tweening;
 using HarmonyLib;
 using Newtonsoft.Json.Linq;
 using ProbablyCoop.Core;
@@ -9,41 +11,112 @@ internal sealed partial class NativeWorld
 {
     private JObject securityScene;
     private uint reportRevision;
+    private readonly OfficerState[] officers = { new OfficerState(), new OfficerState() };
+
+    internal enum OfficerMotion { Hidden, Entering, AtCounter, Leaving, Cleared }
+
+    private sealed class OfficerState
+    {
+        internal GenericClientMono Actor;
+        internal OfficerMotion Motion;
+        internal ulong Revision;
+        internal string Sprite = "";
+    }
+
     internal void ReportChanged() { reportRevision++; nextCapture=0; }
     private string ReportProof() => HashData(new JObject { ["client"]=model.Id(PlayerStore.Instance.currentClientInstance?.GetClientBlueprint()),
         ["reported"]=PlayerStore.Instance.currentClientInstance?.GetClientBlueprint().reported ?? false,["revision"]=reportRevision });
-    private JObject CaptureSecurityScene() => new JObject { ["proof"]=ReportProof(),["glass"]=StoreUIManager.Instance.StoreGlass.IsClosed,
-        ["officers"]=new JArray(CaptureOfficer(StoreUIManager.Instance.secGameObject),CaptureOfficer(StoreUIManager.Instance.secGameObject2)) };
-    private static JObject CaptureOfficer(GenericClientMono actor)
+    private JObject CaptureSecurityScene()
     {
-        var p=actor.transform.localPosition; var c=actor.image.color;
-        string key=null;
-        using(NativePerformance.Measure("host.officer_sprite"))
+        var ui = StoreUIManager.Instance;
+        return new JObject { ["proof"] = ReportProof(), ["glass"] = ui.StoreGlass.IsClosed,
+            ["officers"] = new JArray(CaptureOfficer(0, ui.secGameObject), CaptureOfficer(1, ui.secGameObject2)) };
+    }
+
+    private JArray CaptureOfficer(int index, GenericClientMono actor)
+    {
+        var state = officers[index];
+        if (!actor.gameObject.activeSelf && state.Motion is not (OfficerMotion.Hidden or OfficerMotion.Cleared))
+            ChangeOfficer(state, actor, OfficerMotion.Cleared);
+        if (actor.gameObject.activeSelf && (state.Actor != actor || state.Motion is OfficerMotion.Hidden or OfficerMotion.Cleared))
+            ChangeOfficer(state, actor, OfficerMotion.AtCounter);
+        return new JArray(state.Revision, (int)state.Motion, state.Sprite);
+    }
+
+    internal void RecordOfficer(GenericClientMono actor, OfficerMotion motion)
+    {
+        var ui = StoreUIManager.Instance;
+        if (ui == null) return;
+        int index = actor == ui.secGameObject ? 0 : actor == ui.secGameObject2 ? 1 : -1;
+        if (index < 0) return;
+        var state = officers[index];
+        if (motion == OfficerMotion.Hidden && actor.gameObject.activeSelf ||
+            motion == OfficerMotion.AtCounter && state.Motion != OfficerMotion.Entering ||
+            motion == OfficerMotion.Leaving && !actor.gameObject.activeSelf) return;
+        ChangeOfficer(state, actor, motion);
+        nextCapture = 0;
+    }
+
+    private static void ChangeOfficer(OfficerState state, GenericClientMono actor, OfficerMotion motion)
+    {
+        if (motion == OfficerMotion.Entering ||
+            motion == OfficerMotion.AtCounter && (state.Actor != actor || state.Motion is OfficerMotion.Hidden or OfficerMotion.Cleared))
         {
-            // Read the native renderer exactly once. Preserve the dictionary's
-            // first-match order even if mods install aliases for the same sprite.
-            var sprite=actor.image.sprite;
-            foreach(var pair in SpriteDict.Instance.spriteDictionary)
-                if(pair.Value==sprite) { key=pair.Key; break; }
+            state.Sprite = "";
+            var sprite = actor.image.sprite;
+            foreach (var pair in SpriteDict.Instance.spriteDictionary)
+                if (pair.Value == sprite) { state.Sprite = pair.Key; break; }
         }
-        return new JObject { ["visible"]=actor.gameObject.activeSelf,["sprite"]=key,["position"]=new JArray(p.x,p.y,p.z),["color"]=new JArray(c.r,c.g,c.b,c.a) };
+        state.Actor = actor;
+        state.Motion = motion;
+        state.Revision++;
     }
     private void ApplySecurityScene(JObject data)
     {
         securityScene=data;
         var ui=StoreUIManager.Instance;
         if(ui.StoreGlass.IsClosed!=(bool)data["glass"]) ui.StoreGlass.ToggleShutterDoor();
-        ApplyOfficer(ui.secGameObject,(JObject)data["officers"][0]); ApplyOfficer(ui.secGameObject2,(JObject)data["officers"][1]);
+        var rows = (JArray)data["officers"];
+        ApplyOfficer(officers[0], ui.secGameObject, (JArray)rows[0]);
+        ApplyOfficer(officers[1], ui.secGameObject2, (JArray)rows[1]);
     }
-    private static void ApplyOfficer(GenericClientMono actor,JObject data)
+
+    private static void ApplyOfficer(OfficerState state, GenericClientMono actor, JArray data)
     {
-        bool active=(bool)data["visible"];
-        if(active && !actor.gameObject.activeSelf) actor.SetImmediatlyArrive();
-        actor.gameObject.SetActive(active);
-        string key=(string)data["sprite"];
-        if(key!=null && SpriteDict.Instance.spriteDictionary.TryGetValue(key,out var sprite)) actor.image.sprite=sprite;
-        var p=(JArray)data["position"]; actor.transform.localPosition=new Vector3((float)p[0],(float)p[1],(float)p[2]);
-        var c=(JArray)data["color"]; actor.image.color=new Color((float)c[0],(float)c[1],(float)c[2],(float)c[3]);
+        bool restoring = state.Actor != actor;
+        ulong revision = (ulong)data[0];
+        if (!restoring && revision <= state.Revision) return;
+        var motion = (OfficerMotion)(int)data[1];
+        switch (motion)
+        {
+            case OfficerMotion.Entering:
+                actor.StartArrive();
+                break;
+            case OfficerMotion.AtCounter:
+                if (restoring || state.Motion != OfficerMotion.Entering || revision - state.Revision != 1)
+                    actor.SetImmediatlyArrive();
+                break;
+            case OfficerMotion.Leaving:
+                if (!actor.gameObject.activeSelf) actor.SetImmediatlyArrive();
+                actor.StartLeave();
+                break;
+            case OfficerMotion.Hidden:
+                // Let the original rewind finish if the departure already started
+                // here. Its OnLeft hides the actor, including on a slower peer.
+                if (!restoring && state.Motion == OfficerMotion.Leaving && revision - state.Revision == 1) break;
+                goto case OfficerMotion.Cleared;
+            case OfficerMotion.Cleared:
+                if (actor.GetComponent<DOTweenPath>() is DOTweenPath path) path.DOPause();
+                actor.GetComponent<IdleAnimator>()?.Stop();
+                actor.gameObject.SetActive(false);
+                break;
+        }
+        if (motion is not (OfficerMotion.Hidden or OfficerMotion.Cleared) &&
+            SpriteDict.Instance.spriteDictionary.TryGetValue((string)data[2], out var sprite))
+            actor.image.sprite = sprite;
+        state.Actor = actor;
+        state.Motion = motion;
+        state.Revision = revision;
     }
     internal void RequestReport() { if(securityScene!=null) Submit(new JObject { ["kind"]="security",["proof"]=securityScene["proof"] }); }
     private ushort ExecuteReport(JObject command)
@@ -53,6 +126,30 @@ internal sealed partial class NativeWorld
         var store=PlayerStore.Instance; var client=store.currentClientInstance?.GetClientBlueprint();
         if(client==null || !store.isClientArrived || !client.CanReport() || StoreUIManager.Instance.isShot || StoreReputation.IsPerkUnlocked("SEC_ALARM_IGNORED")) return (ushort)ShopResult.Unavailable;
         store.OnCustomerReported(); nextCapture=0; return (ushort)ShopResult.Applied;
+    }
+}
+[HarmonyPatch]
+internal static class ReplicaSecurityMotionEvents
+{
+    private static IEnumerable<MethodBase> TargetMethods()
+    {
+        yield return AccessTools.Method(typeof(GenericClientMono), nameof(GenericClientMono.StartArrive));
+        yield return AccessTools.Method(typeof(GenericClientMono), nameof(GenericClientMono.OnArrived));
+        yield return AccessTools.Method(typeof(GenericClientMono), nameof(GenericClientMono.StartLeave));
+        yield return AccessTools.Method(typeof(GenericClientMono), nameof(GenericClientMono.OnLeft));
+    }
+
+    private static void Postfix(GenericClientMono __instance, MethodBase __originalMethod)
+    {
+        if (NativeGuest.Active || NativeWorld.Host is not NativeWorld world) return;
+        var motion = __originalMethod.Name switch
+        {
+            nameof(GenericClientMono.StartArrive) => NativeWorld.OfficerMotion.Entering,
+            nameof(GenericClientMono.OnArrived) => NativeWorld.OfficerMotion.AtCounter,
+            nameof(GenericClientMono.StartLeave) => NativeWorld.OfficerMotion.Leaving,
+            _ => NativeWorld.OfficerMotion.Hidden,
+        };
+        world.RecordOfficer(__instance, motion);
     }
 }
 [HarmonyPatch(typeof(StoreSecButton),nameof(StoreSecButton.OnClick))]

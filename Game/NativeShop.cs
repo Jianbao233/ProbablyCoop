@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
@@ -43,7 +44,15 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     private bool morningReportCaptured;
     internal string[] FullMorningReport { get; private set; } = Array.Empty<string>();
     internal int FullMorningReportDay { get; private set; }
-    private bool failedMutation;
+    internal sealed class MutationFault
+    {
+        internal readonly string Code, Operation, Reason;
+        internal MutationFault(string code, string operation, string reason)
+        { Code = code; Operation = operation; Reason = reason; }
+    }
+    internal MutationFault FailedMutation { get; private set; }
+    internal CoopRun.Checkpoint MutationResume { get; private set; }
+    private bool failedMutation => FailedMutation != null;
 
     internal static NativeShop Gate { get; set; }
     private static NativeShop dayAuthority;
@@ -65,12 +74,53 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     internal static bool PhaseBlocksWorldCommands(ShopDay phase) =>
         phase is ShopDay.Settling or ShopDay.SaveUnverified or ShopDay.Ended;
     internal DaySettlement RecoveryCandidate => phase == ShopDay.SaveUnverified ? settlement : null;
+    internal bool HasVerifiedDayRecovery => RecoveryCandidate != null && NativeActorSession.Current?.VerifiedCheckpoint != null;
+
+    internal static bool HasMutationFault(PlayerStore store) =>
+        dayAuthority?.Matches(store) == true && dayAuthority.failedMutation;
+
+    private void FreezeMutation(string code, string operation, string reason, Exception error = null)
+    {
+        if (FailedMutation != null) return;
+        FailedMutation = new MutationFault(code, operation, reason);
+        Debug.LogError($"[probably_coop] {code} cooperative mutation frozen operation={operation} reason={reason} {error}");
+    }
+
+    internal bool RequestMutationRecovery(MutationFault fault)
+    {
+        var actors = NativeActorSession.Current;
+        var verified = actors?.VerifiedCheckpoint;
+        if (fault == null || !ReferenceEquals(fault, FailedMutation) || MutationResume != null ||
+            !Active || NativeGuest.Active || actors == null || !ReferenceEquals(actors.Store, store) ||
+            actors.Terminal || actors.Faulted || actors.NightActive || actors.TransitionActive ||
+            actors.Activities.HasExecuting || verified == null || verified.Slot != slot || verified.Run != actors.Run.Run)
+            return false;
+        var target = FindVerifiedCheckpoint(verified);
+        if (target == null) return false;
+        MutationResume = target;
+        actors.MarkFault(new InvalidOperationException($"{fault.Code} recovery requested: {fault.Operation}/{fault.Reason}"));
+        return true;
+    }
+
+    private CoopRun.Checkpoint FindVerifiedCheckpoint(NativeActorCheckpoint.Envelope verified)
+    {
+        if (verified == null || verified.Slot != slot) return null;
+        bool IsExact(CoopRun.Checkpoint checkpoint) => checkpoint is { HasActors: true } &&
+            checkpoint.Slot == verified.Slot && checkpoint.StoredSlot == verified.Slot &&
+            checkpoint.Run == verified.Run && checkpoint.Day == verified.Day &&
+            checkpoint.Nonce == verified.Checkpoint;
+
+        if (!CoopRun.TryRead(slot, verified.Run, out var target) || !IsExact(target))
+            target = CoopRun.ListCheckpoints(includeHistory: true, onlySlot: slot).FirstOrDefault(IsExact);
+        return target;
+    }
 
     internal bool RequestSettlementRecovery(DaySettlement attempt, string reason)
     {
         var actors = NativeActorSession.Current;
         if (attempt == null || !ReferenceEquals(attempt, RecoveryCandidate) || actors == null ||
-            actors.TransitionActive || !HasSettlementContext(attempt)) return false;
+            actors.TransitionActive || actors.NightActive || actors.Activities.HasExecuting || !HasSettlementContext(attempt)) return false;
+        MutationResume = FindVerifiedCheckpoint(actors.VerifiedCheckpoint);
         attempt.Fail();
         // Reuse the no-save exit. Marking the actor fault also invalidates the
         // deferred native blackscreen and morning callbacks before scene unload.
@@ -300,8 +350,14 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         }
         catch (Exception ex)
         {
-            failedMutation = true;
-            Debug.LogError($"[probably_coop] native command froze after an exception: {ex}");
+            string code = action switch
+            {
+                ShopAction.Buy or ShopAction.Sell => "DAY-208",
+                ShopAction.Move or ShopAction.PickUp or ShopAction.Place or ShopAction.TakeLoot or
+                    ShopAction.DropLoot or ShopAction.ReturnFromScavenge => "DAY-207",
+                _ => "DAY-209"
+            };
+            FreezeMutation(code, action.ToString(), ex.GetType().Name, ex);
             return ShopResult.Failed;
         }
     }
@@ -385,7 +441,7 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
                 {
                     if (RestoreParent(moved.Item, moved.Pocket, moved.Item.parentInventory, moved.Shape, moved.Item.unitCount))
                         continue;
-                    failedMutation = true;
+                    FreezeMutation("DAY-207", nameof(ShopAction.ReturnFromScavenge), "return_rollback_unverified");
                     return ShopResult.Failed;
                 }
                 return result;
@@ -509,8 +565,7 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
 
         if (!RestoreParent(item, from, to, shape, count, owned))
         {
-            failedMutation = true;
-            Debug.LogError("[probably_coop] failed to verify inventory rollback; cooperative commands frozen");
+            FreezeMutation("DAY-207", nameof(MoveTo), "inventory_rollback_unverified");
         }
         return ShopResult.Failed;
     }
@@ -578,8 +633,7 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
             return ShopResult.Applied;
         if (!transferred && after == before) return ShopResult.Unavailable;
 
-        failedMutation = true;
-        Debug.LogError("[probably_coop] trade result could not be verified; cooperative commands frozen");
+        FreezeMutation("DAY-208", action.ToString(), "trade_ownership_or_cash_mismatch");
         return ShopResult.Failed;
     }
 
@@ -587,15 +641,30 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     {
         None = 0, StoreOpen = 101, Outside = 102, InTransit = 103, HoldingItem = 104,
         MandatoryCustomer = 105, Activity = 106, ActorState = 107, Services = 108,
-        Funds = 109, MissingSave = 110
+        Funds = 109, MissingSave = 110, Transition = 111, Busy = 112
     }
 
     internal NightBlocker LastNightBlocker { get; private set; }
+    private bool lastNightAttemptWasForced;
+
+    internal NightBlocker CurrentNightBlocker
+    {
+        get
+        {
+            if (LastNightBlocker is NightBlocker.None or NightBlocker.MissingSave) return LastNightBlocker;
+            if (lastNightAttemptWasForced)
+            {
+                var preflight = CheckNightPlan(out _, out _, out _, allowInputCancellation: true);
+                if (preflight != NightBlocker.None) return preflight;
+            }
+            return CheckNightPlan(out _, out _, out _);
+        }
+    }
 
     private bool TryGetNightPlan(out ulong services, out int total, out int[] rows) =>
         CheckNightPlan(out services, out total, out rows) == NightBlocker.None;
 
-    private NightBlocker CheckNightPlan(out ulong services, out int total, out int[] rows)
+    private NightBlocker CheckNightPlan(out ulong services, out int total, out int[] rows, bool allowInputCancellation = false)
     {
         services = 0;
         total = 0;
@@ -606,12 +675,20 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         if (map == null) return NightBlocker.ActorState;
         if (map.IsInTransit) return NightBlocker.InTransit;
         if (guestOutside || map.IsOutside) return NightBlocker.Outside;
-        if (heldId != 0 ||
-            NativeWorld.Host?.PartnerHasHand==true || ItemMultiSelectHandler.current?.IsGroupDragging==true ||
-            ItemMouseDragHandler.current?.IsDraggingItem == true) return NightBlocker.HoldingItem;
+        if (NativeWorld.Host?.EndingActive == true) return NightBlocker.Transition;
+        var storeUi = StoreUIManager.Instance;
+        if (storeUi != null && (store.isHandlingShootout || store.isClientBeingArrested || storeUi.isShot) &&
+            (storeUi.secGameObject?.gameObject.activeInHierarchy == true ||
+             storeUi.secGameObject2?.gameObject.activeInHierarchy == true)) return NightBlocker.Transition;
+        if ((!allowInputCancellation && (heldId != 0 || NativeWorld.Host?.PartnerHasHand == true)) ||
+            ItemMultiSelectHandler.current?.IsGroupDragging == true || ItemMouseDragHandler.current?.IsDraggingItem == true)
+            return NightBlocker.HoldingItem;
         if (!store.CanEndDay()) return NightBlocker.MandatoryCustomer;
         var actors = NativeActorSession.Current;
-        if (actors?.CanCommit == false)
+        if (actors is { } && (!ReferenceEquals(actors.Store, store) || actors.Terminal || actors.Faulted ||
+            actors.Hydrating || actors.NightActive || actors.TransitionActive || actors.Activities.HasExecuting ||
+            actors.Run.CurrentActor != NativeActorRun.Slot.Host)) return NightBlocker.Transition;
+        if (!allowInputCancellation && actors?.CanCommit == false)
             return actors.Activities.BlockingChannel != null ? NightBlocker.Activity : NightBlocker.ActorState;
         if (store.storeService == null || store.storeService.Count > 64) return NightBlocker.Services;
         long cost = 0;
@@ -634,12 +711,25 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
 
     private ShopResult StartDay() => StartDay(out _);
 
-    private ShopResult StartDay(out NightBlocker blocker)
+    private ShopResult StartDay(out NightBlocker blocker) => StartDay(false, out blocker);
+
+    internal bool CanOfferForcedDay => Active && !NativeGuest.Active && !BlocksWorldCommands &&
+        store.storeState == PlayerStore.StoreState.CLOSED && NativeActorSession.Current?.Store == store;
+
+    internal ShopResult ForceDay(int confirmedDay)
+    {
+        if (!CanOfferForcedDay || StoreStation.GetDayCounter() != confirmedDay) return ShopResult.Stale;
+        var result = StartDay(true, out var blocker);
+        ReportNightRejection(blocker, forced: true);
+        return result;
+    }
+
+    private ShopResult StartDay(bool forced, out NightBlocker blocker)
     {
         blocker = NightBlocker.None;
         LastNightBlocker = NightBlocker.None;
-        if (BlocksWorldCommands) return ShopResult.Busy;
-        blocker = CheckNightPlan(out _, out _, out _);
+        if (BlocksWorldCommands) { blocker = NightBlocker.Busy; return ShopResult.Busy; }
+        blocker = CheckNightPlan(out _, out _, out _, allowInputCancellation: forced);
         if (blocker != NightBlocker.None) return ShopResult.Unavailable;
         try { previousSave = HashSlot(); }
         catch (IOException error)
@@ -661,15 +751,26 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         }
         try
         {
+            if (forced)
+            {
+                NativeInventoryPilot.ActiveCampaign?.CancelDepartureForNight();
+                NativeWorld.Host?.CancelDepartureForSleep();
+                NativeWorld.Host?.EndSharedPhone();
+                NativeWorld.Host?.ReleasePartnerHandForNight();
+                ClearHold();
+                blocker = CheckNightPlan(out _, out _, out _);
+                if (blocker != NightBlocker.None) return ShopResult.Unavailable;
+            }
             settlement = new DaySettlement(store, runId, slot, NativeActorSession.Current,
                 StoreStation.Instance.dayCounter, Time.realtimeSinceStartupAsDouble + 20);
             morningReport = Array.Empty<string>();
             morningReportCaptured = false;
             FullMorningReport=Array.Empty<string>(); FullMorningReportDay=0;
-            NativeWorld.Host?.EndSharedPhone();
+            if (!forced) NativeWorld.Host?.EndSharedPhone();
             SetDayPhase(ShopDay.Settling);
             Gate = this;
             allowNativeEnd = true;
+            if (forced) Debug.Log($"[probably_coop] host requested forced settlement day={StoreStation.GetDayCounter()}");
             EndOfDayUIManager.Instance.OnEndDayButtonClick();
             return ShopResult.Applied;
         }
@@ -681,6 +782,17 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
             return ShopResult.Failed;
         }
         finally { allowNativeEnd = false; }
+    }
+
+    private void ReportNightRejection(NightBlocker blocker, bool forced)
+    {
+        LastNightBlocker = blocker;
+        lastNightAttemptWasForced = forced;
+        if (blocker == NightBlocker.None) return;
+        string code = $"DAY-{(int)blocker}";
+        Debug.Log($"[probably_coop] {code} night rejected day={StoreStation.GetDayCounter()} blocker={blocker} " +
+            $"forced={forced} activity={NativeActorSession.Current?.Activities.BlockingChannel ?? "none"}");
+        if (!forced) StoreUIManager.Instance?.Notify($"[{code}] " + ModHelper.GetLocalized("probably_coop", "day_block_" + blocker));
     }
 
     private bool HasSettlementContext(DaySettlement attempt) => Active && !failedMutation &&
@@ -819,19 +931,13 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
                 return NativeActorSession.Current == null;
             if (__instance.IsOpen)
             {
-                var result = authority.StartDay(out var blocker);
-                if (result != ShopResult.Applied)
+                if (authority.FailedMutation is { } fault)
                 {
-                    authority.LastNightBlocker = blocker;
-                    if (blocker != NightBlocker.None)
-                    {
-                        string code = $"DAY-{(int)blocker}";
-                        Debug.Log($"[probably_coop] {code} night rejected day={StoreStation.Instance.dayCounter} blocker={blocker} " +
-                            $"activity={NativeActorSession.Current?.Activities.BlockingChannel ?? "none"}");
-                        StoreUIManager.Instance?.Notify($"[{code}] " +
-                            ModHelper.GetLocalized("probably_coop", "day_block_" + blocker));
-                    }
+                    StoreUIManager.Instance?.Notify($"[{fault.Code}] " + ModHelper.GetLocalized("probably_coop", "diag_" + fault.Code));
+                    return false;
                 }
+                var result = authority.StartDay(out var blocker);
+                if (result != ShopResult.Applied) authority.ReportNightRejection(blocker, forced: false);
             }
             return false;
         }

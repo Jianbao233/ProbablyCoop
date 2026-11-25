@@ -12,12 +12,19 @@ internal static class NativeActorPerkQueries
     {
         perk = null;
         if (NativeActorPartnerSetup.Classify(perkId) != NativeActorPartnerSetup.PerkScope.SharedShop) return false;
+        perk = NativeOpening.SharedStartingPerk(perkId);
+        if (perk != null) return true;
         List<StartingPerk> source;
         var authority = NativeActorSession.Current;
-        if (authority != null) source = authority.Store.startingPerks; // Deliberate raw Host field.
+        if (authority != null)
+        {
+            if (NativeOpening.SharedPerks(authority.Store)?.TryGetValue(perkId, out perk) == true) return true;
+            source = authority.Store.startingPerks; // Deliberate raw Host field.
+        }
         else
         {
             var guest = NativeWorld.Guest;
+            if (guest?.OpeningSharedPerks?.TryGetValue(perkId, out perk) == true) return true;
             var remote = guest?.HasActorProjection == true ? guest.RemoteHostActor : NativeInventoryPilot.RemoteHostActor;
             if (remote == null) return false;
             source = remote.startingPerks;
@@ -33,6 +40,7 @@ internal static class NativeActorSharedPerkActive
 {
     private static bool Prefix(string perkId, ref bool __result)
     {
+        if (NativeOpening.HasMixedBenefit(perkId)) { __result = true; return false; }
         if (!NativeActorPerkQueries.TryShared(perkId, out var perk)) return true;
         __result = perk != null; return false;
     }

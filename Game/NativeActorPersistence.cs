@@ -48,6 +48,8 @@ internal static class NativeActorPersistence
         {
             __state = null;
             if (NativeGuest.Active || !(CoopRun.IsCreating(__instance) || CoopRun.IsRegistered(__instance))) return;
+            if (NativeShop.HasMutationFault(__instance))
+                throw new InvalidOperationException("Cannot overwrite a verified cooperative save while a shared mutation is unresolved.");
             if (saving != null) throw new InvalidOperationException("Nested cooperative native save.");
             var session = CoopRun.IsCreating(__instance) ? NativeActorSession.EnsureCreating(__instance) : NativeActorSession.EnsureForExisting(__instance);
             if (!session.CanCommit) throw new InvalidOperationException("Cannot save while cooperative actions, holds, hydration or night are unsettled.");

@@ -32,6 +32,16 @@ internal sealed partial class NativeWorld
     private NativeReplicaGraph projectingGraph;
     private bool projectionFaulted;
     private double nextCapture;
+    private double nextIdleCapture;
+    private bool captureWake;
+    private ulong lastCaptureContext, lastClockCommand;
+    private bool anchorClockThisCapture;
+    private bool? externalCaptureWriters;
+    private bool HasExternalCaptureWriters => externalCaptureWriters ??= ModLoader.Mods.Any(mod =>
+        mod?.IsEnabled==true && mod.Assembly!=null && mod.Manifest?.ID!=ModExtensionOwner);
+    private int lastCaptureCash, lastCaptureDay;
+    private object lastCaptureCustomer, lastCaptureMap;
+    private bool lastCaptureArrival, lastCaptureDragging;
     private JObject currentClient;
     private string tradeToken = "";
     private string budgetConfirmationToken;
@@ -98,6 +108,11 @@ internal sealed partial class NativeWorld
     internal ShopView View { get; private set; }
     internal string[] MorningReport { get; private set; }=Array.Empty<string>();
     internal int MorningReportDay { get; private set; }
+    internal string OpeningCareer { get; private set; }
+    internal Dictionary<string, StartingPerk> OpeningSharedPerks { get; private set; }
+    private JToken openingSharedPerksToken;
+    internal int OpeningRentActive { get; private set; }
+    internal int OpeningRentBalance { get; private set; }
     private JArray appliedRoots;
     private static readonly PropertyInfo InventoryShape=AccessTools.Property(typeof(GameGridInventory),nameof(GameGridInventory.inventoryShape));
     private int verifiedRootGrids;
@@ -182,13 +197,22 @@ internal sealed partial class NativeWorld
         TickPartnerHand();
         if(peerConnected) NativeCaptureComparison.Current?.Advance(Time.realtimeSinceStartupAsDouble);
         ValidateTripReadiness(); TickTripUi();
-        if(peerConnected) PublishFastTooltip();
+        if(peerConnected)
+        {
+            PublishFastTooltip();
+            VerifyStockSlice(Time.realtimeSinceStartupAsDouble);
+            if(Input.GetMouseButtonDown(0) || Input.GetMouseButtonUp(0) || Input.GetMouseButtonUp(1) || Input.GetKeyDown(KeyCode.Space)) captureWake=true;
+        }
         if(connection.SynchronizationFailed) return;
         if(encoding!=null)
         {
             if(!encoding.IsCompleted)
             {
-                if(peerConnected && denseTooltips) RefreshDenseTooltips();
+                // Dense tooltip reads are presentation-only. Running them while
+                // the snapshot is being packed competes with the worker for the
+                // managed heap and can turn a drag-triggered capture into a long
+                // Unity frame. Tooltip prefetch resumes through the normal
+                // cadence after the worker completes.
                 return;
             }
             var packed=encoding.GetAwaiter().GetResult(); encoding=null;
@@ -239,15 +263,44 @@ internal sealed partial class NativeWorld
             authorityBaseRevision=connection.FullRevision;
             awaitingFull=null;
         }
-        if(Time.realtimeSinceStartupAsDouble<nextCapture) { PrefetchTooltipReads(); return; }
-        nextCapture=Time.realtimeSinceStartupAsDouble+0.25;
+        double now=Time.realtimeSinceStartupAsDouble;
+        if(now<nextCapture) { PrefetchTooltipReads(); return; }
         var basis=connection.NeedsFull || connection.Revision-authorityBaseRevision>=96 ? null : authorityBasis;
+        var store=PlayerStore.Instance;
+        var map=MapUIManager.Instance.Current;
+        int day=StoreStation.Instance.dayCounter;
+        bool dragging=ItemMouseDragHandler.current?.IsDraggingItem==true || ItemMultiSelectHandler.current?.IsGroupDragging==true;
+        // Commands explicitly set nextCapture to zero. Known native changes wake the
+        // normal 4 Hz lane. Unhooked field writes keep a bounded verification pass.
+        if(basis!=null && nextCapture!=0 && now<nextIdleCapture && !captureWake &&
+            !HasExternalCaptureWriters && NativeCaptureComparison.Current==null && !FullCaptureRequested &&
+            lastCaptureContext==operationContext.Generation &&
+            lastCaptureCash==store.playerCash && lastCaptureDay==day &&
+            ReferenceEquals(lastCaptureCustomer,store.currentClientInstance) && Equals(lastCaptureMap,map) &&
+            lastCaptureArrival==store.isClientArrived && lastCaptureDragging==dragging)
+        { PrefetchTooltipReads(); return; }
+        anchorClockThisCapture=basis==null || lastClockCommand!=connection.CompletedRequest ||
+            lastCaptureContext!=operationContext.Generation || lastCaptureCash!=store.playerCash || lastCaptureDay!=day ||
+            !ReferenceEquals(lastCaptureCustomer,store.currentClientInstance) || lastCaptureArrival!=store.isClientArrived;
+        lastClockCommand=connection.CompletedRequest;
+        lastCaptureCash=store.playerCash; lastCaptureDay=day; lastCaptureDragging=dragging;
+        lastCaptureCustomer=store.currentClientInstance; lastCaptureMap=map; lastCaptureArrival=store.isClientArrived;
+        lastCaptureContext=operationContext.Generation;
+        captureWake=false; nextCapture=now+0.25;
+        // Invisible passive simulation (for example a cooling vessel inside
+        // a crate) can coalesce. Visible machinery and customer interactions
+        // retain the usual cadence, including the legacy extension poll.
+        nextIdleCapture=now+(dragging || partnerLease.ActiveSerial!=0 || lastCaptureCustomer!=null ||
+            now<viewsExpiry && (remoteViews.Count>0 || remoteHover!=0) ? 0.25 : 1.6);
         JObject snapshot;
         ShopView shopView; byte[] shopBytes;
         var comparison=NativeCaptureComparison.Current;
+        // Seed the field/tag samples while capturing the very first checkpoint.
+        // Its records can be reused as soon as it is acknowledged, including
+        // when the first capture establishes that this is a large inventory.
         var fields=new NativeDeferredFields(comparison?.UseRows ?? true,
-            (comparison?.ReuseTags ?? denseTooltips) ? frozenStock : null, comparison?.ReuseShapes==false ? null : frozenStock,
-            comparison?.WorkerItems ?? true,(comparison?.ReuseItemFields ?? denseTooltips) ? frozenStock : null,pagedSnapshots:true);
+            comparison?.ReuseTags==false ? null : frozenStock, comparison?.ReuseShapes==false ? null : frozenStock,
+            comparison?.WorkerItems ?? true,comparison?.ReuseItemFields==false ? null : frozenStock,pagedSnapshots:true);
         encodingComparison=comparison?.Measuring;
         fields.EarlyPlain=comparison?.EarlyPlain ?? true;
         if(comparison?.PoolMarkers!=false)
@@ -278,7 +331,7 @@ internal sealed partial class NativeWorld
         snapshot["commandReceipts"]=new JArray(connection.CaptureCommandReceipts().Select(receipt=>new JObject {
             ["serial"]=receipt.Serial,["result"]=receipt.Result }));
         snapshot["guestHand"]=partnerLease.ActiveSerial;
-        snapshot["hostDragging"]=ItemMouseDragHandler.current?.IsDraggingItem==true || ItemMultiSelectHandler.current?.IsGroupDragging==true;
+        snapshot["hostDragging"]=dragging;
         fields.Seal();
         shopLink.ObserveAuthority(authority,shopView,shopBytes,Time.realtimeSinceStartupAsDouble);
         // Transfer the fresh graph plus captured scalar values exclusively to
@@ -286,12 +339,13 @@ internal sealed partial class NativeWorld
         // One task, no backlog: when compression is slow, coalesce future captures.
         encodingGeneration=peerGeneration;
         encodingStamp=connection.CaptureStamp();
-        var cancellation=decodeLifetime.Token;
-        encodingUsesBasis=basis!=null;
         ulong baseRevision=authorityBaseRevision;
         var auditBasis=NativeBackgroundQa.Enabled && verifiedRecordPublish<3 ? connection.FullState : null;
         bool preferPages=pagedCheckpoint;
-        encoding=Task.Run(()=>EncodeSnapshot(snapshot,fields,cancellation,basis,baseRevision,auditBasis,preferPages));
+        var completeCaptureBasis=borrowCapturedRecords && basis==null ? authorityBasis : null;
+        encodingUsesBasis=basis!=null || completeCaptureBasis!=null;
+        encoding=CoopBackgroundWork.Start(decodeLifetime.Token,
+            cancellation=>EncodeSnapshot(snapshot,fields,cancellation,basis,baseRevision,auditBasis,preferPages,completeCaptureBasis));
     }
     private void RecoverHostSynchronization(ReplicaLink connection,NativeSyncFailure phase,Exception error,bool usedBasis)
     {
@@ -334,14 +388,14 @@ internal sealed partial class NativeWorld
             // ReplicaLink publishes an immutable, complete frame only. Never
             // pass Unity objects or the mutable native model to the worker.
             var bytes=connection.Snapshot;
-            var cancellation=decodeLifetime.Token;
             var previous=appliedIndex;
             var checkpointBytes=connection.FullSnapshot;
             ulong basisRevision=connection.FullRevision;
             var knownBasis=guestBaseRevision==basisRevision && ReferenceEquals(checkpointBytes,guestBaseBytes) ? guestBasis : null;
             decodingRevision=connection.Revision;
             decodingStamp=connection.CaptureStamp();
-            decoding=Task.Run(()=>DecodeSnapshot(bytes,previous,cancellation,checkpointBytes,basisRevision,knownBasis));
+            decoding=CoopBackgroundWork.Start(decodeLifetime.Token,
+                cancellation=>DecodeSnapshot(bytes,previous,cancellation,checkpointBytes,basisRevision,knownBasis));
             return Ready;
         }
         if(!decoding.IsCompleted) return Ready;
@@ -406,6 +460,15 @@ internal sealed partial class NativeWorld
             BeginOperationProjection(contextGeneration);
             actorProjection?.Commit();
             actorProjectionRun=actorRunIdentity;
+            OpeningCareer = (string)data["openingCareer"];
+            var sharedPerks = data["openingSharedPerks"];
+            if (!JToken.DeepEquals(openingSharedPerksToken, sharedPerks))
+            {
+                OpeningSharedPerks = NativeOpening.ReadSharedPerks(sharedPerks);
+                openingSharedPerksToken = sharedPerks;
+            }
+            OpeningRentActive = (int?)data["openingRentActive"] ?? 0;
+            OpeningRentBalance = (int?)data["openingRentBalance"] ?? 0;
             ApplyWorldFields((JObject)data["world"]);
             MorningReport=data["morningReport"].ToObject<string[]>(); MorningReportDay=(int)data["morningReportDay"];
             Action refreshBusiness;
@@ -536,7 +599,8 @@ internal sealed partial class NativeWorld
         BeginChangedCapture(actors,client);
         // A full baseline still validates the complete physical ownership graph.
         // Routine publications retain unchanged subgraphs without walking them.
-        denseTooltips=(!incrementalCapture && HasActorProjection ? CaptureOwnershipGraph().PlacedItemCount : model.Objects.Count)>=DenseTooltipThreshold;
+        bool fullCheckpoint = !borrowCapturedRecords || link.Revision - authorityBaseRevision >= 96;
+        denseTooltips=(fullCheckpoint && HasActorProjection ? CaptureOwnershipGraph().PlacedItemCount : model.Objects.Count)>=DenseTooltipThreshold;
         useNativeAbilityGuards=denseTooltips && ReplicaItemAbility.NativeReturnContractUnmodified();
         var roots=new JArray(); model.Seen.Clear();
         using(model.Enter(fields))
@@ -589,6 +653,15 @@ internal sealed partial class NativeWorld
         snapshot["partnerSetupRequired"]=PartnerSetupRequired();
         snapshot["personalNotifications"]=NativeActorSession.Current?.PersonalUi.CaptureNotifications();
         snapshot["world"]=fields.Capture(store,HasActorProjection ? SharedWorldFields : WorldFields); snapshot["scene"]=CaptureSharedScene();
+        if(NativeOpening.PartnerCareer(store) is string openingCareer)
+        {
+            var rent = OpeningRent.Describe(store);
+            snapshot["openingCareer"] = openingCareer;
+            if(NativeOpening.SharedPerks(store) is { Count: > 0 } sharedPerks)
+                snapshot["openingSharedPerks"] = new JArray(sharedPerks.Keys.OrderBy(id => id, StringComparer.Ordinal));
+            snapshot["openingRentActive"] = rent.Active;
+            snapshot["openingRentBalance"] = rent.Balance;
+        }
         snapshot["cash"]=store.playerCash; snapshot["day"]=StoreStation.Instance.dayCounter;
         snapshot["retailMarkup"]=store.retailMarkup; snapshot["clientArrived"]=store.isClientArrived;
         snapshot["client"]=client; snapshot["clientInstance"]=blueprint==null ? 0u : model.Id(store.currentClientInstance);
@@ -611,6 +684,7 @@ internal sealed partial class NativeWorld
         using(EnterPartnerOperation()) snapshot["frontends"]=CaptureFrontends();
         snapshot["documentRead"]=DocumentReadProof();
         snapshot["modExtensions"]=CaptureModExtensions();
+        snapshot[RoomModManifest.Field]=roomMods ??= NativeRoomModManifest.Capture();
         return snapshot;
     }
     internal bool AuditProjection(out string detail)
@@ -637,7 +711,8 @@ internal sealed partial class NativeWorld
                 var data=appliedIndex.Nodes[(uint)row["data"]]; var fields=data["fields"];
                 if(!model.Objects.TryGetValue((uint)data["entity"],out var obj) || obj is not GameItem item ||
                     item.parentInventory!=inventory || item.identifier!=(string)fields["<identifier>k__BackingField"] ||
-                    item.name!=(string)fields["<name>k__BackingField"] || item.unitCount!=(int)fields["<unitCount>k__BackingField"] ||
+                    item.name!=NativeMirrorProbe.ReplicaItemName(item.identifier,(string)fields["<name>k__BackingField"]) ||
+                    item.unitCount!=(int)fields["<unitCount>k__BackingField"] ||
                     item.modifiedShape.minX!=(int)data["modifiedShape"]["x"] || item.modifiedShape.minY!=(int)data["modifiedShape"]["y"])
                 { detail="native root identity/value mismatch: "+data["entity"]; return false; }
                 items++;
@@ -772,6 +847,9 @@ internal sealed partial class NativeWorld
     private void PrepareCaptureTooltips(GameItem value)
     {
         ObserveCapturedItem(value);
+        var name=(value.identifier,value.name);
+        if(!capturedItemNames.TryGetValue(value,out var known) || known!=name)
+        { capturedItemNames[value]=name; refreshItemNames=true; }
         if(value is not GameItemElement item || captureTooltips.ContainsKey(item)) return;
         var ticket=new TooltipTicket(item,captureRoot,captureTooltipKey);
         captureTooltips.Add(item,denseTooltips ? ReadDenseTooltip(ticket) : ReadTooltipForCapture(item));
@@ -1139,7 +1217,8 @@ internal sealed partial class NativeWorld
         nextCapture=0; return (ushort)ShopResult.Applied;
     }
     private int verifiedRecordPublish;
-    private static EncodedSnapshot EncodeSnapshot(JObject snapshot,NativeDeferredFields fields,CancellationToken cancellation,NativeRecordBasis basis,ulong baseRevision,byte[] auditBasis,bool preferPages)
+    private static EncodedSnapshot EncodeSnapshot(JObject snapshot,NativeDeferredFields fields,CancellationToken cancellation,
+        NativeRecordBasis basis,ulong baseRevision,byte[] auditBasis,bool preferPages,NativeRecordBasis completeCaptureBasis)
     {
         var result=new EncodedSnapshot(); var timer=System.Diagnostics.Stopwatch.StartNew();
         try
@@ -1148,7 +1227,8 @@ internal sealed partial class NativeWorld
             if(NativeBackgroundQa.TakeSynchronizationFailure())
                 throw new InvalidDataException("Isolated QA injected first checkpoint encode failure");
 #endif
-            result.Frame=fields.PackFrame(snapshot,cancellation,true,basis,baseRevision,out result.Checkpoint,out result.Referenced,auditBasis,preferPages:preferPages);
+            result.Frame=fields.PackFrame(snapshot,cancellation,true,basis,baseRevision,out result.Checkpoint,out result.Referenced,
+                auditBasis,preferPages:preferPages,completeCaptureBasis:completeCaptureBasis);
             result.Elided=fields.ElidedRows;
             result.Markers=fields.Markers;
             result.ReusedMarkers=fields.ReusedMarkers;
@@ -1202,6 +1282,7 @@ internal static class NativeReplicaTooltip
     { private static bool Prefix(GameItemElement __instance,ref RichText __result) => Read(__instance,true,ref __result); }
     private static bool Read(GameItemElement item,bool advanced,ref RichText result)
     {
+        if(NativeMirrorProbe.UsesLocalLabelerText(item.identifier)) return true;
         if((!NativeGuest.Active && !NativeLocalItemChooser.Owns(item)) || !entries.TryGetValue(item,out var pair)) return true;
         NativeWorld.Guest?.ObserveTooltip(item);
         result=NativeWorld.Guest?.CurrentFastTooltip(item,advanced) ?? (advanced ? pair.Advanced : pair.Normal);

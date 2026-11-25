@@ -65,9 +65,12 @@ if (args.Length > 0)
 }
 
 ActivityScopeTests.Run();
+ModExtensionTests.Run();
+OpeningAndTravelTests.Run();
 CaptureChangeTests.Run();
 RoomAdmissionTests.Run();
 NativeJoinSnapshotTests.Run();
+RoomModManifestTests.Run();
 NativeSnapshotPageTests.Run();
 NativeCommandEnvelopeTests.Run();
 ChoiceLeaseTests.Run();

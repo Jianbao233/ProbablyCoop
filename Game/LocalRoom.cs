@@ -124,6 +124,11 @@ internal sealed class LocalRoom : ICoopRoom
         };
         if (status != Status)
             Debug.Log($"[probably_coop] {status}, tx={Sent}, rx={Received}");
+        if (guest && Session.State == LinkState.Incompatible)
+        {
+            Leave(status);
+            return;
+        }
         Status = status;
     }
 

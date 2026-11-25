@@ -23,11 +23,19 @@ internal sealed partial class NativeBackgroundQa
             qaRoomPanel=(CustomUIWindow)AccessTools.Field(typeof(CoopPanel),"window").GetValue(panel);
             Require(qaRoomPanel.IsVisible,"native room controls did not open");
             var controls=qaRoomPanel.ContentRoot.GetComponentsInChildren<UnityEngine.UI.Button>(true).ToHashSet();
-            foreach(string field in new[]{"join","copy","leave","lanToggle","approve","carry","terminalButton"})
+            foreach(string field in new[]{"join","copy","leave","lanToggle","approve","carry"})
             {
                 var element=(CustomUIElement)AccessTools.Field(typeof(CoopPanel),field)?.GetValue(panel);
                 Require(element?.button!=null && controls.Contains(element.button),"native room control missing: "+field);
             }
+            var detailsButton=qaRoomPanel.Get("connection_details")?.button;
+            Require(detailsButton!=null && controls.Contains(detailsButton),"native connection details control missing");
+            detailsButton.onClick.Invoke();
+            var details=CustomUIManager.Instance.GetWindow("probably_coop_connection");
+            Require(details?.IsVisible==true && details.Get("connection_log")?.text!=null &&
+                details.Get("copy_issue")?.button!=null && qaRoomPanel.IsVisible,
+                "connection details did not open in its own native window");
+            details.Close();
             var carryControl=((CustomUIElement)AccessTools.Field(typeof(CoopPanel),"carry").GetValue(panel)).button;
             var originalCarryWindow=EmporiumEntry.Instance.afterhourWindow;
             bool carryWasOpen=NativeActorCarryUi.IsOpen;
