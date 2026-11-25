@@ -46,12 +46,14 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     private bool failedMutation;
 
     internal static NativeShop Gate { get; set; }
+    private static NativeShop dayAuthority;
 
     internal NativeShop(PlayerStore store)
     {
         this.store = store;
         runId = store.runID;
         slot = store.saveSlotId;
+        dayAuthority = this;
     }
 
     internal bool Matches(PlayerStore player) => ReferenceEquals(store, player) &&
@@ -588,8 +590,7 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
 
     private ShopResult StartDay()
     {
-        if (Settling || failedMutation || phase is ShopDay.SaveUnverified or ShopDay.Ended ||
-            !TryGetNightPlan(out _, out _, out _))
+        if (BlocksWorldCommands || !TryGetNightPlan(out _, out _, out _))
             return ShopResult.Unavailable;
         try
         {
@@ -739,11 +740,20 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     [HarmonyPatch(typeof(EndOfDayUIManager), nameof(EndOfDayUIManager.OnEndDayButtonClick))]
     private static class PreventDuplicateSettlement
     {
-        private static bool Prefix()
+        private static bool Prefix(EndOfDayUIManager __instance)
         {
-            if (Gate?.allowNativeEnd == true) return true;
-            if (Gate == null && !NativeGuest.Active) return true;
-            NativeDayUi.Submit();
+            if (NativeGuest.Active) return false;
+            var authority = dayAuthority;
+            if (authority?.allowNativeEnd == true) return true;
+            if (authority == null || !PlayerStore.IsInstanceExist() || !authority.Matches(PlayerStore.Instance))
+                return NativeActorSession.Current == null;
+            if (__instance.IsOpen && !authority.BlocksWorldCommands)
+            {
+                var result = authority.StartDay();
+                if (result != ShopResult.Applied)
+                    StoreUIManager.Instance?.Notify(ModHelper.GetLocalized("probably_coop",
+                        result == ShopResult.Unavailable ? "day_settlement_unavailable" : "phase_SaveUnverified"));
+            }
             return false;
         }
     }
@@ -806,6 +816,7 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     {
         settlement?.Fail();
         if (ReferenceEquals(Gate, this)) Gate = null;
+        if (ReferenceEquals(dayAuthority, this)) dayAuthority = null;
     }
 }
 

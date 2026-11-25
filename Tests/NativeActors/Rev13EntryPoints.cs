@@ -56,16 +56,38 @@ internal static class Rev13EntryPoints
         InOrder(Read(afterDark),closeDay,Get(typeof(PlayerStore),nameof(PlayerStore.EndNight)),
             Get(typeof(PlayerStore),nameof(PlayerStore.BeginDay)),Get(typeof(PlayerStore),nameof(PlayerStore.SaveGame)));
         var personalNight=Transform(Nested(night,"NightBoundary"),"Transpiler",Get(typeof(PlayerStore),nameof(PlayerStore.EndNight)));
+        var afterhours=Get(typeof(PlayerStore),nameof(PlayerStore.HandleAfterhourDebuff));
         InOrder(personalNight,Get(typeof(LouOperativeHelper),nameof(LouOperativeHelper.OnNight)),
-            Get(night,"AfterhourLogs"),Get(night,"AgoraphobiaLogs"),Get(night,"SleepBoth"));
+            afterhours,Get(night,"AgoraphobiaLogs"),Get(night,"SleepBoth"));
+        Check(personalNight.Count(i=>i.Calls(afterhours))==1,"shared late-opening report runs through the original Host rule once");
+        var reset=mod.GetType("ProbablyCoop.NativeActorAfterhoursReset",true)!;
+        var closeReset=HarmonyMethodExtensions.GetMergedFromType(reset);
+        Check(closeReset.declaringType==typeof(StoreShutterButton) && closeReset.methodName==nameof(StoreShutterButton.EndAndClose),
+            "partner outing reset follows the original shutter close");
+        var outingFlag=typeof(HealthData).GetField(nameof(HealthData.wentToAfterhoursLastNight));
+        Check(Read(Get(reset,"Postfix")).Count(i=>i.opcode==OpCodes.Stfld && Equals(i.operand,outingFlag))==2,
+            "shutter close clears both personal outing records");
         var actors=mod.GetType("ProbablyCoop.NativeActorNight",true)!;
         var sleep=Transform(actors,"ReplaceLotteryCall",Get(typeof(HealthData),nameof(HealthData.OnSleep)));
         Check(sleep.Count(i=>i.Calls(Get(actors,"RequestLottery")))==1 &&
             !sleep.Any(i=>i.Calls(Get(typeof(LotteryHelper),nameof(LotteryHelper.OnDrawWiningNumber)))),
             "native personal night delegates lottery once to the shared coordinator");
         var dayUi=mod.GetType("ProbablyCoop.NativeDayUi",true)!;
-        InOrder(Read(Get(dayUi,"ShowGuestPlan")),Get(typeof(PaperUIManager),nameof(PaperUIManager.CloseAllPaperUIForSleep)),
-            Get(typeof(EndOfDayUIManager),nameof(EndOfDayUIManager.OpenUI)));
+        var bellPatch=mod.GetType("ProbablyCoop.GuestBedrollClick",true)!;
+        var bedroll=HarmonyMethodExtensions.GetMergedFromType(bellPatch);
+        Check(bedroll.declaringType==typeof(StoreBedroll) && bedroll.methodName==nameof(StoreBedroll.OnClick),
+            "original bedroll click is routed");
+        var world=mod.GetType("ProbablyCoop.NativeWorld",true)!;
+        InOrder(Read(Get(bellPatch,"Prefix")),Get(world,"RequestBedrollBell"));
+        InOrder(Read(Get(world,"Execute")),Get(world,"ReceiveBedrollBell"));
+        var ring=Read(Get(world,"ReceiveBedrollBell"));
+        var audio=typeof(UnityEngine.AudioSource).GetMethod("PlayOneShot",new[]{typeof(UnityEngine.AudioClip)})!;
+        InOrder(ring,Get(world,"ValidOperationContext"),audio);
+        Check(!ring.Any(i=>i.Calls(Get(typeof(StoreBell),nameof(StoreBell.RingBell))) ||
+            i.Calls(Get(typeof(EndOfDayUIManager),nameof(EndOfDayUIManager.OpenUI)))),
+            "bedroll cue does not call a customer or open the host panel");
+        var shop=mod.GetType("ProbablyCoop.NativeShop",true)!;
+        InOrder(Read(Get(Nested(shop,"PreventDuplicateSettlement"),"Prefix")),Get(shop,"StartDay"));
         InOrder(Read(Get(dayUi,"Tick")),closeDay,Get(typeof(PaperUIManager),nameof(PaperUIManager.RestorePaperUIClosedForSleep)),
             Get(typeof(StartOfDayUIManager),nameof(StartOfDayUIManager.ShowMorningReport)));
 

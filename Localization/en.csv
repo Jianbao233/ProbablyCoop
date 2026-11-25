@@ -253,3 +253,5 @@ sync_fail_guest_format,Guest received an invalid checkpoint page
 sync_fail_guest_budget,Checkpoint exceeded the guest transfer limit
 sync_fail_guest_apply,Guest could not decode or apply the shop state
 sync_previous_progress,Last recorded progress {0}
+day_bedroll_bell,Ring to remind the host to end the day
+day_settlement_unavailable,Cannot end the day yet. Resolve any pending shop event and make sure both players are back in the shop with empty hands.

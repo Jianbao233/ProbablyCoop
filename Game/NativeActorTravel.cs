@@ -61,3 +61,19 @@ internal static class NativeActorTravelPersonalRecords
         session.Run.Partner.healthData.wentToAfterhoursLastNight=true;
     }
 }
+
+[HarmonyPatch(typeof(StoreShutterButton),nameof(StoreShutterButton.EndAndClose))]
+internal static class NativeActorAfterhoursReset
+{
+    private static void Postfix(bool __runOriginal)
+    {
+        var session=NativeActorSession.Current;
+        if(!__runOriginal || NativeGuest.Active || session==null ||
+            session.Store.storeState!=PlayerStore.StoreState.CLOSED) return;
+
+        // The original close resets the current actor. Start the new evening
+        // with clean outing records for both actors before either travels.
+        session.Store.healthData.wentToAfterhoursLastNight=false;
+        session.Run.Partner.healthData.wentToAfterhoursLastNight=false;
+    }
+}

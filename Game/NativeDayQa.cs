@@ -13,7 +13,7 @@ internal sealed partial class NativeBackgroundQa
     private int dayStep,originalDay;
     private double dayUntil,dayNext;
     private bool hostDayStarted,hostDayVerified;
-    private int hostDayTarget;
+    private int hostDayTarget, hostDayBells;
     private double hostReportCaptureAt;
     private void CheckHostDay(CoopSession session)
     {
@@ -24,16 +24,21 @@ internal sealed partial class NativeBackgroundQa
         {
             originalDay=StoreStation.Instance.dayCounter; hostDayTarget=originalDay; hostDayStarted=true;
             PrepareActorGameplayCheckpointHost();
-            EndOfDayUIManager.Instance.OpenUI();
         }
         var link=session.Shop;
         if(hostReportCaptureAt>0 && Time.realtimeSinceStartupAsDouble>=hostReportCaptureAt)
         { CaptureNativeDayUi(session); hostReportCaptureAt=0; }
-        if(link.View.Phase==ShopDay.Ready && (link.View.ReadyMask==2 || link.View.ReadyMask==3))
+        int bells=NativeWorld.Host.QaBedrollBells;
+        if(hostDayStarted && !hostDayVerified && link.View.Phase==ShopDay.Ready && bells>=hostDayBells+3)
         {
+            Require(bells==hostDayBells+3 && !EndOfDayUIManager.Instance.IsOpen && link.View.ReadyMask==0,
+                "three guest bedroll clicks must only play three host bells");
+            hostDayBells=bells;
+            UnityEngine.Object.FindObjectOfType<StoreBedroll>().GetComponent<Interactable>().OnClick();
             var button=(TabletButton)AccessTools.Field(typeof(EndOfDayUIManager),"endDayButton").GetValue(EndOfDayUIManager.Instance);
             Require(button?.Interactable==true,"host native day button unavailable");
             button.button.onClick.Invoke();
+            Record("PASS host-bedroll-bell","three distinct guest clicks played three bells; first original host confirmation started the day");
         }
         // ShopLink refreshes at 5 Hz. Closing the next day's shutter may run
         // this QA tick before it replaces yesterday's Saved view with Ready.
@@ -60,12 +65,12 @@ internal sealed partial class NativeBackgroundQa
         if(dayStep==1)
         {
             if(session.Shop.View.Phase!=ShopDay.Ready) return false;
-            if(!EndOfDayUIManager.Instance.IsOpen) { NativeDayUi.ShowGuestPlan(); dayNext=now+0.5; return false; }
-            var button=(TabletButton)AccessTools.Field(typeof(EndOfDayUIManager),"endDayButton").GetValue(EndOfDayUIManager.Instance);
-            Require(button?.Interactable==true,"guest original day button unavailable");
-            button.button.onClick.Invoke();
-            Require(session.Shop.Waiting,"guest native day readiness did not send request");
-            Record("PASS guest-day-ready","original nightly service tablet button, shared readiness"); dayStep=2; return false;
+            var bed=UnityEngine.Object.FindObjectOfType<StoreBedroll>().GetComponent<Interactable>();
+            for(int i=0;i<3;i++) bed.OnClick();
+            Require(!EndOfDayUIManager.Instance.IsOpen && !session.Shop.Waiting && session.Shop.View.ReadyMask==0,
+                "guest opened a sleep panel or changed readiness");
+            Record("PASS guest-bedroll-bell","three original bedroll clicks sent without a nightly services panel");
+            dayStep=2; return false;
         }
         if(session.Shop.View.Phase==ShopDay.SaveUnverified) throw new InvalidOperationException("native save rejected/unverified");
         if(session.Shop.View.Phase!=ShopDay.Saved || StoreStation.Instance.dayCounter!=originalDay+1) return false;

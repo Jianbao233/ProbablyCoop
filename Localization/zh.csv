@@ -253,3 +253,5 @@ sync_fail_guest_format,客机收到的检查点格式无效
 sync_fail_guest_budget,客机收到的检查点超出接收上限
 sync_fail_guest_apply,客机解码或应用店铺状态失败
 sync_previous_progress,上次记录的进度 {0}
+day_bedroll_bell,按铃提醒房主日结
+day_settlement_unavailable,暂时无法日结。请处理未完成的店铺事件，确认双方都已回到店内并放下手里的物品。

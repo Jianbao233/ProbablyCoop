@@ -16,8 +16,8 @@ internal sealed partial class NativeBackgroundQa
     private string hostObservedScene="";
     private bool eveningFixture;
     private bool blockedTripRetryVerified;
-    private int travelRecoveryHost;
-    private bool travelRecoverySleepOpened, travelRecoveryGuest;
+    private int travelRecoveryHost, travelRecoveryBell;
+    private bool travelRecoveryBellSent, travelRecoveryGuest;
     private const string TravelRecoveryTag="QA_TRAVEL_RECOVERY_READY";
     private const string TravelPackTag="PROBABLY_COOP_QA_TRAVEL_PACK";
     private const string TravelHostPackTag="PROBABLY_COOP_QA_TRAVEL_HOST_PACK";
@@ -67,6 +67,14 @@ internal sealed partial class NativeBackgroundQa
         var world=NativeWorld.Host; if(world==null) return;
         if(!eveningFixture && PlayerStore.Instance.storeState==PlayerStore.StoreState.CLOSED)
         { eveningFixture=true; PlayerStore.Instance.visitLeftTonight=3; Record("FIXTURE afterhours-quota","three destinations per evening for coverage; native close normally grants one"); }
+        if(travelRecoveryHost==1 && world.QaBedrollBells>travelRecoveryBell && world.ProposedTrip.Length>0)
+        {
+            Require(!EndOfDayUIManager.Instance.IsOpen,"guest bell opened the host sleep panel");
+            UnityEngine.Object.FindObjectOfType<StoreBedroll>().GetComponent<Interactable>().OnClick();
+            Require(EndOfDayUIManager.Instance.IsOpen,"host bedroll did not open the original sleep panel");
+            EndOfDayUIManager.Instance.CloseUI();
+            hostDayBells=world.QaBedrollBells;
+        }
         if(travelRecoveryHost==1 && world.ProposedTrip.Length==0)
         {
             Require(!MapUIManager.Instance.IsInTransit && !MapUIManager.Instance.IsOutside && world.TripReady==0,
@@ -172,6 +180,7 @@ internal sealed partial class NativeBackgroundQa
             "changing the backpack did not return to the same shared confirmation");
         travelHostBackpack.EnableTag(TravelRecoveryTag);
         travelRecoveryHost=1;
+        travelRecoveryBell=world.QaBedrollBells;
         Record("PASS bug-10-reselect-backpack","same bag refused without losing first consent; old map closed; original picker returned to the pending confirmation");
     }
 
@@ -179,29 +188,28 @@ internal sealed partial class NativeBackgroundQa
     {
         var world=NativeWorld.Guest;
         if(!travelHostBackpack.IsTag(TravelRecoveryTag)) return false;
-        if(!travelRecoverySleepOpened)
+        if(!travelRecoveryBellSent)
         {
             if(session.Shop.View.Phase!=ShopDay.Ready || QaWaiting(session.Native)) return false;
             var bed=UnityEngine.Object.FindObjectOfType<StoreBedroll>();
             Require(bed!=null && world.ProposedTrip==AfterhourLocation.DUMPING_GROUND && !TransitUI.IsOpen,
                 "Guest did not reach the pending trip with an accessible original bed");
             bed.GetComponent<Interactable>().OnClick();
-            Require(EndOfDayUIManager.Instance.IsOpen,"original bed did not open sleep after blocked departure");
-            travelRecoverySleepOpened=true;
+            Require(!EndOfDayUIManager.Instance.IsOpen && world.ProposedTrip==AfterhourLocation.DUMPING_GROUND,
+                "guest bell changed the sleep panel or pending trip");
+            travelRecoveryBellSent=true;
             return false;
         }
         if(world.ProposedTrip.Length!=0 || world.HasPendingWork || QaWaiting(session.Native)) return false;
-        var dayButton=(TabletButton)AccessTools.Field(typeof(EndOfDayUIManager),"endDayButton").GetValue(EndOfDayUIManager.Instance);
-        Require(EndOfDayUIManager.Instance.IsOpen && dayButton?.Interactable==true && !TransitUI.IsOpen &&
+        Require(!EndOfDayUIManager.Instance.IsOpen && !TransitUI.IsOpen &&
             !CustomUIManager.Instance.IsOpen("coop_joint_trip") && ReferenceEquals(EmporiumEntry.Instance.selectedBackpack,travelBackpack),
             "sleep could not proceed, an old trip stayed visible, or the original backpack choice was lost");
-        EndOfDayUIManager.Instance.CloseUI();
         MapUIManager.Instance.OpenUI();
         Require(TransitUI.IsOpen,"transit could not reopen after canceling the blocked trip");
         MapUIManager.Instance.Travel(AfterhourLocation.Get(AfterhourLocation.DUMPING_GROUND));
         Require(QaWaiting(session.Native),"retry with the previous backpack did not reach the host");
         travelRecoveryGuest=true;
-        Record("PASS bug-10-sleep-and-travel-retry","original bed opened ready-to-sleep, canceled both sides' pending trip, and the same selected bag could depart without reselection");
+        Record("PASS bug-10-sleep-and-travel-retry","guest rang the bell, the original host panel canceled the pending trip, and the same selected bag could depart without reselection");
         return true;
     }
 

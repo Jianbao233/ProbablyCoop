@@ -6,6 +6,10 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(GameManaged)\UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="com.rlabrecque.steamworks.net">
       <HintPath>$(GameManaged)\com.rlabrecque.steamworks.net.dll</HintPath>
       <Private>false</Private>

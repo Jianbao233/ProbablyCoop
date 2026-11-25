@@ -323,7 +323,7 @@ internal sealed partial class NativeWorld
         link=connection; link.AcceptTooltip=ReceiveFastTooltip;
         DrainModActionReplies();
         commandProjection.Expire(CommandClock());
-        CheckCommandReply(); TickGuestHand(); FlushEndingContinue(); FlushWildClose(); FlushNews(); TickContinuousControls();
+        CheckCommandReply(); TickGuestHand(); FlushBedrollBells(); FlushEndingContinue(); FlushWildClose(); FlushNews(); TickContinuousControls();
         FlushControlPreview(); FlushDynamicChoice();
         PumpBubblePresentation(); TickShootingPresentation();
         PublishViews();
@@ -984,6 +984,7 @@ internal sealed partial class NativeWorld
     private ushort Execute(byte[] payload)
     {
         if(!NativeCommandEnvelope.TryRead(payload,out var command)) return (ushort)ShopResult.Unavailable;
+        if ((string)command["kind"] == "bedrollBell") return ReceiveBedrollBell(command);
         var previousHand=hostHand;
         var previousUiExecution=RemoteUiExecution;
         var previousOrigins=remoteChoiceOrigins;

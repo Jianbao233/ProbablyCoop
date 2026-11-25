@@ -7,9 +7,8 @@ using HarmonyLib;
 
 namespace ProbablyCoop;
 
-// Retain the complete native EndNight and its UI transition. The only replaced
-// business call is the two personal OnSleep phases; world services, machines,
-// morning generation and persistence remain the single original sequence.
+// Retain the native EndNight and UI transition. Personal sleep and agoraphobia
+// run per actor. The shared shop's late-opening report follows its native queue.
 internal static class NativeActorNightIntegration
 {
     private sealed class NightStopped : Exception
@@ -46,9 +45,6 @@ internal static class NativeActorNightIntegration
             var code = NativeActorPersistence.ReplaceOne(source,
                 AccessTools.Method(typeof(HealthData), nameof(HealthData.OnSleep)),
                 AccessTools.Method(typeof(NativeActorNightIntegration), nameof(SleepBoth)), "native personal night");
-            code = NativeActorPersistence.ReplaceOne(code,
-                AccessTools.Method(typeof(PlayerStore), nameof(PlayerStore.HandleAfterhourDebuff)),
-                AccessTools.Method(typeof(NativeActorNightIntegration), nameof(AfterhourLogs)), "native personal afterhours log");
             code = NativeActorPersistence.ReplaceOne(code,
                 AccessTools.Method(typeof(StartingPerkContent), nameof(StartingPerkContent.HandleAgoraphobiaReady)),
                 AccessTools.Method(typeof(NativeActorNightIntegration), nameof(AgoraphobiaLogs)), "native personal agoraphobia log");
@@ -89,14 +85,6 @@ internal static class NativeActorNightIntegration
             throw new InvalidOperationException("Personal night completion cannot authorize a second world night.");
     }
 
-    private static void AfterhourLogs(PlayerStore store)
-    {
-        var session = NativeActorSession.Current;
-        if (session == null || !session.NightActive || !ReferenceEquals(session.Store, store)) { store.HandleAfterhourDebuff(); return; }
-        for (int actor = 0; actor < 2; actor++)
-            using (session.Enter((NativeActorRun.Slot)actor))
-            using (NativeActorNightReport.EnterPersonal(session, (NativeActorRun.Slot)actor)) store.HandleAfterhourDebuff();
-    }
     private static void AgoraphobiaLogs()
     {
         var session = NativeActorSession.Current;

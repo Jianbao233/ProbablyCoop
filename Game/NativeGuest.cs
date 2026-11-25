@@ -176,8 +176,7 @@ internal sealed class NativeGuest
                 __instance.GetComponent<StoreMagnifyingGlass>()!=null || __instance.GetComponent<StorePoster>()!=null ||
                 __instance.GetComponent<StoreVendingMachine>()!=null || __instance.GetComponent<StoreVendingFountain>()!=null ||
                 __instance.GetComponent<StoreScale>()!=null || __instance.GetComponent<Shotgun>()!=null) return true;
-            if (__instance.GetComponent<StoreBedroll>() != null) NativeDayUi.ShowGuestPlan();
-            else if (__instance.GetComponent<StoreDoor>() != null) return true;
+            if (__instance.GetComponent<StoreBedroll>() != null || __instance.GetComponent<StoreDoor>() != null) return true;
             else if (__instance.GetComponent<StoreTablet>() != null && NativeWorld.Guest?.Ready==true) return true;
             else if (__instance.GetComponent<StoreClientMono>() != null) NativeGuestTrade.Toggle();
             else if (__instance.GetComponent<StoreShutterButton>() != null) return true;
