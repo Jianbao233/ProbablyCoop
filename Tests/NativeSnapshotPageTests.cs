@@ -11,7 +11,9 @@ internal static class NativeSnapshotPageTests
         large=Fixture(660,800);
         var checkpoint=large.Fields.PackFrame(large.Data,default,true,null,0,out var basis,out _);
         Check(checkpoint.Count>2,"large nested inventory did not split");
-        Check(NativeJoinSnapshot.Read(checkpoint,checkpoint,1)==(large.Run,false),"first page lost the join contract");
+        var join=NativeJoinSnapshot.Read(checkpoint,checkpoint,1);
+        Check(join.Run==large.Run && !join.Required &&
+            (string)join.Extensions?[0]?["id"]=="example_extension","first page lost the join or extension contract");
         var all=NativeSnapshotPages.Unpack(checkpoint,default);
         var nested=(JArray)all["roots"][0]["items"][0]["data"]["content"]["children"];
         Check(nested.Count==660 && (uint)nested[659]["entity"]==660 &&
@@ -31,6 +33,7 @@ internal static class NativeSnapshotPageTests
         Reject(()=>NativeSnapshotPages.Unpack(InvalidReferences(1),default));
         CheckFrozenCapture();
         CheckTransfer();
+        CheckSendBackpressure();
         Console.WriteLine("PASS paged checkpoints: large nested parity, typed references, delta basis, atomic transfer, duplicate/lost chunks, bounded failure and retry");
     }
 
@@ -134,6 +137,36 @@ internal static class NativeSnapshotPageTests
         }
     }
 
+    private static void CheckSendBackpressure()
+    {
+        var sent = new List<Packet>();
+        int attempts = 0;
+        var host = new ReplicaLink(true, (kind, serial, revision, value, body) =>
+        {
+            if (++attempts <= 2) return false;
+            sent.Add(new Packet(kind, serial: serial, revision: revision, value: value, payload: body));
+            return true;
+        });
+        var guest = new ReplicaLink(false, (kind, serial, revision, value, body) =>
+            host.Receive(new Packet(kind, serial: serial, revision: revision, value: value, payload: body)));
+        var data = new byte[ReplicaLink.ChunkSize + 4096];
+        new Random(74).NextBytes(data);
+        var bytes = NativeSnapshotBinary.Pack(new JObject { ["data"] = Convert.ToBase64String(data) });
+        Check(bytes.Length > ReplicaLink.ChunkSize && bytes.Length <= 2 * ReplicaLink.ChunkSize,
+            "backpressure fixture must span two chunks");
+        host.PublishCheckpoint(bytes);
+        host.Tick(0, true);
+        host.Tick(0.01, true);
+        Check(attempts == 1 && sent.Count == 0, "transport was retried during the first cooldown");
+        host.Tick(0.06, true);
+        host.Tick(0.12, true);
+        Check(attempts == 2 && sent.Count == 0, "second send rejection did not extend the cooldown");
+        host.Tick(0.17, true);
+        Check(sent.Count == 2 && sent.All(guest.Receive) && guest.State.SequenceEqual(bytes) && host.Revision == 1,
+            "backpressure lost a pending chunk or its completion acknowledgement");
+        Console.WriteLine("PASS checkpoint send backpressure: paced retry preserves first chunk and complete revision");
+    }
+
     private static (NativeDeferredFields Fields,JObject Data,Guid Run) Fixture(int children,int entries,Guid run=default)
     {
         if(run==Guid.Empty) run=Guid.NewGuid();
@@ -158,6 +191,7 @@ internal static class NativeSnapshotPageTests
         return (fields,new JObject {
             ["actors"]=new JObject { ["run"]=run.ToString() },
             ["partnerSetupRequired"]=false,
+            ["modExtensions"]=new JArray(new JObject { ["id"]="example_extension" }),
             ["roots"]=new JArray(new JObject { ["items"]=new JArray(new JObject { ["data"]=storage }) })
         },run);
     }

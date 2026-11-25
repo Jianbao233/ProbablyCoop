@@ -23,25 +23,35 @@ internal sealed class Ipv4RoomControls
         mapping.input.onSubmit.AddListener(_ => join());
     }
 
-    internal void AddHost(CustomUIBuilder builder, Action create)
+    internal void AddHost(CustomUIBuilder builder, Action create, bool compact = false)
     {
-        builder.BeginRow(6);
+        if (!compact) builder.BeginRow(6);
         builder.AddInput(Loc("host_address_hint"), onTyping: value => host.SetInteractable(!string.IsNullOrWhiteSpace(value)));
         address = builder.Last;
         address.input.characterLimit = 15;
         address.input.onSubmit.AddListener(_ => create());
+        if (compact) builder.BeginRow(6);
         builder.AddInput(Loc("udp_port_hint")); port = builder.Last;
         port.input.characterLimit = 5;
         port.input.onSubmit.AddListener(_ => create());
         builder.AddButton(Loc("lan_create"), create); host = builder.Last;
+        if (compact) builder.WithTooltip(Loc("ipv4_mapping_hint"));
         builder.End();
-        builder.AddLabel(Loc("ipv4_mapping_hint")); hint = builder.Last;
+        if (!compact)
+        {
+            builder.AddLabel(Loc("ipv4_mapping_hint")); hint = builder.Last;
+            AddListening(builder);
+        }
+    }
+
+    internal void AddListening(CustomUIBuilder builder)
+    {
         builder.AddLabel(""); listening = builder.Last;
     }
 
     internal void Refresh(bool showHost, bool showMapping, IPEndPoint endpoint)
     {
-        hint.SetVisible(showHost);
+        hint?.SetVisible(showHost);
         address.SetVisible(showHost);
         port.SetVisible(showHost);
         host.SetVisible(showHost);

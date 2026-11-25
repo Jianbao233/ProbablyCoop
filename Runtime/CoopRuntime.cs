@@ -176,7 +176,7 @@ internal sealed class CoopRuntime : MonoBehaviour
             NativeActorCarryUi.Tick();
             pointer.Tick(connection, inMenu || shop != null || guest != null);
             panel.Tick();
-            qa?.Tick(room, shop, guest, inMenu);
+            qa?.Tick(room, panel, shop, guest, inMenu);
         }
         catch (Exception exception)
         {
@@ -196,7 +196,7 @@ internal sealed class CoopRuntime : MonoBehaviour
     private void FailGuestSynchronization(Exception error=null)
     {
         Debug.LogWarning("[probably_coop] guest synchronization failed; room can be rejoined. "+error);
-        panel.JoinFailed();
+        panel.JoinFailed(error as ModExtensionJoinException);
         partnerJoin.Dispose();
         if(guest!=null || NativeGuest.Active) LeaveGuest("sync_failed");
         else room.Leave("sync_failed");

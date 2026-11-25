@@ -34,7 +34,9 @@ internal sealed partial class NativeWorld
             CloseTravelPreparation();
             CancelAllHandActions();
             placementPreviews.Clear();
-            controlPreviews.Clear();
+            // Discard the local highlight before applying the new receipt.
+            // An unchanged incoming control might otherwise keep that highlight.
+            RestoreSelectionPreviews();
             controlDrafts.Clear();
             continuousPreviews.Clear();
         }

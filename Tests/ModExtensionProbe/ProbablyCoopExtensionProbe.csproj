@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>ProbablyCoopExtensionProbe</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutDir>$(MSBuildThisFileDirectory)bin\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Probe.cs.txt" />
+    <Reference Include="ProbablyCoop">
+      <HintPath>$(CoopApiAssembly)</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <None Update="manifest.xml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="RequireCoopApi" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(CoopApiAssembly)')" Text="Set CoopApiAssembly to the absolute path to the built ProbablyCoop.dll." />
+  </Target>
+</Project>

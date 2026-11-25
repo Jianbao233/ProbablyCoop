@@ -53,7 +53,8 @@ internal static class NativeShootingInput
             var world=NativeWorld.Guest;
             if(NativeShootingHooks.Presentation!=null)
             {if(action=="exit") world?.GuestBodyExit();return true;}
-            if(action=="enter" || world?.CanUseShootingInput(action=="fire")==true) world?.RequestShooting(action);
+            if(action=="fire") world?.GuestFireClick();
+            else if(action=="enter" || world?.CanUseShootingInput(false)==true) world?.RequestShooting(action);
             return false;
         }
         if(NativeShootingHooks.SourceInvocation || NativeWorld.Host==null) return true;
@@ -88,8 +89,16 @@ internal static class NativeShootingAimQuery
             return;
         }
         var world=NativeGuest.Active ? NativeWorld.Guest : NativeWorld.Host;
-        if(world!=null) __result&=world.CanUseShootingInput(true);
+        if(world!=null) __result&=NativeGuest.Active ? world.CanAcceptGuestFireClick() : world.CanUseShootingInput(true);
     }
+}
+
+[HarmonyPatch(typeof(AudioManager), nameof(AudioManager.Play2))]
+internal static class NativeShootingRestoreAudio
+{
+    private static bool Prefix(string identifier) =>
+        identifier is not ("shotgun_fire" or "body_collapse_floor") ||
+        NativeShootingHooks.Presentation?.RestoringFiredShot != true;
 }
 
 // Preserve the native coroutines and all local frame timing. Only their execution

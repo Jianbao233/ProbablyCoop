@@ -55,6 +55,7 @@ internal sealed partial class ReplicaLink
     private bool forcePublish;
     private ulong requestedFull;
     private double retryFull;
+    private double chunkRetryAt, chunkRetryDelay;
     internal ulong Revision { get; private set; }
     internal bool Waiting => pending != 0;
     internal ulong PendingRequest => pending;
@@ -91,6 +92,7 @@ internal sealed partial class ReplicaLink
         ClearAssembly();
         FullRevision=0; NeedsFull=forcePublish=false;
         requestedFull=0; retryFull=0;
+        chunkRetryAt=chunkRetryDelay=0;
         received = nextChunk = 0;
         sequence = outgoingRevision = assemblingRevision = lastRequest = pending = pendingRevision = Revision = presenceSerial = 0;
         retry = commandRetry = 0; lastResult = Result = 0;
@@ -145,7 +147,7 @@ internal sealed partial class ReplicaLink
         {
             if (outgoing == null && latest != null && (forcePublish || !latest.SameContent(Snapshot)))
             { outgoing = latest; outgoingRevision = ++sequence; sendingPage=0; StartPage(); forcePublish=false; }
-            if(outgoing==null) return;
+            if(outgoing==null || now<chunkRetryAt) return;
             int count = ChunkCount(outgoing[sendingPage]);
             int budget=4;
             if(gap>=0)
@@ -154,13 +156,14 @@ internal sealed partial class ReplicaLink
                 if(now<retry || index<nextChunk)
                 {
                     budget--;
-                    if(SendChunk(index)) RepairsSent++;
+                    if (!TrySendChunk(index, now)) { gap=index; return; }
+                    RepairsSent++;
                 }
             }
             if(now<retry) return;
             for (int n=0;n<budget && nextChunk<count;n++,nextChunk++)
             {
-                if(!SendChunk(nextChunk)) break;
+                if(!TrySendChunk(nextChunk, now)) break;
                 sentThrough=Math.Max(sentThrough,nextChunk+1);
             }
             if (nextChunk >= count) { nextChunk = 0; retry = now + 1; }
@@ -176,6 +179,20 @@ internal sealed partial class ReplicaLink
             RetryIndependentRequests(now);
             ReportProgress(now);
         }
+    }
+
+    private bool TrySendChunk(int index, double now)
+    {
+        if (SendChunk(index))
+        {
+            chunkRetryAt=chunkRetryDelay=0;
+            return true;
+        }
+        // Steam can refuse reliable sends while its queue is full. Keep the
+        // chunk pending without allocating and retrying it every render frame.
+        chunkRetryDelay = chunkRetryDelay == 0 ? 0.05 : Math.Min(0.5, chunkRetryDelay * 2);
+        chunkRetryAt = now + chunkRetryDelay;
+        return false;
     }
     private bool SendChunk(int index)
     {

@@ -46,7 +46,7 @@ internal sealed partial class NativeWorld
         if(slot?.IsValid()!=true || slot.numTransfer!=quantity) { item.Destroy(); return false; }
         if(slot.TryAcceptOnce()!=quantity) { if(item.parentInventory==null) item.Destroy(); return false; }
         data.redeemedCredit-=stock.price; stock.StockCount--;
-        NegociationUIManager.Instance.audioSourceCashRegister.Play();
+        NativeSharedAudioPlayback.Play(NegociationUIManager.Instance.audioSourceCashRegister);
         return true;
     }
 }

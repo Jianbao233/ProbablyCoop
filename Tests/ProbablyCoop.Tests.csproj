@@ -9,7 +9,10 @@
     <Compile Remove="QaDesktop.cs" />
     <Compile Remove="NativeRequestedUiQa.cs" />
     <Compile Remove="NativeRequestedAppraisalQa.cs" />
+    <Compile Remove="NativeCaptureChangesQa.cs" />
+    <Compile Remove="NativeWorkshopMachineQa.cs;NativeWorkshopSelfLearningQa.cs" />
     <Compile Remove="InputProbe\**\*.cs" />
+    <Compile Remove="ModExtensionProbe\**\*.cs" />
     <Compile Remove="NativeActors\**\*.cs" />
     <Compile Remove="NativeActorActivities\**\*.cs" />
     <Compile Remove="NativeBarterOfferLogic\**\*.cs" />

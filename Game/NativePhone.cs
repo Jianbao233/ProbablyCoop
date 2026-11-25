@@ -45,6 +45,7 @@ internal sealed partial class NativeWorld
         if(!PhoneBusy) { phoneOwner=0; ReleaseHiddenPhone(); }
         else if(phoneOwner==0) phoneOwner=1;
         return new JObject { ["owner"]=phoneOwner,["proof"]=PhoneProof(),["number"]=(long)PhoneField("currentNumber"),["status"]=ui.statusDisplay.text,
+            ["calling"]=(bool)PhoneField("isCalling"),
             ["client"]=CaptureBubble(dialog.clientBubble),["player"]=CaptureBubble(dialog.playerBubble),["name"]=dialog.clientNameTMP.text,
             ["nameVisible"]=dialog.clientNameBubble.activeSelf,
             ["choices"]=new JArray(dialog.dialogChoiceBubbles.Select(b=>new JObject { ["visible"]=b.gameObject.activeSelf,["text"]=b.TMP.text,["enabled"]=b.IsInteractable() })),
@@ -150,6 +151,7 @@ internal sealed partial class NativeWorld
     {
         var ui=PhoneUIManager.Instance;
         if(ui==null || phoneState==null) return;
+        if(!ui.phonePanel.activeInHierarchy) StopReplicaRingtone();
         if(phoneCloseRequested && phoneOwner==2 && !UiPending("phone") && phoneStopProof!=(string)phoneState["proof"]) RequestPhone("stop");
         float timer=(float)PhoneField("clickTimer");
         if(timer>0) { timer-=Time.deltaTime; SetPhoneField("clickTimer",timer); if(timer<=0) RequestPhone("dial",(long)PhoneField("currentNumber")); }
@@ -173,6 +175,7 @@ internal sealed partial class NativeWorld
                 ResetDynamicChoice();
                 ClearFrontends();
                 authorityBasis=null; authorityBaseRevision=0; awaitingFull=null; verifiedRecordPublish=0;
+                ResetCaptureChanges();
                 int released=PartnerHandCount;
                 ResetPartnerHand();
                 runClock.Reset();

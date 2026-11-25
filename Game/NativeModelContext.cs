@@ -19,11 +19,15 @@ internal sealed class NativeModelContext
     internal readonly Dictionary<uint, JObject> Data = new Dictionary<uint, JObject>();
     internal readonly HashSet<uint> Seen = new HashSet<uint>();
     internal Action<object, JObject> Captured, Applied;
+    internal Action<object,uint> CapturedIdentity;
     internal Action<GameItem> CapturingItem;
+    internal Func<GameItem,JObject> CaptureItem;
     internal GameItem CaptureOwner;
     internal NativeSnapshotIndex Prepared { get; private set; }
     internal NativeDeferredFields Deferred { get; private set; }
     internal uint Id(object value) => value == null ? 0 : ids.GetValue(value, _ => new Identity { Id = ++next }).Id;
+    internal void RetainCaptured(object value,uint id)
+    { Objects[id]=value; Seen.Add(id); CapturedIdentity?.Invoke(value,id); }
     internal uint ReplicaId(object value)
     {
         if(value==null) return 0;
@@ -104,7 +108,7 @@ internal static partial class NativeMirrorProbe
     {
         if (Context == null) return data;
         uint id = Context.Id(instance); data["entity"] = id;
-        Context.Objects[id] = instance; Context.Seen.Add(id); Context.Captured?.Invoke(instance, data);
+        Context.RetainCaptured(instance,id); Context.Captured?.Invoke(instance, data);
         return data;
     }
     private static object FindExisting(JObject data) => Context != null && data["entity"] != null &&

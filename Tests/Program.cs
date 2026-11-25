@@ -55,6 +55,7 @@ if (args.Length > 0)
 }
 
 ActivityScopeTests.Run();
+CaptureChangeTests.Run();
 RoomAdmissionTests.Run();
 NativeJoinSnapshotTests.Run();
 NativeSnapshotPageTests.Run();

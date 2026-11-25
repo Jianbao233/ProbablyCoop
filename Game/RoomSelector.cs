@@ -7,6 +7,8 @@ namespace ProbablyCoop;
 
 internal sealed class RoomSelector : ICoopRoom
 {
+    internal enum TransportKind : byte { None, Steam, Ipv4, Loopback }
+
     private readonly byte[] fingerprint;
     private readonly bool localTest;
     private ICoopRoom active;
@@ -30,6 +32,13 @@ internal sealed class RoomSelector : ICoopRoom
     public string Detail => active?.Detail ?? "";
     public string PartnerName => active?.PartnerName ?? "";
     internal bool IsLoopback => active is LocalRoom local && local.IsLoopback;
+    internal TransportKind Transport => !HasLobby && !Busy ? TransportKind.None : active switch
+    {
+        LocalRoom local when local.IsLoopback => TransportKind.Loopback,
+        LocalRoom => TransportKind.Ipv4,
+        SteamRoom => TransportKind.Steam,
+        _ => TransportKind.None
+    };
     internal IPEndPoint Ipv4HostEndpoint => (active as LocalRoom)?.Ipv4HostEndpoint;
     internal bool FriendsCanJoin => active is SteamRoom steam && steam.FriendsCanJoin;
     public int Sent => active?.Sent ?? 0;

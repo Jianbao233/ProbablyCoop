@@ -81,6 +81,13 @@ internal sealed partial class NativeWorld
             RefreshSelection(entry.Key);
         }
     }
+    private void RestoreSelectionPreviews()
+    {
+        if (controlPreviews.Count == 0) return;
+        var changed = controlPreviews.Keys.ToArray();
+        controlPreviews.Clear();
+        foreach (uint id in changed) RefreshSelection(id);
+    }
     private void FlushControlPreview()
     {
         if(controlPreviews.Count==0) return;

@@ -1,4 +1,23 @@
 title,Probably Coop
+paste_room_code,Paste room code
+show_lan_options,Host via IPv4 / virtual LAN…
+hide_lan_options,Hide IPv4 options
+coop_saves_heading,Co-op saves
+terminal_title,Connection
+terminal_show_details,Details
+terminal_hide_details,Hide details
+terminal_overview,Connection · {0} · {1} · {2}
+terminal_role_host,Host
+terminal_role_guest,Guest
+terminal_role_none,No room
+terminal_transport_steam,Steam P2P
+terminal_transport_ipv4,IPv4 direct
+terminal_transport_local,Local loopback
+terminal_transport_none,No transport
+terminal_packets,Packets · sent {0:N0} · received {1:N0}
+terminal_revision,World revision · {0:N0}
+terminal_batches,Checkpoint · {0:N0} / {1:N0} batches · {2:N0} KiB
+terminal_no_session,No packet data for the current connection.
 room_header,Create or join a shared shop
 native_header,Shared shop · Room controls
 native_hint,Use F7 for room controls and personal carry.
@@ -128,6 +147,18 @@ travel_unavailable,The guest can currently travel to the Dumping Grounds.
 day_peer_outside,Your partner must return before settling the day.
 trade_current_offer,Current offer
 resume_run,Resume co-op
+solo_import,Create a co-op copy from a solo save
+solo_import_button,Import a solo save
+solo_import_hint,Choose a solo save. Your copy uses a new slot and preserves the original.
+solo_import_no_saves,No eligible solo saves were found.
+solo_import_row,{0} · Slot {1} · Day {2} · Cash {3:N0}
+solo_import_confirm,"Create and open a co-op copy of slot {0} (day {1}, cash {2:N0})? Your solo save will be preserved."
+solo_import_back,Back to co-op menu
+solo_import_failed,Couldn't create a co-op copy of this solo save.
+solo_import_failure_reason,Couldn't create a co-op copy: {0}
+sync_extension_missing_guest,Enable the required Mod on your client: {0}
+sync_extension_missing_host,The host is missing a Mod you enabled: {0}
+sync_extension_mismatch,The two clients have incompatible versions or settings for {0}.
 no_checkpoints,No readable co-op checkpoints.
 checkpoint_unavailable,Could not read that co-op checkpoint.
 cursor_location_0,Main menu

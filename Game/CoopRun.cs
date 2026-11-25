@@ -29,6 +29,7 @@ internal static class CoopRun
         internal string Locale;
         internal DateTime SavedAt;
         internal bool HasActors;
+        internal bool HasCoopData;
         internal bool NeedsRecovery;
         internal string RecoveryReason;
         internal bool UsesEffectReplication;
@@ -144,6 +145,41 @@ internal static class CoopRun
         return checkpoints;
     }
 
+    internal static List<Checkpoint> ListSoloCheckpoints()
+    {
+        var registered = new HashSet<Guid>();
+        foreach (string key in ModHelper.ListModDataFiles(ModId))
+            if (TryParseRegistration(key, ModHelper.ReadModDataFileText(ModId, key), out var run, out _))
+                registered.Add(run);
+        var checkpoints = new List<Checkpoint>();
+        foreach (string path in System.IO.Directory.EnumerateFiles(Application.persistentDataPath, "save_*.es3"))
+        {
+            string file = Path.GetFileName(path);
+            if (TryFileSlot(file, out int slot, out bool history) && !history &&
+                TryRead(slot, Guid.Empty, out var checkpoint, file, soloOnly: true) &&
+                !registered.Contains(checkpoint.Run))
+                checkpoints.Add(checkpoint);
+        }
+        checkpoints.Sort((a, b) => b.SavedAt.CompareTo(a.SavedAt));
+        return checkpoints;
+    }
+
+    internal static Checkpoint ImportSolo(Checkpoint selected, out string reason)
+    {
+        try
+        {
+            var imported = NativeCoopSaveRecovery.ImportSolo(selected);
+            reason = null;
+            return imported;
+        }
+        catch (Exception error)
+        {
+            Debug.LogWarning("[probably_coop] solo checkpoint import failed: " + error);
+            reason = error.Message;
+            return null;
+        }
+    }
+
     internal static bool VerifyCheckpoint(PlayerStore store, int day)
     {
         return IsRegistered(store) && NativeActorPersistence.VerifyObservedSave(store, day);
@@ -235,7 +271,8 @@ internal static class CoopRun
 
     private static bool ValidFile(int slot,string file) => TryFileSlot(file,out int fileSlot,out _) && fileSlot==slot;
 
-    internal static bool TryRead(int slot, Guid expectedRun, out Checkpoint checkpoint,string file=null,bool prepare=false)
+    internal static bool TryRead(int slot, Guid expectedRun, out Checkpoint checkpoint,string file=null,bool prepare=false,
+        bool soloOnly=false)
     {
         checkpoint = null;
         if (slot < 0) return false;
@@ -250,15 +287,16 @@ internal static class CoopRun
             var settings = new ES3Settings(path);
             if (settings.location != ES3.Location.File || settings.format != ES3.Format.JSON) return false;
             var bytes = NativeActorPersistence.ReadFileImage(path);
-            NativeCoopSaveRecovery.ValidateRootNames(bytes,settings);
-            result.ImageDigest=Digest(bytes);
-            var entries = new List<KeyValuePair<string, ES3Data>>();
+            // The solo menu only lists candidates. Conversion still validates
+            // the full player/station graph, raw keys and selected file hash.
+            if(!soloOnly) NativeCoopSaveRecovery.ValidateRootNames(bytes,settings);
+            var entries = soloOnly ? null : new List<KeyValuePair<string, ES3Data>>();
             // Preview only scalar properties; never allocate a second PlayerStore
             // (even an uninitialized one) or run native gameplay hydration.
             using (var reader = ES3Reader.Create(bytes, settings))
                 foreach (var entry in NativeActorCheckpoint.ReadNativeEntries(reader))
                 {
-                    entries.Add(entry);
+                    entries?.Add(entry);
                     if (entry.Key != "playerStore" && entry.Key != "storeStation") continue;
                     using var body = ES3Reader.Create(entry.Value.bytes, new ES3Settings(false));
                     foreach (string name in body.Properties)
@@ -274,9 +312,12 @@ internal static class CoopRun
                             case "startLocale": result.Locale = body.Read<string>(); break;
                             case "startType": result.Preview.startType=body.Read<NewGameData.StartType>(); break;
                             case "startScenarioId": result.Preview.startScenarioId=body.Read<string>(); break;
-                            case "version": result.Preview.version=body.Read<string>(); break;
+                            case "version":
+                            case "saveVersion": result.Preview.version=body.Read<string>(); break;
                             case "modData":
                                 var data = body.Read<Dictionary<string, string>>();
+                                result.HasCoopData = NativeActorCheckpoint.HasCoopData(data);
+                                if(soloOnly && result.HasCoopData) return false;
                                 result.HasActors = data?.ContainsKey(NativeActorCheckpoint.ModDataKey) == true;
                                 result.UsesEffectReplication = data != null &&
                                     data.TryGetValue(NativeEffectCampaign.SaveKey, out string schema) &&
@@ -288,6 +329,7 @@ internal static class CoopRun
                 }
             if(result.StoredSlot<0 || result.Run==Guid.Empty || expectedRun!=Guid.Empty && result.Run!=expectedRun ||
                 result.Day<0) return false;
+            result.ImageDigest=Digest(bytes);
             if(result.HasActors)
                 try
                 {

@@ -1,4 +1,23 @@
 title,双人合伙店
+paste_room_code,粘贴房间码
+show_lan_options,IPv4 / 虚拟局域网建房…
+hide_lan_options,收起 IPv4 建房
+coop_saves_heading,合作存档
+terminal_title,连接状态
+terminal_show_details,查看详情
+terminal_hide_details,收起详情
+terminal_overview,连接状态 · {0} · {1} · {2}
+terminal_role_host,房主
+terminal_role_guest,客机
+terminal_role_none,未进房
+terminal_transport_steam,Steam P2P
+terminal_transport_ipv4,IPv4 直连
+terminal_transport_local,本机回环
+terminal_transport_none,无连接方式
+terminal_packets,累计包数 · 发送 {0:N0} · 接收 {1:N0}
+terminal_revision,世界同步修订 · {0:N0}
+terminal_batches,库存检查点 · {0:N0} / {1:N0} 批 · {2:N0} KiB
+terminal_no_session,当前没有活动连接的收发数据。
 room_header,创建或加入同一家店铺
 native_header,共享经营 · 房间管理
 native_hint,F7 管理房间和随身物品。
@@ -128,6 +147,18 @@ travel_unavailable,此版本的副机暂可前往垃圾倾倒场。
 day_peer_outside,合伙人还在外面，回店后才能日结。
 trade_current_offer,当前报价
 resume_run,继续合作档
+solo_import,从单人存档创建合作副本
+solo_import_button,导入单人档
+solo_import_hint,选择一个单人存档。副本使用新的存档槽，保留单人原档。
+solo_import_no_saves,没有可用于创建合作副本的单人存档。
+solo_import_row,{0} · 存档槽 {1} · 第 {2} 天 · 现金 {3:N0}
+solo_import_confirm,从存档槽 {0}（第 {1} 天，现金 {2:N0}）创建并打开合作副本？原单人存档会保留。
+solo_import_back,返回合伙店菜单
+solo_import_failed,无法从该单人存档创建合作副本。
+solo_import_failure_reason,无法创建合作副本：{0}
+sync_extension_missing_guest,客机需要启用模组 {0}。
+sync_extension_missing_host,房主尚未启用客机所用的模组 {0}。
+sync_extension_mismatch,两端的模组 {0} 版本或联机配置不兼容。
 no_checkpoints,没有可读取的合作检查点。
 checkpoint_unavailable,无法读取这个合作检查点。
 cursor_location_0,主菜单

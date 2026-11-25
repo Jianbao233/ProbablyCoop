@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -22,7 +23,8 @@ internal sealed class NativePartnerJoin : IDisposable
     private string[] draft;
     private double retry, pickerDeadline;
     private string pickerFailure;
-    private Task<(Guid Run,bool Required)> reading;
+    private Task<(Guid Run,bool Required,JToken Extensions)> reading;
+    private Dictionary<string,ModExtensionContract> extensions;
     private CancellationTokenSource readLifetime;
     private ulong readingRevision;
 
@@ -60,6 +62,7 @@ internal sealed class NativePartnerJoin : IDisposable
             readLifetime.Dispose();
             readLifetime=null;
             var metadata=completed.GetAwaiter().GetResult();
+            NativeWorld.CheckModExtensionJoin(metadata.Extensions,ref extensions);
             var incoming=metadata.Run;
             if(run!=Guid.Empty && run!=incoming) throw new InvalidDataException("Cooperative character run changed during join");
             run=incoming; required=metadata.Required; observed=readingRevision;
@@ -160,7 +163,7 @@ internal sealed class NativePartnerJoin : IDisposable
             // A task from a departed epoch cannot update this join.
             if(reading!=null)
                 _=reading.ContinueWith(task=>{ _=task.Exception; },TaskContinuationOptions.OnlyOnFaulted);
-            reading=null; readLifetime=null;
+            reading=null; readLifetime=null; extensions=null;
             link=null; observed=0; run=Guid.Empty; required=picker=sent=false; pickerOwner=null; draft=null; retry=pickerDeadline=0; pickerFailure=null; disposing=false;
         }
     }
