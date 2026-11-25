@@ -65,7 +65,8 @@ internal sealed partial class NativeWorld
                 int amount=Math.Min(item.unitCount,item.MaxNumRemove());
                 if(target==null) { if(item.parentInventory!=inventory) moved+=amount-GraphUtils.TryAcceptAll(inventory,item,amount); }
                 else if(target is GameItemElement destroyed && destroyed.IsDestroyed()) break;
-                else if(GeneralHelper.MayPlayerInsertInto(target) && target.MayHaveValidInventorySlot(item)) moved+=amount-GraphUtils.TryAcceptAll(target,item,amount);
+                else if(!NativeContainerAccess.IsSealed(target) && GeneralHelper.MayPlayerInsertInto(target) && target.MayHaveValidInventorySlot(item))
+                    moved+=amount-GraphUtils.TryAcceptAll(target,item,amount);
                 else if(target.MayStack(item)) moved+=target.GetStackSlot(item)?.TryAcceptOnce(amount) ?? 0;
                 else if(item.MayTarget(target) && item.CanTarget(target))
                 { ItemBehaviourManager.current.Target(item,target); if(!(target is GameItemElement removed && removed.IsDestroyed()) && !item.IsDestroyed() && item.MayTarget(target) && item.CanTarget(target)) item.Target(target); moved++; }

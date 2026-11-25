@@ -7,6 +7,8 @@ internal sealed partial class NativeWorld
 {
     private readonly OperationContext operationContext = new OperationContext();
     private ulong observedOperationContext;
+    internal ulong ItemPingContext => host ? operationContext.Generation : observedOperationContext;
+    internal static bool CanSeeItemPing(GameItem item)=>item!=null && Accessible(item.parentInventory);
 
     private ulong ObserveOperationContext() => operationContext.Observe(
         StoreStation.Instance.dayCounter, (int)PlayerStore.Instance.storeState,

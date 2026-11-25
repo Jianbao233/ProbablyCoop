@@ -18,7 +18,7 @@ internal sealed partial class NativeWorld
         ["stage"]=(int)DocumentTutorialStage.GetValue(TutorialUIManager.Instance),["enabled"]=PlayerStore.Instance.tutorialEnable });
     private void QueueDocumentRead(GameItem item)
     {
-        if(documentReads.Count>=8) { CommandNotice("阅读操作仍在确认，请稍后再试。"); return; }
+        if(documentReads.Count>=8) { CommandNotice("阅读操作仍在确认，请稍后再试。",sync:true); return; }
         documentReads.Enqueue(new DocumentRead { Item=item,Context=observedOperationContext });
         PumpDocumentReads();
     }

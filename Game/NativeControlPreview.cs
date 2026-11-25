@@ -34,7 +34,7 @@ internal sealed partial class NativeWorld
         {
             if(controlPreviews.Count>=16)
             {
-                CommandNotice("待确认的设备操作过多，请稍后再试。");
+                CommandNotice("待确认的设备操作过多，请稍后再试。",sync:true);
                 return;
             }
             uint owner=(uint)command["owner"];

@@ -221,3 +221,35 @@ diff_guest_only,{0} {1}: partner only
 diff_version,"{0}: host {1}, partner {2}"
 diff_adapter,"{0} adapter protocol: host {1}, partner {2}"
 diff_more,and {0} more
+pointer_settings,Player Name and Notices
+pointer_settings_save,Save Player Name
+settings_pointer_name,Player Name
+settings_pointer_name_help,Your partner sees this name beside your cursor. Leave it blank to use your Steam name.
+settings_ping_binding,Item Ping Binding
+settings_ping_binding_help,Aim at an item and press this button to notify your partner. Defaults to middle mouse.
+settings_sync_notices,Show Co-op Sync Notices
+settings_sync_notices_help,Show ordinary wait and retry notices. Join errors and connection details stay on the co-op panel.
+item_ping_notice,Your partner marked {0}
+player_name,Player Name
+player_name_input,Enter player name (Steam name by default)
+change_player_name,Change Player Name
+player_name_changed,Player name updated
+contact_title,Contact
+contact_qq_group,QQ Group 1132567943
+contact_author_qq,Author QQ 1600597561
+contact_discord,Discord jianbao1954 (not often online)
+contact_bilibili,Bilibili (copy link)
+contact_qq_group_copied,QQ group number copied
+contact_author_qq_copied,Author QQ copied
+contact_discord_copied,Discord username copied
+contact_bilibili_copied,Bilibili link copied
+history_scan_deferred,Historical checkpoints are not scanned yet
+history_scan_complete,Historical checkpoints included
+scan_history,Scan History
+scan_checkpoints_loading,Finding cooperative saves…
+sync_fail_host_capture,Host could not capture the shop state
+sync_fail_host_encode,Host could not package the shop state
+sync_fail_guest_format,Guest received an invalid checkpoint page
+sync_fail_guest_budget,Checkpoint exceeded the guest transfer limit
+sync_fail_guest_apply,Guest could not decode or apply the shop state
+sync_previous_progress,Last recorded progress {0}

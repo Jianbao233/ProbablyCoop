@@ -1,8 +1,8 @@
 <Manifest>
   <ID>probably_coop</ID>
-  <Name>深空当铺联机｜双人合伙店 v0.3.2 / Probably Coop</Name>
+  <Name>深空当铺联机｜双人合伙店 v0.3.3 / Probably Coop</Name>
   <Author>ProbablyCoop Contributors</Author>
-  <ModVersion>0.3.2</ModVersion>
+  <ModVersion>0.3.3</ModVersion>
   <Description>双人原版前端协作经营、独立角色与随身物品、共享店铺和共同日结</Description>
   <GameVersions>
     <Version>0.46</Version>

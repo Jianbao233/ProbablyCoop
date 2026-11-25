@@ -119,16 +119,20 @@ internal static class NativeSnapshotPageTests
         Deliver(outgoing.Single());
         Check(guest.Transfer.CompletePages==1,"test did not stage a partially received checkpoint");
         outgoing.Clear();
-        host.FailSynchronization();
+        host.FailSynchronization(NativeSyncFailure.HostEncode);
         host.Tick(1.1,true);
+        Check(!Wire.TryDecode(Wire.Encode(new Packet(Kind.NativeSyncFailed,value:(ushort)NativeSyncFailure.GuestPageFormat)),
+            false,out _),"guest-only reason was accepted as a host failure");
         Deliver(outgoing.Single());
-        Check(guest.SynchronizationFailed && guest.Snapshot==null && guest.Transfer.Pages==0,
+        Check(guest.SynchronizationFailed && guest.FailureReason==NativeSyncFailure.HostEncode &&
+            guest.Snapshot==null && guest.Transfer.Pages==0,
             "failure did not abort only the guest transfer");
         host.Reset(); guest.Reset(); outgoing.Clear(); receipts.Clear();
         host.PublishCheckpoint(first);
         host.Tick(2,true);
         Deliver(outgoing.Single());
-        Check(!host.SynchronizationFailed && !guest.SynchronizationFailed && guest.FullRevision==1,
+        Check(!host.SynchronizationFailed && !guest.SynchronizationFailed &&
+            guest.FailureReason==NativeSyncFailure.None && guest.FullRevision==1,
             "failed transfer survived a new epoch");
 
         void Deliver(Packet packet)

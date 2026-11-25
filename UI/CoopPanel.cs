@@ -19,12 +19,23 @@ internal sealed class CoopPanel : IDisposable
     private readonly RoomPanelEntries entries = new();
     private readonly Ipv4RoomControls ipv4 = new();
     private CustomUIWindow window, checkpoints;
+    private IEnumerator<CoopRun.Checkpoint> checkpointScan;
+    private CustomUIBuilder checkpointBuilder;
+    private CustomUIElement checkpointStatus;
+    private readonly List<CoopRun.Checkpoint> checkpointRows=new();
+    private static readonly IComparer<CoopRun.Checkpoint> newestCheckpointFirst =
+        Comparer<CoopRun.Checkpoint>.Create((a,b)=>b.SavedAt.CompareTo(a.SavedAt));
+    private bool checkpointHistory;
+    private int checkpointStartFrame;
     private CustomUIElement code, roomCode, status, join, copy, leave, approve, decline, access;
-    private CustomUIElement shopStatus, heading, carry, steamHint;
+    private CustomUIElement shopStatus, heading, carry, steamHint, playerNameInput;
     private CustomUIElement lanToggle, joinFromMenu;
-    private CustomUIElement joinProgress, joinProgressLabel, joinHistory, joinHistoryToggle;
+    private CustomUIElement joinProgressLabel, joinHistory, joinHistoryToggle;
+    private RectTransform joinProgressFill;
+    private GameObject joinProgressTrack;
     private CustomUIElement terminalSummary, terminalButton, terminalDetails;
-    private GameObject setupRow, joinColumn, lanControls, saveRow, roomActions, approvalRow, joinLog, terminalRow, terminalLog;
+    private GameObject setupRow, joinColumn, lanControls, saveRow, roomActions, approvalRow, joinLog,
+        playerNameRow, contactsRow, terminalRow, terminalLog;
     private bool showLanOptions, showTerminalDetails;
     private double nextTerminalRefresh;
     private readonly Queue<string> joinSteps=new Queue<string>();
@@ -77,6 +88,7 @@ internal sealed class CoopPanel : IDisposable
             if(originalMenuLabel!=null && menuLabel.font!=originalMenuLabel.font) menuLabel.font=originalMenuLabel.font;
         }
         entries.Tick(inMenu, menuButton != null, window?.IsVisible == true, Open);
+        TickCheckpointScan();
         if(Input.GetKeyDown(KeyCode.F7) && !InputFocused(code) && !ipv4.InputFocused && !InputFocused(roomCode))
         {
             if(checkpoints?.IsVisible==true) checkpoints.Close();
@@ -124,11 +136,27 @@ internal sealed class CoopPanel : IDisposable
     {
         if(window?.IsAlive==true) { window.Show(); window.BringToFront(); displaySignature=null; Refresh(); return; }
         var builder=CustomUIManager.Window("probably_coop_panel",Loc("title"),inMenu ? "menu" : "overlay")
-            .SetSize(660,480).Center().SetDraggable(true).SetCloseOnEscape();
+            .SetSize(1040,590).Center().SetDraggable(true).SetCloseOnEscape();
         builder.AddLabel(Loc(inShop ? "native_header" : "room_header")); heading=builder.Last;
         builder.AddLabel(""); status=builder.Last; status.text.richText=false;
         builder.AddLabel(""); joinProgressLabel=builder.Last;
-        builder.AddProgressBar(); joinProgress=builder.Last;
+        // Rev13 does not supply either progress or slider prefabs in all scenes.
+        joinProgressTrack=new GameObject("Join progress",typeof(RectTransform),typeof(Image),typeof(LayoutElement));
+        joinProgressTrack.transform.SetParent(builder.CurrentContainer,false);
+        var trackLayout=joinProgressTrack.GetComponent<LayoutElement>();
+        trackLayout.minHeight=trackLayout.preferredHeight=8;
+        trackLayout.flexibleWidth=1;
+        var track=joinProgressTrack.GetComponent<Image>();
+        track.color=new Color32(35,31,47,255);
+        track.raycastTarget=false;
+        var fill=new GameObject("Fill",typeof(RectTransform),typeof(Image)).GetComponent<Image>();
+        fill.transform.SetParent(joinProgressTrack.transform,false);
+        fill.color=new Color32(126,192,192,255);
+        fill.raycastTarget=false;
+        joinProgressFill=fill.rectTransform;
+        joinProgressFill.anchorMin=Vector2.zero;
+        joinProgressFill.anchorMax=Vector2.up;
+        joinProgressFill.offsetMin=joinProgressFill.offsetMax=Vector2.zero;
         builder.AddButton(Loc("sync_show_log"),()=>{ joinHistoryOpen=!joinHistoryOpen; displaySignature=null; Refresh(); });
         joinHistoryToggle=builder.Last;
         joinLog=BeginScrollBlock(builder,112);
@@ -139,7 +167,7 @@ internal sealed class CoopPanel : IDisposable
 
         builder.BeginRow(9);
         setupRow=builder.CurrentContainer.gameObject;
-        builder.BeginPanel(width:340,alignment:TextAnchor.UpperLeft,padding:8,spacing:6);
+        builder.BeginPanel(width:500,alignment:TextAnchor.UpperLeft,padding:8,spacing:6);
         joinColumn=builder.CurrentContainer.gameObject;
         builder.AddHeader(Loc("join_room_heading"));
         builder.AddInput(Loc("join_code_hint"),onTyping:_=>RefreshAvailability()); code=builder.Last;
@@ -152,7 +180,7 @@ internal sealed class CoopPanel : IDisposable
         ipv4.AddMapping(builder, Join);
         builder.End();
 
-        builder.BeginPanel(width:inMenu ? 340 : -1,alignment:TextAnchor.UpperLeft,padding:8,spacing:6);
+        builder.BeginPanel(width:inMenu ? 500 : -1,alignment:TextAnchor.UpperLeft,padding:8,spacing:6);
         builder.AddHeader(Loc("host_room_heading"));
         builder.AddButton(Loc(localTest ? "local_create" : "create"),()=>{room.Create();Refresh();});
         builder.AddButton(Loc("show_lan_options"),()=>{
@@ -184,12 +212,23 @@ internal sealed class CoopPanel : IDisposable
         builder.AddHeader(Loc("coop_saves_heading"));
         builder.BeginRow(6);
         builder.AddButton(Loc("new_run"),StartCoopGame);
-        builder.AddButton(Loc("resume_run"),OpenCheckpoints);
+        builder.AddButton(Loc("resume_run"),()=>OpenCheckpoints());
         builder.AddButton(Loc("solo_import_button"),OpenSoloCheckpoints,"import_solo");
         builder.End().End();
         builder.AddButton(Loc("personal_carry"),()=>{ NativeActorCarryUi.Toggle(); }); carry=builder.Last;
         builder.AddLabel(""); shopStatus=builder.Last;
         if(!inMenu) entries.AddLauncherOption(builder);
+        builder.BeginRow(6);
+        playerNameRow=builder.CurrentContainer.gameObject;
+        builder.AddLabel(Loc("player_name"));
+        builder.AddInput(Loc("player_name_input"),CoopSettings.PointerName); playerNameInput=builder.Last;
+        playerNameInput.input.characterLimit=PointerProfile.NameLimit;
+        var playerNameLayout=playerNameInput.root.GetComponent<LayoutElement>() ?? playerNameInput.root.AddComponent<LayoutElement>();
+        playerNameLayout.minWidth=220;
+        playerNameLayout.flexibleWidth=1;
+        playerNameInput.input.onSubmit.AddListener(_=>SavePlayerName());
+        builder.AddButton(Loc("change_player_name"),SavePlayerName);
+        builder.End();
         builder.BeginRow(6);
         terminalRow=builder.CurrentContainer.gameObject;
         builder.AddLabel(Loc("terminal_title")); terminalSummary=builder.Last;
@@ -197,8 +236,8 @@ internal sealed class CoopPanel : IDisposable
         terminalSummary.text.enableWordWrapping=false;
         terminalSummary.text.overflowMode=TextOverflowModes.Ellipsis;
         var summaryLayout=terminalSummary.root.GetComponent<LayoutElement>() ?? terminalSummary.root.AddComponent<LayoutElement>();
-        summaryLayout.minWidth=0;
-        summaryLayout.preferredWidth=0;
+        summaryLayout.minWidth=280;
+        summaryLayout.preferredWidth=400;
         summaryLayout.flexibleWidth=1;
         builder.AddButton(Loc("terminal_show_details"),()=>{
             showTerminalDetails=!showTerminalDetails;
@@ -209,8 +248,31 @@ internal sealed class CoopPanel : IDisposable
         terminalLog=BeginScrollBlock(builder,88);
         builder.AddLabel(""); terminalDetails=builder.Last; terminalDetails.text.richText=false;
         builder.End();
+        builder.BeginRow(6);
+        contactsRow=builder.CurrentContainer.gameObject;
+        builder.AddLabel(Loc("contact_title"));
+        builder.AddButton(Loc("contact_qq_group"),()=>CopyContact("1132567943", "contact_qq_group_copied"));
+        builder.AddButton(Loc("contact_author_qq"),()=>CopyContact("1600597561", "contact_author_qq_copied"));
+        builder.AddButton(Loc("contact_discord"),()=>CopyContact("jianbao1954", "contact_discord_copied"));
+        builder.AddButton(Loc("contact_bilibili"),()=>CopyContact("https://space.bilibili.com/234054413", "contact_bilibili_copied"));
+        builder.End();
         window=builder.Show(); window.BringToFront(); displaySignature=null; Refresh();
         Debug.Log("[probably_coop] room panel opened");
+    }
+
+    private void SavePlayerName()
+    {
+        if(playerNameInput==null) return;
+        CoopSettings.SetPointerName(playerNameInput.GetString());
+        playerNameInput.SetString(CoopSettings.PointerName);
+        room.Session?.SetPointerName(CoopSettings.PointerName);
+        StoreUIManager.Instance?.Notify(Loc("player_name_changed"));
+    }
+
+    private static void CopyContact(string value,string messageKey)
+    {
+        GUIUtility.systemCopyBuffer=value;
+        StoreUIManager.Instance?.Notify(Loc(messageKey));
     }
 
     // BeginScroll selects its content as CurrentContainer. Hide the full
@@ -285,12 +347,24 @@ internal sealed class CoopPanel : IDisposable
             SetJoinPhase(session?.State==LinkState.Connected ? "sync_preparing" :
                 room.Status=="await_approval" ? "status_await_approval" : "sync_connecting",0f);
     }
-    internal void JoinFailed(ModExtensionJoinException mismatch=null)
+    internal void JoinFailed(ModExtensionJoinException mismatch=null,NativeSyncFailure reason=NativeSyncFailure.None,bool localError=false)
     {
         SetJoinPhase("sync_failed",joinPercentage);
         if(mismatch!=null)
         {
             joinFailureReason=string.Format(Loc(mismatch.MessageKey),mismatch.ModId);
+            AddJoinStep(joinFailureReason);
+        }
+        else if(reason!=NativeSyncFailure.None || localError)
+        {
+            joinFailureReason=Loc(reason switch
+            {
+                NativeSyncFailure.HostCapture=>"sync_fail_host_capture",
+                NativeSyncFailure.HostEncode=>"sync_fail_host_encode",
+                NativeSyncFailure.GuestPageFormat=>"sync_fail_guest_format",
+                NativeSyncFailure.GuestTransferBudget=>"sync_fail_guest_budget",
+                _=>"sync_fail_guest_apply"
+            });
             AddJoinStep(joinFailureReason);
         }
         reopenJoinPanel=true;
@@ -323,9 +397,8 @@ internal sealed class CoopPanel : IDisposable
     {
         if(window?.IsVisible!=true) return;
         Refresh();
-        var fill=joinProgress.progressBar?.fillImage;
-        if(fill==null || !joinProgressLabel.text.text.Contains(Loc(joinPhase))) return;
-        float progress=fill.type==Image.Type.Filled ? fill.fillAmount : fill.rectTransform.localScale.x;
+        if(joinProgressTrack?.activeSelf!=true || !joinProgressLabel.text.text.Contains(Loc(joinPhase))) return;
+        float progress=joinProgressFill.anchorMax.x;
         if(joinPhase=="sync_ready" && progress<0.999f) return;
         if(joinHistoryOpen) joinHistoryToggle.button.onClick.Invoke();
         joinHistoryToggle.button.onClick.Invoke();
@@ -363,7 +436,7 @@ internal sealed class CoopPanel : IDisposable
         heading.SetText(Loc(inShop || real ? "native_header" : "room_header"));
         heading.SetVisible(!showSetup);
         int baseHeight=showSetup ? (inMenu ? 300 : 274) : (showSaves ? 246 : 214);
-        window.SetSize(740,baseHeight+(showLan ? 106 : 0)+(showMapping ? 35 : 0)+
+        window.SetSize(1040,baseHeight+42+(showLan ? 106 : 0)+(showMapping ? 35 : 0)+
             (room.FriendsCanJoin || endpoint!=null ? 30 : 0)+(showAccess ? 35 : 0)+(room.CanApprove ? 38 : 0)+
             (showProgress ? 92 : 0)+(joinFailureReason.Length>0 ? 30 : 0)+(showHistory ? 116 : 0)+
             (showTerminal ? 36 : 0)+(expandedTerminal ? 92 : 0));
@@ -393,15 +466,16 @@ internal sealed class CoopPanel : IDisposable
             Loc(real && room.Status=="connected" ? "status_shop_connected" : "status_"+room.Status)+detail+
             (showAccess && !room.AcceptingJoins ? "\n"+Loc("joins_paused") : ""));
         status.SetVisible(!showSetup || room.Status!="idle" || steamJoinBusy);
-        joinProgress.SetVisible(showProgress);
+        joinProgressTrack.SetActive(showProgress);
         joinProgressLabel.SetVisible(showProgress);
         if(showProgress)
         {
             string label=Loc(joinPhase);
-            if(joinCounters.Length!=0) label+=" · "+joinCounters;
+            if(joinCounters.Length!=0)
+                label+=" · "+(joinPhase=="sync_failed" ? string.Format(Loc("sync_previous_progress"),joinCounters) : joinCounters);
             if(joinFailureReason.Length!=0) label+="\n"+joinFailureReason;
             joinProgressLabel.SetText(label);
-            joinProgress.SetProgress(joinPercentage,joinPercentage.ToString("P0"));
+            joinProgressFill.anchorMax=new Vector2(joinPercentage,1f);
         }
         joinHistoryToggle.SetVisible(showProgress);
         joinHistoryToggle.SetText(Loc(showHistory ? "sync_hide_log" : "sync_show_log"));
@@ -410,6 +484,10 @@ internal sealed class CoopPanel : IDisposable
         saveRow.SetActive(showSaves);
         carry.SetVisible(!inMenu && NativeActorCarryUi.Available);
         carry.SetInteractable(MapUIManager.Instance?.IsOutside==false);
+        playerNameRow.SetActive(true);
+        if(playerNameInput?.input?.isFocused!=true && playerNameInput.GetString()!=CoopSettings.PointerName)
+            playerNameInput.SetString(CoopSettings.PointerName);
+        contactsRow.SetActive(true);
         shopStatus.SetVisible(inShop || inMenu && room.IsHost);
         shopStatus.SetText(Loc(inShop ? "native_hint" : "host_start_hint"));
         RefreshAvailability();
@@ -477,42 +555,88 @@ internal sealed class CoopPanel : IDisposable
         },()=>{ if(window?.IsAlive==true) window.Show(); });
     }
 
-    private void OpenCheckpoints()
+    private void OpenCheckpoints(bool includeHistory=false)
     {
         if (!inMenu || room.IsGuest) return;
         if (checkpoints?.IsAlive == true) checkpoints.Close();
         var builder = CustomUIManager.Window("probably_coop_checkpoints", Loc("resume_run"), "menu")
             .SetSize(540, 440).Center().SetDraggable(true).SetCloseOnEscape()
-            .OnClose(()=>{ if(inMenu && window?.IsAlive==true) window.Show(); });
+            .OnClose(()=>{ CancelCheckpointScan(); if(inMenu && window?.IsAlive==true) window.Show(); });
+        builder.BeginRow(6);
+        builder.AddLabel(Loc("scan_checkpoints_loading")); checkpointStatus=builder.Last;
+        if(!includeHistory)
+            builder.AddButton(Loc("scan_history"),()=>{ checkpoints?.Close(); OpenCheckpoints(true); });
+        builder.End();
         builder.BeginScroll(330);
+        checkpointBuilder=builder;
+        checkpointHistory=includeHistory;
+        checkpointScan=CoopRun.ScanCheckpoints(includeHistory,previews:true).GetEnumerator();
+        checkpointStartFrame=Time.frameCount+1;
+        checkpoints = builder.Show();
+        checkpoints.BringToFront();
+        window?.Hide();
+    }
+
+    private void TickCheckpointScan()
+    {
+        if(checkpointBuilder==null || Time.frameCount<=checkpointStartFrame) return;
+        if(!inMenu || room.IsGuest || checkpoints?.IsAlive!=true)
+        {
+            CancelCheckpointScan();
+            return;
+        }
+        if(!checkpoints.IsVisible) return;
+        var timer=System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            var saves = CoopRun.ListCheckpoints(includeHistory:true);
-            if (saves.Count == 0) builder.AddLabel(Loc("no_checkpoints"));
-            foreach (var checkpoint in saves)
+            int added=0;
+            for(int i=0;i<16 && added<8 && timer.Elapsed.TotalMilliseconds<4;i++)
             {
-                string label=$"{checkpoint.Name} · {Loc("day")} {checkpoint.Day} · {checkpoint.Cash}"+
-                    (checkpoint.Historical ? " · "+Loc("history_checkpoint") : "")+
-                    (checkpoint.NeedsRecovery ? " · "+Loc("recover_checkpoint") : "");
-                builder.AddButton(label, () =>
-                    Resume(checkpoint));
-                if (builder.Last.text != null) builder.Last.text.richText = false;
-                builder.Last.SetInteractable(checkpoint.HasActors);
-                builder.Last.SetTooltip(checkpoint.HasActors ? checkpoint.SavedAt.ToString("yyyy-MM-dd HH:mm")+
-                    (checkpoint.NeedsRecovery ? "\n"+Loc(checkpoint.Historical ? "recover_checkpoint_history" :
-                        checkpoint.StoredSlot!=checkpoint.Slot ? "recover_checkpoint_copy" : "recover_checkpoint_register") : "") :
-                    Loc("incompatible_checkpoint")+"\n"+checkpoint.UnavailableReason);
+                if(!checkpointScan.MoveNext())
+                {
+                    if(checkpointRows.Count==0) checkpointBuilder.AddLabel(Loc("no_checkpoints"));
+                    checkpointStatus.SetText(Loc(checkpointHistory ? "history_scan_complete" : "history_scan_deferred"));
+                    CancelCheckpointScan();
+                    return;
+                }
+                var checkpoint=checkpointScan.Current;
+                if(checkpoint==null) continue;
+                int row=checkpointRows.BinarySearch(checkpoint,newestCheckpointFirst);
+                if(row<0) row=~row;
+                AddCheckpointRow(checkpointBuilder,checkpoint);
+                checkpointBuilder.Last.root.transform.SetSiblingIndex(row);
+                checkpointRows.Insert(row,checkpoint);
+                added++;
             }
         }
         catch (Exception ex)
         {
             Debug.LogWarning($"[probably_coop] could not list checkpoints: {ex.Message}");
-            builder.AddLabel(Loc("checkpoint_unavailable"));
+            checkpointStatus.SetText(Loc("checkpoint_unavailable"));
+            CancelCheckpointScan();
         }
-        builder.End();
-        checkpoints = builder.Show();
-        checkpoints.BringToFront();
-        window?.Hide();
+    }
+
+    private void CancelCheckpointScan()
+    {
+        checkpointScan?.Dispose();
+        checkpointScan=null;
+        checkpointBuilder=null;
+        checkpointRows.Clear();
+    }
+
+    private void AddCheckpointRow(CustomUIBuilder builder,CoopRun.Checkpoint checkpoint)
+    {
+        string label=$"{checkpoint.Name} · {Loc("day")} {checkpoint.Day} · {checkpoint.Cash}"+
+            (checkpoint.Historical ? " · "+Loc("history_checkpoint") : "")+
+            (checkpoint.NeedsRecovery ? " · "+Loc("recover_checkpoint") : "");
+        builder.AddButton(label,()=>Resume(checkpoint));
+        if(builder.Last.text!=null) builder.Last.text.richText=false;
+        builder.Last.SetInteractable(checkpoint.HasActors);
+        builder.Last.SetTooltip(checkpoint.HasActors ? checkpoint.SavedAt.ToString("yyyy-MM-dd HH:mm")+
+            (checkpoint.NeedsRecovery ? "\n"+Loc(checkpoint.Historical ? "recover_checkpoint_history" :
+                checkpoint.StoredSlot!=checkpoint.Slot ? "recover_checkpoint_copy" : "recover_checkpoint_register") : "") :
+            Loc("incompatible_checkpoint")+"\n"+checkpoint.UnavailableReason);
     }
 
     private void OpenSoloCheckpoints()

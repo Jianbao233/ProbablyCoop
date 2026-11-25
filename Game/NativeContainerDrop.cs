@@ -13,7 +13,7 @@ internal sealed partial class NativeWorld
         if(gesture==null || !ReferenceEquals(gesture,releasing) || gesture.Group || count<1 ||
             !ReferenceEquals(item,gesture.Items[0]) || ReferenceEquals(item,target) ||
             !TryData(item,out var source) || !TryData(target,out var container)) return false;
-        bool insert=target.child!=null && GeneralHelper.MayPlayerInsertInto(target);
+        bool insert=target.child!=null && !NativeContainerAccess.IsSealed(target) && GeneralHelper.MayPlayerInsertInto(target);
         bool stack=target.MayStack(item);
         int tool=(int?)targetQueries[model.ReplicaId(item).ToString()]?[model.ReplicaId(target).ToString()] ?? 0;
         if(!insert && !stack && TargetEditor(item)!=null)
@@ -45,7 +45,7 @@ internal sealed partial class NativeWorld
             return (ushort)ShopResult.Unavailable;
 
         int remaining=count;
-        bool insert=GeneralHelper.MayPlayerInsertInto(target) && target.MayHaveValidInventorySlot(item);
+        bool insert=!NativeContainerAccess.IsSealed(target) && GeneralHelper.MayPlayerInsertInto(target) && target.MayHaveValidInventorySlot(item);
         if(insert) remaining=GraphUtils.TryAcceptAll(target,item,count);
         if(remaining>0 && item.parentInventory!=null && target.MayStack(item))
             remaining-=target.GetStackSlot(item)?.TryAcceptOnce(remaining) ?? 0;

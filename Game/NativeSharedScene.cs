@@ -353,7 +353,7 @@ internal sealed partial class NativeWorld
             StoreUIManager.Instance.clientCounter.SetActive(location==null);
             StoreUIManager.Instance.storeCreditDisplay.creditDisplayText.gameObject
                 .SetActive(location==null || location is DrJacksonLocation);
-            foreach(string name in new[]{"trashInvWindow","faucetWindow","drainInvWindow","cassettePlayerWindow","showcaseWindow","docInvWindow","invWindow","vendingMachineWindow","vendingFountainWindow"})
+            foreach(string name in new[]{"trashInvWindow","drainInvWindow","cassettePlayerWindow","showcaseWindow","docInvWindow","invWindow","vendingMachineWindow","vendingFountainWindow"})
             {
                 var window=AccessTools.Property(typeof(EmporiumEntry),name)?.GetValue(e) as PixelWindow;
                 window?.rectTransform.gameObject.SetActive(location==null);

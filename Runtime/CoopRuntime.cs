@@ -195,8 +195,10 @@ internal sealed class CoopRuntime : MonoBehaviour
 
     private void FailGuestSynchronization(Exception error=null)
     {
-        Debug.LogWarning("[probably_coop] guest synchronization failed; room can be rejoined. "+error);
-        panel.JoinFailed(error as ModExtensionJoinException);
+        var native=room.Session?.Native;
+        Debug.LogWarning($"[probably_coop] guest synchronization failed; room can be rejoined. " +
+            $"reason={native?.FailureReason} receivedRevision={native?.Revision} fullRevision={native?.FullRevision} {error}");
+        panel.JoinFailed(error as ModExtensionJoinException,native?.FailureReason ?? NativeSyncFailure.None,error!=null);
         partnerJoin.Dispose();
         if(guest!=null || NativeGuest.Active) LeaveGuest("sync_failed");
         else room.Leave("sync_failed");

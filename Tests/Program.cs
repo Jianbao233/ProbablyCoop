@@ -224,6 +224,24 @@ Check(displayed.Count == 1 && displayed[0].X == 456 && displayed[0].Y == 789 &&
 Check(!guest.Receive(new byte[Wire.MaxSize + 1], false, 4) &&
       !guest.Receive(newer.Data.AsSpan(0, 13), true, 4), "malformed lengths");
 
+guest.SetPointerName("  伙伴\nA  ");
+var profile = toHost.Dequeue();
+Check(!host.Receive(profile.Data, true, 4) && host.Receive(profile.Data, false, 4) &&
+      host.RemotePointerName == "伙伴A" && !host.Receive(profile.Data, false, 4), "pointer name channel, display and replay");
+guest.SetPointerName("  伙伴\nA  ");
+Check(toHost.Count == 0, "unchanged pointer name is not resent");
+Check(guest.SendItemPing(uint.MaxValue, 17, 4) && !guest.SendItemPing(9, 17, 4.1),
+    "item ping identity, context and rate limit");
+var itemPing = toHost.Dequeue();
+Check(host.Receive(itemPing.Data, false, 4) && host.RemoteItemPing == (1UL, 17UL, uint.MaxValue) &&
+      !host.Receive(itemPing.Data, false, 4), "item ping is reliable, bounded and processed once");
+Check(!PointerProfile.TryRead(new byte[]{0xff},out _) &&
+      !PointerProfile.TryRead(PointerProfile.Encode("<b>提示"),out _) &&
+      !PointerProfile.TryRead(new byte[PointerProfile.NameBytes+1],out _), "pointer profile rejects invalid text");
+guest.SetPointerName("");
+Drain(4);
+Check(host.RemotePointerName=="", "clearing name restores the transport fallback");
+
 host.Tick(17);
 guest.Tick(17);
 Check(host.State == LinkState.TimedOut && guest.State == LinkState.TimedOut, "heartbeat timeout");
@@ -231,6 +249,9 @@ Connect(18);
 Check(guest.Revision == 3 && guest.Tiles == 56, "new peer epoch gets host snapshot");
 Check(!host.Receive(request.Data, false, 18.2), "previous epoch request denied");
 Check(!guest.Receive(newer.Data, true, 18.2), "previous epoch cursor denied");
+Check(!host.Receive(itemPing.Data, false, 18.2) && host.RemoteItemPing.Serial==0 &&
+      host.RemotePointerName=="", "old room epoch cannot replay pointer settings or item pings");
+Console.WriteLine("PASS pointer profile and item pings: Unicode, limits, rate, duplicates, clearing and reconnect");
 for (double now = 19; now <= 619; now++)
 {
     host.Tick(now);

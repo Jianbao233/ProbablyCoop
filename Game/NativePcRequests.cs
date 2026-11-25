@@ -104,10 +104,12 @@ internal sealed partial class NativeWorld
     internal static void ApplyMarketplaceScreen()
     {
         var screen = StoreUIManager.Instance?.pcScreenObject;
-        if (screen == null || !PlayerStore.Instance.networkUpgrade.TryGetValue("MARKETPLACE_REQUESTS", out var upgrade) ||
-            screen.activeSelf == upgrade.IsUnlocked()) return;
-        screen.SetActive(upgrade.IsUnlocked());
-        if (StorePoster.Instance is { } poster && poster != null && !poster.isPulled)
+        if (screen == null || !PlayerStore.IsInstanceExist()) return;
+        bool visible=MapUIManager.Instance?.IsOutside==false &&
+            PlayerStore.Instance.networkUpgrade.TryGetValue("MARKETPLACE_REQUESTS", out var upgrade) && upgrade.IsUnlocked();
+        if(screen.activeSelf==visible) return;
+        screen.SetActive(visible);
+        if (visible && StorePoster.Instance is { } poster && poster != null && !poster.isPulled)
             poster.PullDown(mute: true);
     }
 }

@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>ProbablyCoop</AssemblyName>
     <RootNamespace>ProbablyCoop</RootNamespace>
-    <Version>0.3.2</Version>
+    <Version>0.3.3</Version>
 
     <ModId>probably_coop</ModId>
     <OutDir>$(MSBuildThisFileDirectory)torelease\ProbablyCoop\</OutDir>

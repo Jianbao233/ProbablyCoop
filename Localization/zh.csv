@@ -221,3 +221,35 @@ diff_guest_only,{0} {1}：仅合伙人启用
 diff_version,{0}：房主 {1}，合伙人 {2}
 diff_adapter,{0} 的联机适配声明不一致，房主 {1}，合伙人 {2}
 diff_more,另有 {0} 项
+pointer_settings,玩家名称与提示
+pointer_settings_save,保存玩家名称
+settings_pointer_name,玩家名称
+settings_pointer_name_help,合伙人会在你的指针旁看到这个名称。留空使用 Steam 名称。
+settings_ping_binding,标记物品按键
+settings_ping_binding_help,指向物品并按下此键即可提醒合伙人。默认鼠标中键。
+settings_sync_notices,显示联机同步提示
+settings_sync_notices_help,显示普通的操作等待与同步重试提示。入房错误和连接记录始终留在联机面板。
+item_ping_notice,合伙人标记了 {0}
+player_name,玩家名称
+player_name_input,输入玩家名称（默认使用 Steam 名称）
+change_player_name,更改玩家名称
+player_name_changed,玩家名称已更新
+contact_title,联系作者
+contact_qq_group,QQ群 1132567943
+contact_author_qq,作者QQ 1600597561
+contact_discord,Discord jianbao1954（不常在线）
+contact_bilibili,B站主页（复制链接）
+contact_qq_group_copied,QQ群号已复制
+contact_author_qq_copied,作者QQ已复制
+contact_discord_copied,Discord 用户名已复制
+contact_bilibili_copied,B站链接已复制
+history_scan_deferred,历史检查点暂不扫描
+history_scan_complete,已包含历史检查点
+scan_history,扫描历史档
+scan_checkpoints_loading,正在查找合作档…
+sync_fail_host_capture,房主读取店铺状态失败
+sync_fail_host_encode,房主打包店铺状态失败
+sync_fail_guest_format,客机收到的检查点格式无效
+sync_fail_guest_budget,客机收到的检查点超出接收上限
+sync_fail_guest_apply,客机解码或应用店铺状态失败
+sync_previous_progress,上次记录的进度 {0}

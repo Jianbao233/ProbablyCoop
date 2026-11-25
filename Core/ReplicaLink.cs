@@ -3,6 +3,11 @@ using System.Buffers.Binary;
 
 namespace ProbablyCoop.Core;
 
+internal enum NativeSyncFailure : ushort
+{
+    None, HostCapture, HostEncode, GuestPageFormat, GuestTransferBudget
+}
+
 /// <summary>Bounded, atomic snapshots and exactly-once requests inside an authenticated
 /// CoopSession epoch. Large snapshots never increase the transport datagram limit.</summary>
 internal sealed partial class ReplicaLink
@@ -46,6 +51,7 @@ internal sealed partial class ReplicaLink
     internal byte[] State => Snapshot?.Single;
     internal byte[] FullState => FullSnapshot?.Single;
     internal bool SynchronizationFailed { get; private set; }
+    internal NativeSyncFailure FailureReason { get; private set; }
     private double nextFailureNotice;
     internal (int Pages, int CompletePages, int PageBytes, int ReceivedPageBytes, int ReceivedBytes) Transfer =>
         pages == null ? (0, 0, 0, 0, 0) :
@@ -99,7 +105,7 @@ internal sealed partial class ReplicaLink
         nextProgress=0; progressed=false; gap=-1; sentThrough=0; wantProjection=appliedCommand=0;
         ResultFromProjection=false;
         RepairsSent=GapsRequested=0;
-        SynchronizationFailed=false; nextFailureNotice=0; sendingPage=0;
+        SynchronizationFailed=false; FailureReason=NativeSyncFailure.None; nextFailureNotice=0; sendingPage=0;
     }
 
     internal void Publish(byte[] value)
@@ -138,7 +144,7 @@ internal sealed partial class ReplicaLink
         {
             if (host && now >= nextFailureNotice)
             {
-                send(Kind.NativeSyncFailed,0,Math.Max(Revision,outgoingRevision),0,null);
+                send(Kind.NativeSyncFailed,0,Math.Max(Revision,outgoingRevision),(ushort)FailureReason,null);
                 nextFailureNotice=now+0.5;
             }
             return;
@@ -206,10 +212,11 @@ internal sealed partial class ReplicaLink
     }
     private static int ChunkCount(byte[] page) => (page.Length+ChunkSize-1)/ChunkSize;
     private void StartPage() { nextChunk=sentThrough=0; gap=-1; retry=0; }
-    internal void FailSynchronization()
+    internal void FailSynchronization(NativeSyncFailure reason)
     {
         if(!host || SynchronizationFailed) return;
         SynchronizationFailed=true;
+        FailureReason=reason;
         outgoing=latest=null;
     }
     internal bool ProjectionApplied(ulong through,ushort result)
@@ -272,6 +279,7 @@ internal sealed partial class ReplicaLink
         if (packet.Kind == Kind.NativeSyncFailed && !host && packet.Revision>=Revision)
         {
             SynchronizationFailed=true;
+            FailureReason=(NativeSyncFailure)packet.Value;
             ClearAssembly();
             return true;
         }
@@ -372,7 +380,7 @@ internal sealed partial class ReplicaLink
         if (packet.Revision!=assemblingRevision || pageCount!=pages.Length || page>receivingPage) return false;
         if (page<receivingPage)
         { send(Kind.NativeAck,0,assemblingRevision,(ushort)page,null); return true; }
-        if (length>NativeSnapshotFrame.MaxPackedBytes-completeBytes) return RejectAssembly();
+        if (length>NativeSnapshotFrame.MaxPackedBytes-completeBytes) return RejectAssembly(NativeSyncFailure.GuestTransferBudget);
         if (assembly==null) { assembly=new byte[length]; chunks=new bool[ChunkCount(assembly)]; }
         if (assembly.Length!=length) return false;
         if (!chunks[packet.Value])
@@ -382,7 +390,7 @@ internal sealed partial class ReplicaLink
         }
         if (received == chunks.Length)
         {
-            if(pageCount>1 && !NativeRecordFrame.IsFull(assembly)) return RejectAssembly();
+            if(pageCount>1 && !NativeRecordFrame.IsFull(assembly)) return RejectAssembly(NativeSyncFailure.GuestPageFormat);
             if(pageCount==1 && NativeRecordFrame.IsDelta(assembly) && !NativeRecordFrame.HasBase(assembly,FullRevision))
             {
                 ClearAssembly();
@@ -403,10 +411,11 @@ internal sealed partial class ReplicaLink
         }
         return true;
     }
-    private bool RejectAssembly()
+    private bool RejectAssembly(NativeSyncFailure reason)
     {
         ClearAssembly();
         SynchronizationFailed=true;
+        FailureReason=reason;
         return false;
     }
     private void ClearAssembly()

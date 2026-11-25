@@ -16,6 +16,7 @@ internal sealed partial class NativeWorld
     private double secondsPerTicket=0.00018;
     private readonly List<TooltipTicket> tooltipTickets=new List<TooltipTicket>();
     private readonly Dictionary<GameItemElement,TooltipSample> prefetched=new Dictionary<GameItemElement,TooltipSample>();
+    private readonly HashSet<string> failedTooltipKinds=new HashSet<string>(StringComparer.Ordinal);
     // A dense nested stash can contain hundreds of descriptions, even when
     // only a few items are visible. Keep the last native text for each item
     // and refresh it in small slices; the current remote read stays live.
@@ -87,12 +88,29 @@ internal sealed partial class NativeWorld
             ReferenceEquals(root,currentRoot) && ReferenceEquals(parent,item.parentInventory) &&
             count==item.unitCount && owned==GeneralHelper.IsItemOwned(item);
     }
-    private static (RichText Normal,RichText Advanced) EvaluateTooltip(GameItemElement item)
+    private (RichText Normal,RichText Advanced) EvaluateTooltip(GameItemElement item)
     {
-        using var actorScope=Host?.EnterPartnerOperation();
+        using var actorScope=EnterPartnerOperation();
         using var timer=NativePerformance.Measure("host.tooltip_prepare");
         using var timing=NativeTooltipTiming.Begin();
-        return (item.GetTooltip(),item.GetTooltipAdvanced());
+        // Native and Mod tooltips are presentation. A missing description for
+        // one object must not abort the shop snapshot or its focused read.
+        var normal=TryEvaluateTooltip(item,false);
+        var advanced=TryEvaluateTooltip(item,true);
+        normal ??= advanced ?? new RichText(item.identifier ?? "", "", "", "", "", 0, 0, false);
+        return (normal,advanced ?? normal);
+    }
+
+    private RichText TryEvaluateTooltip(GameItemElement item,bool advanced)
+    {
+        try { return advanced ? item.GetTooltipAdvanced() : item.GetTooltip(); }
+        catch(Exception error)
+        {
+            string kind=item.identifier+"/"+(advanced ? "advanced" : "normal");
+            if(failedTooltipKinds.Count<64 && failedTooltipKinds.Add(kind))
+                UnityEngine.Debug.LogWarning($"[probably_coop] item description unavailable ({kind}); inventory sync continues. {error}");
+            return null;
+        }
     }
     private bool Focused(GameItem item) => remoteHover!=0 && Time.realtimeSinceStartupAsDouble<viewsExpiry && model.Id(item)==remoteHover;
     private (RichText Normal,RichText Advanced) ReadDenseTooltip(TooltipTicket ticket)

@@ -50,6 +50,7 @@ internal sealed partial class NativeWorld
     private bool closed;
     private bool peerConnected;
     private bool pagedCheckpoint;
+    private bool encodingUsesBasis;
     private ulong peerGeneration,encodingGeneration;
     private NativeCaptureComparison.Bucket encodingComparison;
     private sealed class EncodedSnapshot
@@ -195,7 +196,7 @@ internal sealed partial class NativeWorld
             {
                 if(packed.Error!=null)
                 {
-                    FailHostSynchronization(connection,"encode",packed.Error);
+                    RecoverHostSynchronization(connection,NativeSyncFailure.HostEncode,packed.Error,encodingUsesBasis);
                     return;
                 }
                 ConfirmCapturedRecords(packed);
@@ -240,6 +241,7 @@ internal sealed partial class NativeWorld
         }
         if(Time.realtimeSinceStartupAsDouble<nextCapture) { PrefetchTooltipReads(); return; }
         nextCapture=Time.realtimeSinceStartupAsDouble+0.25;
+        var basis=connection.NeedsFull || connection.Revision-authorityBaseRevision>=96 ? null : authorityBasis;
         JObject snapshot;
         ShopView shopView; byte[] shopBytes;
         var comparison=NativeCaptureComparison.Current;
@@ -267,7 +269,7 @@ internal sealed partial class NativeWorld
         }
         catch(Exception error)
         {
-            FailHostSynchronization(connection,"capture",error);
+            RecoverHostSynchronization(connection,NativeSyncFailure.HostCapture,error,basis!=null);
             return;
         }
         finally { captureTooltips.Clear(); prefetched.Clear(); capturedControlOwner=null; capturedControlOwnerProof=null; }
@@ -285,16 +287,24 @@ internal sealed partial class NativeWorld
         encodingGeneration=peerGeneration;
         encodingStamp=connection.CaptureStamp();
         var cancellation=decodeLifetime.Token;
-        var basis=connection.NeedsFull || connection.Revision-authorityBaseRevision>=96 ? null : authorityBasis;
+        encodingUsesBasis=basis!=null;
         ulong baseRevision=authorityBaseRevision;
         var auditBasis=NativeBackgroundQa.Enabled && verifiedRecordPublish<3 ? connection.FullState : null;
         bool preferPages=pagedCheckpoint;
         encoding=Task.Run(()=>EncodeSnapshot(snapshot,fields,cancellation,basis,baseRevision,auditBasis,preferPages));
     }
-    private static void FailHostSynchronization(ReplicaLink connection,string phase,Exception error)
+    private void RecoverHostSynchronization(ReplicaLink connection,NativeSyncFailure phase,Exception error,bool usedBasis)
     {
+        if(usedBasis)
+        {
+            Debug.LogWarning($"[probably_coop] incremental snapshot failed during {phase} at revision {connection.Revision}; retrying with a complete checkpoint. {error}");
+            authorityBasis=null;
+            ResetCaptureChanges();
+            nextCapture=0;
+            return;
+        }
         Debug.LogWarning($"[probably_coop] guest synchronization failed during host {phase}. Host shop and room retained. {error}");
-        connection.FailSynchronization();
+        connection.FailSynchronization(phase);
     }
     // Install command handlers before transport polling. Full capture runs
     // after polling, so it observes those commands in this same Unity tick.
@@ -696,10 +706,14 @@ internal sealed partial class NativeWorld
         // after business and item hydration, never from guest bootstrap defaults.
         bool tap=EmporiumEntry.IsWaterTapUnlocked();
         string scene=MapUIManager.Instance.Current?.Id ?? "";
-        if(e.faucet!=null && (presentedTap!=tap || presentedFixtureScene!=scene || !ReferenceEquals(presentedFaucet,e.faucet)))
+        var faucetView=e.faucetWindow?.rectTransform;
+        bool showTap=inStore && tap;
+        if(e.faucet!=null && faucetView!=null &&
+            (presentedTap!=tap || presentedFixtureScene!=scene || !ReferenceEquals(presentedFaucet,e.faucet) ||
+            faucetView.gameObject.activeSelf!=showTap))
         {
-            e.LoadFaucetUpdate(PlayerStore.Instance);
-            e.faucetWindow.rectTransform.gameObject.SetActive(inStore && tap);
+            e.ApplyFaucetState(tap);
+            if(!showTap && faucetView.gameObject.activeSelf) e.faucetWindow.Hide();
             presentedTap=tap; presentedFixtureScene=scene; presentedFaucet=e.faucet;
         }
         StoreVendingMachine.Instance.gameObject.SetActive(inStore && e.vendingMachineElement.childItem!=null);

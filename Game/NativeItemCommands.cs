@@ -152,7 +152,8 @@ internal sealed partial class NativeWorld
                 if((string)command["contents"]!=ContentsProof(item)) return (ushort)ShopResult.Stale;
                 ItemPinHelper.SetPinned(item,(bool)command["value"]); break;
             case "unload":
-                if(item.contentWindow==null || item.contentWindow.isLocked || !GeneralHelper.IsItemOwned(item) || item.IsTag("IS_UNLOAD_DISABLED_TAG")) return (ushort)ShopResult.Unavailable;
+                if(item.contentWindow==null || item.contentWindow.isLocked || NativeContainerAccess.IsSealed(item) ||
+                    !GeneralHelper.IsItemOwned(item) || item.IsTag("IS_UNLOAD_DISABLED_TAG")) return (ushort)ShopResult.Unavailable;
                 if((string)command["contents"]!=ContentsProof(item)) return (ushort)ShopResult.Stale;
                 item.TryUnloadAll((bool)command["value"]); break;
             case "activate":
@@ -181,7 +182,7 @@ internal sealed partial class NativeWorld
     }
     private static bool Accessible(GameInventory inventory)
     {
-        if(inventory==null) return false;
+        if(inventory==null || NativeContainerAccess.BehindLock(inventory)) return false;
         var world=NativeGuest.Active ? Guest : Host;
         if(world?.HasActorProjection==true)
         {

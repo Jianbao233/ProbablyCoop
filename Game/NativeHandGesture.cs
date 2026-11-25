@@ -42,7 +42,7 @@ internal sealed partial class NativeWorld
     {
         TickGuestHand();
         if (gesture == null && handActions.Count < PendingActions.Capacity) return Ready;
-        CommandNotice("待确认的移动过多，请稍后再试。");
+        CommandNotice("待确认的移动过多，请稍后再试。",sync:true);
         return false;
     }
 
@@ -184,7 +184,7 @@ internal sealed partial class NativeWorld
             ShopResult.Busy=>"drop_busy",
             ShopResult.Unavailable=>"drop_unavailable",
             _=>"drop_stale"
-        }));
+        }),sync:refusal is not (ShopResult.NoSpace or ShopResult.Busy or ShopResult.Unavailable));
     }
 
     private void TickGuestHand()

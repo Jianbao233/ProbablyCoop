@@ -6,7 +6,8 @@ namespace ProbablyCoop.Core;
 internal enum Kind : byte
 {
     Hello = 1, Welcome, Ready, State, ChangeTile, Ping, Pong, Cursor, Reject, ShopState, ShopCommand, ShopAck,
-    NativeChunk, NativeAck, NativeCommand, NativeReply, NativePresence, NativeTooltip, NativeProgress, NativeNeedFull, NativeSyncFailed, JoinPending
+    NativeChunk, NativeAck, NativeCommand, NativeReply, NativePresence, NativeTooltip, NativeProgress, NativeNeedFull, NativeSyncFailed, JoinPending,
+    PointerName, ItemPing
 }
 
 internal readonly struct Packet
@@ -77,7 +78,7 @@ internal static class Wire
         packet = default;
         if (bytes.Length < HeaderSize || bytes.Length > MaxSize ||
             BinaryPrimitives.ReadUInt32LittleEndian(bytes) != Magic || bytes[4] != Version ||
-            bytes[7] != 0 || bytes[5] < (byte)Kind.Hello || bytes[5] > (byte)Kind.JoinPending) return false;
+            bytes[7] != 0 || bytes[5] < (byte)Kind.Hello || bytes[5] > (byte)Kind.ItemPing) return false;
         var kind = (Kind)bytes[5];
         bool handshake = kind is Kind.Hello or Kind.Welcome;
         int bodyLength = bytes.Length - HeaderSize;
@@ -91,6 +92,8 @@ internal static class Wire
             Kind.NativeCommand => bodyLength == 0 || bodyLength > ReplicaLink.MaxCommand,
             Kind.NativePresence => !ReplicaLink.ValidPresence(bytes.Slice(HeaderSize)),
             Kind.NativeTooltip => bodyLength<1 || bodyLength>ReplicaLink.MaxTooltip,
+            Kind.PointerName => bodyLength>PointerProfile.NameBytes,
+            Kind.ItemPing => bodyLength!=sizeof(uint),
             _ => bodyLength != 0
         })) return false;
 
@@ -119,10 +122,13 @@ internal static class Wire
         if (kind == Kind.NativeCommand && (serial == 0 || a != 0)) return false;
         if (kind == Kind.NativeReply && (serial == 0 || a > (ushort)ShopResult.Failed)) return false;
         if (kind == Kind.NativeAck && (a >= NativeSnapshotFrame.MaxPages || serial != 0)) return false;
-        if (kind == Kind.NativeSyncFailed && (a != 0 || serial != 0)) return false;
+        if (kind == Kind.NativeSyncFailed && (a > (ushort)NativeSyncFailure.HostEncode || serial != 0)) return false;
         if (kind == Kind.NativeNeedFull && (a!=0 || serial!=0 || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48))==0)) return false;
         if (kind == Kind.NativePresence && (a != 0 || serial == 0)) return false;
         if (kind == Kind.NativeTooltip && (a!=0 || serial==0 || serial>uint.MaxValue || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48))==0)) return false;
+        if (kind == Kind.PointerName && (a!=0 || serial==0 || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48))!=0)) return false;
+        if (kind == Kind.ItemPing && (a!=0 || serial==0 || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48))==0 ||
+            BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(HeaderSize))==0)) return false;
         if (kind==Kind.NativeProgress && (serial==ulong.MaxValue || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48))!=serial+1 ||
             (a & ReplicaLink.ChunkIndexMask)>=(ReplicaLink.MaxBytes+ReplicaLink.ChunkSize-1)/ReplicaLink.ChunkSize)) return false;
         if (kind == Kind.ShopAck && (a != 0 || BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48)) == 0))
@@ -131,7 +137,7 @@ internal static class Wire
         packet = new Packet(kind, new Guid(bytes.Slice(8, 16)), new Guid(bytes.Slice(24, 16)), serial,
             BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(48)), kind == Kind.Cursor ? (ushort)0 : a,
             kind == Kind.Cursor ? a : (ushort)0, b, flags, handshake ? bytes.Slice(HeaderSize).ToArray() : null,
-            kind is Kind.Cursor or Kind.ShopState or Kind.ShopCommand or Kind.NativeChunk or Kind.NativeCommand or Kind.NativePresence or Kind.NativeTooltip ? bytes.Slice(HeaderSize).ToArray() : null);
+            !handshake && (bodyLength>0 || kind is Kind.PointerName or Kind.Cursor) ? bytes.Slice(HeaderSize).ToArray() : null);
         return true;
     }
 }

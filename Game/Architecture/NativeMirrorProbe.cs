@@ -661,6 +661,8 @@ internal static partial class NativeMirrorProbe
             var examine=ReadWindow(data["examine"] as JObject);
             if(!ReferenceEquals(item.examineWindow,examine)) item.SetExamineWindow(examine);
         }
+        if(NativeGuest.Active && item.contentWindow!=null && NativeContainerAccess.IsSealed(item))
+            NativeContainerAccess.HideContents(item);
         // ValidateSelect resets drag preview/background transforms. A remote
         // machine label or tooltip update alone must not reset the local hand.
         if(fieldsChanged || stateChanged || modifiedChanged || shapeChanged || positionChanged || typesChanged || featuresChanged || modifiersChanged)
