@@ -16,6 +16,7 @@ internal sealed class CoopOpeningLobby : IDisposable
 {
     internal const string Marker = "openingDraftV1";
     private ReplicaLink link;
+    private RoomSelector openingRoom;
     private ReplicaLink.Stamp stamp;
     private ulong seenRevision;
     private Guid id;
@@ -42,6 +43,7 @@ internal sealed class CoopOpeningLobby : IDisposable
         _ = NativeActorPartnerSetup.ValidateSelection(data.startingPerks.Select(perk => perk.id), fullOpening: true);
         Dispose();
         Bind(room.Session.Native, authority: true);
+        openingRoom = room;
         controller = menu;
         request = data;
         hostScenario = data.startScenarioId;
@@ -177,8 +179,10 @@ internal sealed class CoopOpeningLobby : IDisposable
         if (validated == null || !stamp.IsCurrent(link) || request != NewGameData.Instance) return;
         var menu = controller;
         var opening = validated;
+        var room = openingRoom;
         Dispose();
         NativeOpening.Arm(opening);
+        room.AnnounceSceneLoad();
         menu.OnPerkFinishedClick();
     }
 
@@ -282,6 +286,7 @@ internal sealed class CoopOpeningLobby : IDisposable
         validated = null;
         request = null;
         controller = null;
+        openingRoom = null;
         selectedScenario = hostScenario = null;
         selectedPerks = null;
         weeks = OpeningRentPlan.DefaultWeeks;

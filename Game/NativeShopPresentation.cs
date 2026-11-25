@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using HarmonyLib;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -12,12 +13,9 @@ namespace ProbablyCoop;
 // snapshot as its baseline and resumes the pose without replaying old cues.
 internal readonly struct NativeShopPresentation
 {
-    private static readonly AccessTools.FieldRef<StoreShutterButton,bool> Closed =
-        AccessTools.FieldRefAccess<StoreShutterButton,bool>("isClosed");
-    private static readonly AccessTools.FieldRef<StoreShutterButton,float> Elapsed =
-        AccessTools.FieldRefAccess<StoreShutterButton,float>("elapsedTime");
-    private static readonly AccessTools.FieldRef<StoreShutterButton,float> Duration =
-        AccessTools.FieldRefAccess<StoreShutterButton,float>("duration");
+    private static readonly FieldInfo Closed = AccessTools.Field(typeof(StoreShutterButton),"isClosed");
+    private static readonly FieldInfo Elapsed = AccessTools.Field(typeof(StoreShutterButton),"elapsedTime");
+    private static readonly FieldInfo Duration = AccessTools.Field(typeof(StoreShutterButton),"duration");
 
     internal readonly ulong Bell, Shutter;
     internal readonly bool ShutterClosed, Animated;
@@ -32,7 +30,7 @@ internal readonly struct NativeShopPresentation
     {
         var door=StoreShutterButton.Instance;
         return new JObject {
-            ["bell"]=bell, ["shutter"]=shutter, ["closed"]=door==null || Closed(door),
+            ["bell"]=bell, ["shutter"]=shutter, ["closed"]=door==null || (bool)Closed.GetValue(door),
             ["animated"]=animated, ["openFraction"]=door==null ? 0 : Fraction(door)
         };
     }
@@ -66,11 +64,11 @@ internal readonly struct NativeShopPresentation
         float fraction=play ? Fraction(door) : OpenFraction;
         if(play)
         {
-            Closed(door)=!ShutterClosed;
+            Closed.SetValue(door,!ShutterClosed);
             door.ToggleShutterDoor();
         }
-        Closed(door)=ShutterClosed;
-        Elapsed(door)=Duration(door)*(ShutterClosed ? 1-fraction : fraction);
+        Closed.SetValue(door,ShutterClosed);
+        Elapsed.SetValue(door,(float)Duration.GetValue(door)*(ShutterClosed ? 1-fraction : fraction));
         door.shutterGameObject.transform.position=Vector3.Lerp(door.startPosition,door.endPosition,fraction);
         door.blockerGameObject.transform.localPosition=Vector3.Lerp(door.blockerStartPosition,door.blockerEndPosition,fraction);
         door.blockerMaskObject.gameObject.SetActive(ShutterClosed || fraction<1);

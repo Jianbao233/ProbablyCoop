@@ -15,7 +15,23 @@ terminal_transport_steam,Steam P2P
 terminal_transport_ipv4,IPv4 direct
 terminal_transport_local,Local loopback
 terminal_transport_none,No transport
-terminal_packets,Packets · sent {0:N0} · received {1:N0}
+terminal_packets,Co-op messages · sent {0:N0} · received {1:N0}
+terminal_network_probes,{0} · {1}
+terminal_latency,Game probe round-trip time {0} ms
+terminal_steam_latency,Steam round-trip time {0} ms
+terminal_probe_loss,Game probe timeouts {0:N1}% ({1} samples)
+terminal_probe_pending,Waiting for usable game probe results
+terminal_local_stall,Latest local network processing stall · {0:N0} ms
+terminal_local_probe_stall,{0:N0} recent probes affected by a local stall · excluded from latency and timeout rate
+terminal_network_rates,Co-op message traffic · upload {0:N1} KiB/s · download {1:N1} KiB/s
+terminal_udp_rates,UDP traffic · upload {0:N1} KiB/s · download {1:N1} KiB/s
+terminal_steam_delivery,Steam packets missing or out of order · upload {0} · download {1}
+terminal_steam_capacity,Steam estimated upload capacity · {0:N1} KiB/s
+shop_room_controls,Room code and controls
+world_reload_button,Load co-op save in this room
+world_reload_confirm,"Load {0} on day {1}? Unsaved progress will be lost. The room stays open and a connected partner will sync to the loaded save."
+world_reload_busy,You cannot load right now. Put down any held items and finish the current action or end-of-day settlement.
+world_reload_sync,The host is loading a co-op save. You will return to the shop when it has synced.
 terminal_revision,World revision · {0:N0}
 terminal_batches,Checkpoint · {0:N0} / {1:N0} batches · {2:N0} KiB
 terminal_no_session,No packet data for the current connection.
@@ -36,7 +52,7 @@ perk_mixed_coop,Personal effects apply to your character. The host's perks gover
 perk_gambling_coop,Gambling addiction persists over time. {0} removes one random addiction. {1} can remove this perk directly. The host's perks govern early lottery access and automatic purchases.
 ipv4_mapping_hint,For frp on the host PC, enter 127.0.0.1 and a fixed port. Forward UDP to that local address and port. A remote guest pastes the original room code and enters the tunnel's public IPv4 and external port.
 udp_port_hint,UDP port (optional)
-mapped_address_hint,Tunnel IPv4:external port (for joining via a tunnel)
+mapped_address_hint,Tunnel public IPv4:port
 udp_listening,IPv4 listening on {0} (UDP)
 status_bad_udp_port,Enter a UDP port from 1 to 65535 or leave it blank for automatic assignment.
 status_udp_port_in_use,That UDP port is already in use. Try a different port.
@@ -63,6 +79,7 @@ approve,Accept
 pending,Waiting for host
 status_idle,Create a room or paste a room code.
 status_android_idle,Enter a room code from the PC host.
+status_android_no_steam,This Android port uses IPv4. Ask for an IPv4 room code.
 status_local_idle,Start a room for a local test guest.
 status_local_waiting,Local room ready. Copy the PSL code for the guest.
 status_local_connected,Local test guest connected.
@@ -85,6 +102,7 @@ resume_joins,Allow join requests
 joins_paused,Guest joins are paused.
 decline_join,Decline
 join_request_notification,A guest requested to join. Open room controls with F7 to respond.
+join_request_notification_touch,A guest requested to join. Open room controls from the Nutrifruit button or the pause menu.
 status_handshake,Checking versions and establishing P2P…
 status_connected,Partner connected.
 status_shop_connected,Connected to the shared shop.
@@ -102,6 +120,7 @@ sync_checking,Data received. Checking join details
 sync_installing,Loading the shop
 sync_ready,Shop ready
 sync_failed,Sync did not finish
+sync_disconnected,Disconnected from the room
 sync_show_log,Show loading log
 sync_hide_log,Hide loading log
 sync_batches_received,Received {0}/{1} batches · {2} KiB

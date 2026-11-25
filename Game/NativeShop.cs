@@ -71,6 +71,7 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     internal bool PendingSettlement => settlement?.Pending == true;
     internal bool BlocksWorldCommands => PendingSettlement || failedMutation ||
         PhaseBlocksWorldCommands(phase);
+    internal bool CanReloadWorld => Active && !BlocksWorldCommands;
     internal static bool PhaseBlocksWorldCommands(ShopDay phase) =>
         phase is ShopDay.Settling or ShopDay.SaveUnverified or ShopDay.Ended;
     internal DaySettlement RecoveryCandidate => phase == ShopDay.SaveUnverified ? settlement : null;
@@ -925,6 +926,7 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         private static bool Prefix(EndOfDayUIManager __instance)
         {
             if (NativeGuest.Active) return false;
+            if (NativeInventoryPilot.ActiveCampaign?.DispatchingNight == true) return true;
             var authority = dayAuthority;
             if (authority?.allowNativeEnd == true) return true;
             if (authority == null || !PlayerStore.IsInstanceExist() || !authority.Matches(PlayerStore.Instance))

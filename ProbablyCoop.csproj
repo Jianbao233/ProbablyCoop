@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>ProbablyCoop</AssemblyName>
     <RootNamespace>ProbablyCoop</RootNamespace>
-    <Version>0.3.6</Version>
+    <Version>0.3.7</Version>
 
     <ModId>probably_coop</ModId>
     <OutDir>$(MSBuildThisFileDirectory)torelease\ProbablyCoop\</OutDir>
@@ -11,6 +11,9 @@
 
   <PropertyGroup Condition="'$(ProbablyCoopGridQa)' == 'true'">
     <DefineConstants>$(DefineConstants);PROBABLY_COOP_GRID_QA</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ProbablyCoopAndroidHostPreview)' == 'true'">
+    <DefineConstants>$(DefineConstants);PROBABLY_COOP_ANDROID_HOST_PREVIEW</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>

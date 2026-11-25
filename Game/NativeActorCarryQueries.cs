@@ -19,40 +19,45 @@ internal static class NativeActorCarryQueries
     {
         internal readonly MethodInfo Method, Consumer;
         internal readonly OpCode[] Arguments;
-        internal Target(Type type,string name,Type[] parameters,MethodInfo consumer,params OpCode[] arguments)
+        internal Target(MethodInfo method,MethodInfo consumer,params OpCode[] arguments)
         {
-            Method=AccessTools.Method(type,name,parameters) ?? throw new MissingMethodException(type.FullName,name);
+            Method=method ?? throw new InvalidDataException("Audited native carry query is missing.");
             Consumer=consumer ?? throw new ArgumentNullException(nameof(consumer));
             Arguments=arguments;
             if(Consumer.GetParameters().Length==0 || Consumer.GetParameters()[0].ParameterType!=typeof(GraphNodeStorage))
                 throw new InvalidDataException("Carry query consumer no longer accepts a graph root.");
         }
     }
-    private static readonly FieldInfo WindowField=AccessTools.Field(typeof(EmporiumEntry),nameof(EmporiumEntry.afterhourWindow));
     private static readonly MethodInfo ResolveMethod=AccessTools.Method(typeof(NativeActorCarryQueries),nameof(SceneRoot));
     private static readonly Lazy<Target[]> Contract=new Lazy<Target[]>(CreateContract);
-    private static readonly Dictionary<short,OpCode> Opcodes=typeof(OpCodes).GetFields(BindingFlags.Public|BindingFlags.Static)
-        .Where(field=>field.FieldType==typeof(OpCode)).Select(field=>(OpCode)field.GetValue(null)).ToDictionary(opcode=>opcode.Value);
+#if PROBABLY_COOP_ANDROID_HOST_PREVIEW
+    private static readonly Lazy<MethodInfo> AndroidAddItems = new(() => typeof(GraphUtils).GetMethods()
+        .Where(method => method.Name == "AddAllChildrenType" && method.IsGenericMethodDefinition &&
+            method.ReturnType == typeof(void) && method.GetGenericArguments().Length == 1)
+        .Select(method => method.MakeGenericMethod(typeof(GameItem)))
+        .SingleOrDefault(method => method.GetParameters().Select(parameter => parameter.ParameterType)
+            .SequenceEqual(new[] { typeof(GraphNodeStorage), typeof(List<GameItem>) })));
+#endif
 
     private static Target[] CreateContract()
     {
         var enumerate=typeof(GraphUtils).GetMethods().Single(method=>method.Name==nameof(GraphUtils.FindAllChildrenType) && method.IsGenericMethodDefinition)
             .MakeGenericMethod(typeof(GameItem));
         return new[] {
-            new Target(typeof(ToolboxHelper),nameof(ToolboxHelper.FindToolboxInReach),Type.EmptyTypes,
+            new Target(AccessTools.Method(typeof(ToolboxHelper),nameof(ToolboxHelper.FindToolboxInReach),Type.EmptyTypes),
                 AccessTools.Method(typeof(ToolboxHelper),"FindToolboxIn",new[]{typeof(GraphNodeStorage)})),
-            new Target(typeof(MachineStorageCoordinator),nameof(MachineStorageCoordinator.FindCoordinatorInReach),Type.EmptyTypes,
+            new Target(AccessTools.Method(typeof(MachineStorageCoordinator),nameof(MachineStorageCoordinator.FindCoordinatorInReach),Type.EmptyTypes),
                 AccessTools.Method(typeof(MachineStorageCoordinator),"FindCoordinatorIn",new[]{typeof(GraphNodeStorage)})),
-            new Target(typeof(GraphUtils),nameof(GraphUtils.EmporiumTryAdd),new[]{typeof(GraphNodeStorage),typeof(GameItem)},
+            new Target(AccessTools.Method(typeof(GraphUtils),nameof(GraphUtils.EmporiumTryAdd),new[]{typeof(GraphNodeStorage),typeof(GameItem)}),
                 AccessTools.Method(typeof(GraphUtils),"TryAddInto",new[]{typeof(GraphNodeStorage),typeof(GameItem)}),OpCodes.Ldarg_1),
-            new Target(typeof(PlayerStore),nameof(PlayerStore.FindAllItem),new[]{typeof(bool)},enumerate,OpCodes.Ldnull,OpCodes.Ldnull),
-            new Target(typeof(EmporiumEntry),nameof(EmporiumEntry.GetAllOwnedItems),new[]{typeof(bool),typeof(bool)},enumerate,OpCodes.Ldnull,OpCodes.Ldnull),
-            new Target(typeof(EmporiumEntry),nameof(EmporiumEntry.GetAllItems),Type.EmptyTypes,enumerate,OpCodes.Ldnull,OpCodes.Ldnull)
+            new Target(AccessTools.Method(typeof(PlayerStore),nameof(PlayerStore.FindAllItem),new[]{typeof(bool)}),enumerate,OpCodes.Ldnull,OpCodes.Ldnull),
+            new Target(AccessTools.Method(typeof(EmporiumEntry),nameof(EmporiumEntry.GetAllOwnedItems),new[]{typeof(bool),typeof(bool)}),enumerate,OpCodes.Ldnull,OpCodes.Ldnull),
+            new Target(AccessTools.Method(typeof(EmporiumEntry),nameof(EmporiumEntry.GetAllItems),Type.EmptyTypes),enumerate,OpCodes.Ldnull,OpCodes.Ldnull)
         };
     }
 
     [HarmonyPrepare]
-    private static bool Prepare() => NativePlatform.SupportsHosting;
+    private static bool Prepare() => NativePlatform.SupportsAuthorityContract;
 
     private static IEnumerable<MethodBase> TargetMethods()
     { VerifyNativeContract(); return Contract.Value.Select(target=>(MethodBase)target.Method); }
@@ -60,49 +65,42 @@ internal static class NativeActorCarryQueries
     internal static int VerifyNativeContract()
     {
         var module=typeof(EmporiumEntry).Module;
-        if(module.ModuleVersionId!=new Guid(NativeActorCarryAccess.ExpectedMvid)) throw new InvalidDataException("Carry query native MVID changed.");
+        if(!NativePlatform.MatchesActorModule(module, NativeActorCarryAccess.ExpectedMvid)) throw new InvalidDataException("Carry query native MVID changed.");
         using(var stream=File.OpenRead(module.Assembly.Location))
         using(var sha=SHA256.Create())
             if(BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","")!=NativeActorCarryAccess.ExpectedAssemblySha256)
                 throw new InvalidDataException("Carry query native assembly changed.");
-        foreach(var target in Contract.Value) Rewrite(ReadOriginal(target.Method),target.Method);
+        // The port's Harmony translates native operands directly. Verify that
+        // translated IL in the exact same Rewrite before activation.
+        if (!NativePlatform.IsAuditedAndroidRuntime)
+            foreach(var target in Contract.Value) Rewrite(ReadOriginal(target.Method),target.Method);
         return Contract.Value.Length;
     }
 
+#if PROBABLY_COOP_ANDROID_HOST_PREVIEW
+    internal static bool HasPatchedContract()
+    {
+        var patch = AccessTools.Method(typeof(NativeActorCarryQueries), nameof(Transpiler));
+        return Contract.Value.All(target =>
+            Harmony.GetPatchInfo(target.Method)?.Transpilers.Any(entry => entry.PatchMethod == patch) == true);
+    }
+#endif
     // Metadata-only IL read. Avoid invoking Harmony's dynamic method factory
     // just to verify a contract (its old mscorlib ILGenerator type also differs
     // from the netstandard reference facade used by native Mods).
     private static IEnumerable<CodeInstruction> ReadOriginal(MethodBase method)
     {
         var bytes=method.GetMethodBody()?.GetILAsByteArray() ?? throw new InvalidDataException("Missing carry query body.");
-        int at=0;
-        while(at<bytes.Length)
+        foreach(var instruction in NativeIl.Read(bytes))
         {
-            short code=bytes[at++];
-            if(code==0xfe) { RequireBytes(bytes,at,1); code=unchecked((short)(0xfe00|bytes[at++])); }
-            if(!Opcodes.TryGetValue(code,out var opcode)) throw new InvalidDataException("Unknown carry query IL.");
-            int size;
-            switch(opcode.OperandType)
-            {
-                case OperandType.InlineNone: size=0;break;
-                case OperandType.ShortInlineBrTarget: case OperandType.ShortInlineI: case OperandType.ShortInlineVar: size=1;break;
-                case OperandType.InlineVar: size=2;break;
-                case OperandType.InlineI8: case OperandType.InlineR: size=8;break;
-                case OperandType.InlineSwitch:
-                    RequireBytes(bytes,at,4);int count=BitConverter.ToInt32(bytes,at);
-                    if(count<0 || count>(bytes.Length-at-4)/4) throw new InvalidDataException("Invalid carry query switch.");
-                    size=4+count*4;break;
-                default:size=4;break;
-            }
-            RequireBytes(bytes,at,size);object operand=null;
+            var opcode=instruction.Opcode;
+            object operand=null;
             if(opcode.OperandType is OperandType.InlineField or OperandType.InlineMethod)
-                operand=method.Module.ResolveMember(BitConverter.ToInt32(bytes,at),method.DeclaringType?.GetGenericArguments(),
+                operand=method.Module.ResolveMember(BitConverter.ToInt32(bytes,instruction.OperandOffset),method.DeclaringType?.GetGenericArguments(),
                     (method as MethodInfo)?.GetGenericArguments());
-            yield return new CodeInstruction(opcode,operand);at+=size;
+            yield return new CodeInstruction(opcode,operand);
         }
     }
-    private static void RequireBytes(byte[] bytes,int offset,int count)
-    { if(count<0 || offset>bytes.Length-count) throw new InvalidDataException("Truncated carry query IL."); }
 
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions,MethodBase __originalMethod)
         => Rewrite(instructions,__originalMethod);
@@ -115,21 +113,70 @@ internal static class NativeActorCarryQueries
         int found=0;
         for(int i=0;i<result.Count;i++)
         {
-            if(!Equals(result[i].operand,WindowField)) continue;
+            if (result[i].operand is not FieldInfo field || field.DeclaringType != typeof(EmporiumEntry) ||
+                field.Name != nameof(EmporiumEntry.afterhourWindow)) continue;
             if(result[i].opcode!=OpCodes.Ldfld || i>0 && result[i-1].opcode.OpCodeType==OpCodeType.Prefix)
                 throw new InvalidDataException("Unsupported afterhour window access in carry query.");
             int call=i+1+target.Arguments.Length;
-            if(call>=result.Count || result[call].opcode!=OpCodes.Call || !Equals(result[call].operand,target.Consumer))
-                throw new InvalidDataException("Afterhour window is no longer passed directly to its audited graph consumer.");
-            for(int a=0;a<target.Arguments.Length;a++)
-                if(result[i+1+a].opcode!=target.Arguments[a])
-                    throw new InvalidDataException("Carry graph consumer argument layout changed.");
+            bool matchesOriginal = call < result.Count && result[call].opcode == OpCodes.Call &&
+                SameConsumer(result[call].operand as MethodInfo, target.Consumer);
+            if (matchesOriginal)
+            {
+                for (int a = 0; a < target.Arguments.Length; a++)
+                    if (result[i + 1 + a].opcode != target.Arguments[a])
+                        throw new InvalidDataException("Carry graph consumer argument layout changed.");
+            }
+            else if (!MatchesAndroidListAppend(result, i))
+            {
+                string actual = string.Join(" | ", result.Skip(Math.Max(0, i - 1)).Take(7)
+                    .Select(instruction => instruction.opcode + " " + instruction.operand));
+                throw new InvalidDataException($"Afterhour graph consumer changed in {method.Name}: expected {target.Consumer}, found {actual}.");
+            }
             // The original receiver is already on the stack. Copy preserves
             // branch labels and exception boundaries on the field instruction.
             result[i].opcode=OpCodes.Call; result[i].operand=ResolveMethod; found++;
         }
         if(found!=1) throw new InvalidDataException("Expected exactly one afterhour graph root in "+method.Name);
         return result;
+    }
+
+    private static bool SameConsumer(MethodInfo actual, MethodInfo expected)
+    {
+        if (actual == null || expected == null || actual.Name != expected.Name || actual.DeclaringType != expected.DeclaringType)
+            return false;
+        if (Equals(actual, expected)) return true;
+#if PROBABLY_COOP_ANDROID_HOST_PREVIEW
+        // The port may hand Harmony a distinct reflection wrapper for the
+        // same constructed generic method. Require the exact definition token
+        // and argument types from this module in that case.
+        if (NativePlatform.IsAuditedAndroidRuntime && actual?.IsGenericMethod == true && expected.IsGenericMethod &&
+            actual.GetGenericArguments().SequenceEqual(expected.GetGenericArguments()))
+        {
+            var actualDefinition = actual.GetGenericMethodDefinition();
+            var expectedDefinition = expected.GetGenericMethodDefinition();
+            return actualDefinition.Module == expectedDefinition.Module &&
+                actualDefinition.MetadataToken == expectedDefinition.MetadataToken;
+        }
+#endif
+        return false;
+    }
+
+    private static bool MatchesAndroidListAppend(List<CodeInstruction> code, int field)
+    {
+#if PROBABLY_COOP_ANDROID_HOST_PREVIEW
+        // The port replaces append-from-temporary-list with an in-place
+        // append. The receiver on the stack is still its first graph argument.
+        if (!NativePlatform.IsAuditedAndroidRuntime || field + 2 >= code.Count ||
+            code[field + 1].opcode != OpCodes.Ldloc_0 || code[field + 2].opcode != OpCodes.Call ||
+            code[field + 2].operand is not MethodInfo call) return false;
+        if (SameConsumer(call, AndroidAddItems.Value)) return true;
+        return call.DeclaringType == typeof(EmporiumEntry) && call.Name == "PortAddOwned" &&
+            call.IsStatic && !call.IsGenericMethod && call.ReturnType == typeof(void) &&
+            call.GetParameters().Select(parameter => parameter.ParameterType)
+                .SequenceEqual(new[] { typeof(GraphNodeStorage), typeof(List<GameItem>) });
+#else
+        return false;
+#endif
     }
 
     internal static GraphNodeStorage SceneRoot(EmporiumEntry entry)

@@ -9,8 +9,24 @@ public static class CoopExtensionApi
 {
     public const string DiscoveryChannel = "probably_coop:extension-discover-v1";
     public const string RegistrationChannel = "extension-register-v1";
+    public const string CustomerAppearanceChannel = "probably_coop:customer-appearance-v1";
+    /// <summary>Optional game-local Func&lt;GameItem, bool&gt; service for an owned mod item's Activate action.</summary>
+    public const string LocalItemActivationService = "probably-coop-local-item-activation-v1";
     public const int MaximumActionBytes = 1024;
     public const int MaximumStateBytes = 4096;
+}
+
+/// <summary>A guest-local display event. It does not submit an action or alter the host.</summary>
+public sealed class CoopCustomerAppearance
+{
+    public string PortraitKey { get; }
+    public bool Restoring { get; }
+
+    internal CoopCustomerAppearance(string portraitKey, bool restoring)
+    {
+        PortraitKey = portraitKey;
+        Restoring = restoring;
+    }
 }
 
 public enum CoopExtensionActor { Host, Partner }

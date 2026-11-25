@@ -42,7 +42,10 @@ internal sealed partial class NativeWorld
     private JObject captureQueryActors,captureQueryClient;
     private object captureQueryScene;
     private bool borrowCapturedRecords;
-    private static readonly bool FullCaptureRequested=Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-full-capture")>=0;
+    internal static readonly bool ForceFullCaptureCadence=
+        Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-full-capture")>=0;
+    private bool nativeFullCapture;
+    private bool FullCaptureRequested=>ForceFullCaptureCadence || nativeFullCapture;
     private static readonly Lazy<FieldInfo[]> CaptureQueryFields=new Lazy<FieldInfo[]>(()=>
         WorldFields.Where(f=>f.Name is not ("totalPlayTimeSeconds" or "runPlayTimeSeconds")).ToArray());
     private Dictionary<uint,(GameItem Item,ulong Version)> pendingCaptureVersions;
@@ -93,6 +96,17 @@ internal sealed partial class NativeWorld
     }
     private void BeginChangedCapture(JObject actors,JObject client)
     {
+        // Mods can write native fields directly on Android. An unaudited
+        // Windows build also needs full capture if no hooks were installed.
+        if(!FullCaptureRequested && (NativePlatform.IsAndroid
+            ? !NativePlatform.AndroidCaptureReady || HasEnabledCaptureWriters()
+            : !NativeCaptureMutationHooks.Ready))
+        {
+            nativeFullCapture=true;
+            borrowCapturedRecords=false;
+            if(captureRoots.Count!=0) ResetCaptureChanges();
+            Debug.Log("[probably_coop] Inventory uses full capture");
+        }
         if(FullCaptureRequested) return;
         // Shared/person-dependent queries (ownership, price, permissions and
         // tooltips) cannot inherit a result from a different business context.
@@ -214,35 +228,24 @@ internal sealed partial class NativeWorld
 [HarmonyPatch]
 internal static class NativeCaptureMutationHooks
 {
-    [HarmonyPrepare]
-    private static bool Prepare() => NativePlatform.SupportsHosting;
+    private static readonly Lazy<MethodBase[]> Targets = new(ResolveWindowsTargets);
+    internal static bool Ready => NativeInventoryCaptureContract.MatchesWindowsBuild && Targets.Value.Length != 0;
 
-    private static IEnumerable<MethodBase> TargetMethods()
+    [HarmonyPrepare]
+    private static bool Prepare() => !NativePlatform.IsAndroid && Ready;
+
+    private static IEnumerable<MethodBase> TargetMethods() => Targets.Value;
+
+    private static MethodBase[] ResolveWindowsTargets()
     {
-        var types=new[] {typeof(GameItem),typeof(GameItemElement),typeof(GameGridInventory),typeof(GameSlotInventory),
-            typeof(GameGridScrollableInventory),typeof(GridShapeBuilder),typeof(PixelWindow),typeof(MachineryButton),
-            typeof(MachineryRadioList),typeof(MachineryRadioButton),typeof(MachinerySlider),typeof(MachineryRangeSlider),
-            typeof(MachineryText),typeof(MachineryLabel),typeof(MachineryPanel),typeof(MachineryPanelRow),typeof(MachineryTabs),
-            typeof(MachineryStack),typeof(MachineryIntake),typeof(GridPixelElement),typeof(IndicatorElement),typeof(TagElement),
-            typeof(PushButtonElement),typeof(AdvButtonElement),typeof(ItemFeature),typeof(ItemCondition),typeof(TagSystem)};
-        foreach(var type in types)
-        foreach(var method in type.GetMethods(BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Instance|BindingFlags.DeclaredOnly))
+        try { return NativeInventoryCaptureContract.ResolveMethods(); }
+        catch (Exception error)
         {
-            if(method.IsAbstract || method.ContainsGenericParameters) continue;
-            var body=method.GetMethodBody()?.GetILAsByteArray();
-            // Several native interface implementations consist solely of
-            // throw new NotImplementedException. They cannot change anything;
-            // Mono's Harmony wrapper cannot attach a postfix to these stubs.
-            if(body==null || body.Length==0 || body.Length<=8 && body[body.Length-1]==0x7a) continue;
-            string name=method.Name;
-            if(name.StartsWith("set_",StringComparison.Ordinal) || name.StartsWith("Set",StringComparison.Ordinal) ||
-                name.StartsWith("Add",StringComparison.Ordinal) || name.StartsWith("Remove",StringComparison.Ordinal) ||
-                name.StartsWith("Attach",StringComparison.Ordinal) || name.StartsWith("Detach",StringComparison.Ordinal) ||
-                name.StartsWith("Resize",StringComparison.Ordinal) || name is "Validate" or "ValidateShapeState" or "SyncModifiedState" or
-                "UncheckedAccept" or "UncheckedRemove" or "Clear" or "Destroy" or "EnableTag" or "DisableTag" or "ToggleTag") yield return method;
+            Debug.LogWarning("[probably_coop] Windows inventory hooks unavailable; using full capture: " + error.Message);
+            return Array.Empty<MethodBase>();
         }
     }
-    private static void Postfix(object __instance,MethodBase __originalMethod)
+    internal static void Postfix(object __instance,MethodBase __originalMethod)
     {
         // Validate is also called for visual redraws. Still invalidate the
         // captured record, without scheduling an entire inventory on a redraw.

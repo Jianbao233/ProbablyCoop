@@ -26,6 +26,8 @@ internal sealed class NativePartnerJoin : IDisposable
     private Task<(Guid Run,bool Required,JToken Extensions,JToken Mods)> reading;
     private Dictionary<string,ModExtensionContract> extensions;
     private RoomModManifest review, acceptedReview;
+    private WeakReference<CoopSession> consentConnection;
+    private RoomModManifest consentReport;
     private bool refreshReview;
     private CancellationTokenSource readLifetime;
     private ulong readingRevision;
@@ -79,7 +81,8 @@ internal sealed class NativePartnerJoin : IDisposable
             var report=RoomModManifest.Compare(RoomModManifest.Read(metadata.Mods),NativeRoomModManifest.Local(),blockers);
             if(!report.Same(review))
             {
-                acceptedReview=null;
+                acceptedReview=consentConnection?.TryGetTarget(out var acceptedConnection)==true &&
+                    ReferenceEquals(acceptedConnection, room.Session) && report.Same(consentReport) ? report : null;
                 review=report;
                 panel.RecordModReview(report);
             }
@@ -93,6 +96,8 @@ internal sealed class NativePartnerJoin : IDisposable
                 if(current.Blocked || !ReferenceEquals(review,current) || !stamp.IsCurrent(connection) ||
                     !ReferenceEquals(room.Session?.Native,connection)) return;
                 acceptedReview=current;
+                consentConnection=new WeakReference<CoopSession>(room.Session);
+                consentReport=current;
                 panel.RecordModConsent();
             }, () => { extensions=null; refreshReview=true; }, () => room.Leave());
             return false;

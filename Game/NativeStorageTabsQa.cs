@@ -74,7 +74,7 @@ internal sealed partial class NativeBackgroundQa
                 tabs.Select(1,notify:true);
                 var list=(IList)AccessTools.Field(typeof(MachineryTabs),"tabs").GetValue(tabs);
                 var page=list[1];
-                var plate=(TreeNodeRender)AccessTools.Field(page.GetType(),"plate").GetValue(page);
+                var plate=ModReflect.Get<TreeNodeRender>(page,"plate");
                 plate.OnPointerDoubleClick(new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current));
                 Require(ui.panel.activeSelf && ui.inputField.characterLimit==12,"original tab double-click did not open local native editor immediately");
                 ui.inputField.SetTextWithoutNotify("原料"); ui.OnEditEnd("原料");
@@ -88,7 +88,7 @@ internal sealed partial class NativeBackgroundQa
                     "close dropped the last explicit tab edit or confirmation reopened the editor");
                 var pages=(IList)AccessTools.Field(typeof(MachineryTabs),"tabs").GetValue(tabs);
                 var selectedPage=pages[1];
-                var selectedPlate=(TreeNodeRender)AccessTools.Field(selectedPage.GetType(),"plate").GetValue(selectedPage);
+                var selectedPlate=ModReflect.Get<TreeNodeRender>(selectedPage,"plate");
                 selectedPlate.OnPointerDoubleClick(new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current));
                 Require(ui.panel.activeSelf && ui.inputField.text=="半成品","reopened native tab editor did not read the confirmed name");
                 Require(storageTabsQaFirstCommand!=null,"missing actual first rename request");
@@ -110,7 +110,7 @@ internal sealed partial class NativeBackgroundQa
                 Require(!ui.panel.activeSelf,"native close confirmation reopened the editor");
                 var reopenPages=(IList)AccessTools.Field(typeof(MachineryTabs),"tabs").GetValue(tabs);
                 var reopenPage=reopenPages[1];
-                ((TreeNodeRender)AccessTools.Field(reopenPage.GetType(),"plate").GetValue(reopenPage))
+                ModReflect.Get<TreeNodeRender>(reopenPage,"plate")
                     .OnPointerDoubleClick(new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current));
                 Require(ui.inputField.text=="终稿","native last end-edit was lost on close");
                 ui.OnClearButtonClick(); storageTabsQaStep=3; return false;

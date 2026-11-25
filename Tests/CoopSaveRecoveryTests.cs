@@ -123,6 +123,44 @@ internal static class CoopSaveRecoveryTests
                     Field(Fields(future,settings),"future-extension")),"unknown ES3 type entry is retained without type resolution");
                 Reject(()=>rewrite.Invoke(null,new object[]{original,settings,stored+1,target}),"actual native source identity mismatch");
                 Require(image.SequenceEqual((byte[])rewrite.Invoke(null,new object[]{original,settings,stored,target})),"uncompressed ES3 migration is deterministic");
+
+                var readerType=settingsType.Assembly.GetType("ES3Reader",true);
+                var createReader=readerType.GetMethod("Create",Static,null,new[]{typeof(byte[]),settingsType},null);
+                var checkpointType=coop.GetNestedType("Checkpoint",BindingFlags.NonPublic);
+                var readPrepared=coop.GetMethod("ReadPreparedReceipt",Static);
+                var checkpointCodec=mod.GetType("ProbablyCoop.NativeActorCheckpoint",true);
+                var readReceipt=checkpointCodec.GetMethod("ReadReceipt",Static);
+                var previewField=checkpointType.GetField("Preview",Instance);
+                object Prepare(byte[] bytes)
+                {
+                    var checkpoint=Activator.CreateInstance(checkpointType,true);
+                    previewField.SetValue(checkpoint,Activator.CreateInstance(previewField.FieldType));
+                    return readPrepared.Invoke(null,new[]{bytes,settings,checkpoint});
+                }
+                using var legacyReader=(IDisposable)createReader.Invoke(null,new[]{original,settings});
+                object legacyReceipt=readReceipt.Invoke(null,new object[]{legacyReader,null});
+                object prepared=Prepare(original);
+                foreach(string key in new[]{"Run","Slot","Day","Encoded","CurrentUniqueId","PartnerSetup","UsesEffectReplication"})
+                {
+                    var field=prepared.GetType().GetField(key,Instance);
+                    Require(Equals(field.GetValue(legacyReceipt),field.GetValue(prepared)),"one-pass receipt retains native "+key);
+                }
+                var inventories=prepared.GetType().GetField("NativeInventories",Instance);
+                Require(((Dictionary<string,string>)inventories.GetValue(legacyReceipt)).OrderBy(x=>x.Key)
+                    .SequenceEqual(((Dictionary<string,string>)inventories.GetValue(prepared)).OrderBy(x=>x.Key)),
+                    "one-pass receipt retains every native inventory");
+                Require(Prepare(unknownImage)!=null,"one-pass receipt skips unresolved unrelated wrappers");
+                byte[] repeated=Encoding.UTF8.GetBytes(withUnknown.Substring(0,withUnknown.Length-1)+
+                    ",\"future-extension\":{\"value\":{}}}");
+                Reject(()=>Prepare(repeated),"one-pass receipt rejects duplicate unresolved root key");
+                // Some ES3 strings have game-specific escapes. Change only the
+                // top-level type header and leave the original image intact.
+                string es3=Encoding.UTF8.GetString(original);
+                var header=new System.Text.RegularExpressions.Regex(
+                    @"(""playerStore""\s*:\s*\{\s*""__type""\s*:\s*)""[^""]+""");
+                string incorrect=header.Replace(es3,"$1\"StoreStation, Assembly-CSharp\"",1);
+                Require(incorrect!=es3,"fixture contains the native player type header");
+                Reject(()=>Prepare(Encoding.UTF8.GetBytes(incorrect)),"one-pass receipt rejects mismatched player type");
             }
             string folder=Path.Combine(Path.GetDirectoryName(Path.GetFullPath(assemblyPath)),"recovery-test-"+Guid.NewGuid().ToString("N"));
             System.IO.Directory.CreateDirectory(folder);

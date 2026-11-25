@@ -657,7 +657,6 @@ internal static partial class NativeMirrorProbe
                 item.name = ReplicaItemName(item.identifier, item.name);
                 item.shortDescription = LocHelper.GetLocalizedOrDefault("Item", "item_" + item.identifier + "_desc", item.shortDescription);
             }
-            AccessTools.Property(typeof(GameItem), "spriteChanged").SetValue(item, true);
         }
         bool localCassette=NativeLocalCassette.IsDeck(item);
         if(stateChanged)
@@ -720,6 +719,10 @@ internal static partial class NativeMirrorProbe
         }
         if(NativeGuest.Active && item.contentWindow!=null && NativeContainerAccess.IsSealed(item))
             NativeContainerAccess.HideContents(item);
+        // The original sprite resolver and local rendering mods can read tags.
+        // A tag-only delta must invalidate the cached sprite before Validate.
+        if(fieldsChanged || stateChanged || modifiedChanged)
+            AccessTools.Property(typeof(GameItem), "spriteChanged").SetValue(item, true);
         // ValidateSelect resets drag preview/background transforms. A remote
         // machine label or tooltip update alone must not reset the local hand.
         if(fieldsChanged || stateChanged || modifiedChanged || shapeChanged || positionChanged || typesChanged || featuresChanged || modifiersChanged)

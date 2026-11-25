@@ -109,7 +109,7 @@ internal sealed partial class NativeWorld
                 edit.feature.fakeCondition=edit.condition; edit.feature.SetExposed(false);
                 if(!repeat) WaterFeatureHelper.OnWaterLabelUpdated(edit.feature,edit.index);
             }
-            EmporiumAudioPlayer.Instance.audioLabeler.Play();
+            NativeSharedAudioPlayback.PlayLabels(EmporiumAudioPlayer.Instance.audioLabeler);
             if(!repeat) AchievementTracker.Instance.CheckLowerLevelsSpecial();
         }
         else if(action=="confront")

@@ -37,6 +37,7 @@ internal static class NativeActorPersistence
         internal PlayerStore Store;
         internal NativeActorCheckpoint.Envelope Envelope;
         internal bool Hydrated;
+        internal NativePerformance.CheckpointScope Timing;
     }
     private sealed class DecodeAttempt { internal GameItem Root; }
 
@@ -158,11 +159,14 @@ internal static class NativeActorPersistence
             int slot = data.saveSlot;
             var registered = CoopRun.RegisteredRunsAtSlot(slot);
             if (loading != null) throw new InvalidOperationException("Nested cooperative native load.");
-            var value = ReadLoadEnvelope(SaveFiles.ResolveLoadFile(data), slot, registered, prepared);
+            NativeActorCheckpoint.Envelope value;
+            using (prepared == null ? default : NativePerformance.MeasureCheckpoint("native_preflight"))
+                value = ReadLoadEnvelope(SaveFiles.ResolveLoadFile(data), slot, registered, prepared);
             if (value == null) return; // Rev12 repair or rediscovery may reuse the numeric slot.
             ValidatePartnerSetup(value.PartnerSetup, value.Run);
             NativeActorSession.Current?.Dispose();
-            __state = loading = new LoadAttempt { Store = __instance, Envelope = value };
+            __state = loading = new LoadAttempt { Store = __instance, Envelope = value,
+                Timing = NativePerformance.MeasureCheckpoint("native_load") };
         }
         private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> source) => ReplaceLoadEnumeration(source);
         private static void Postfix(LoadAttempt __state)
@@ -172,6 +176,7 @@ internal static class NativeActorPersistence
         private static Exception Finalizer(LoadAttempt __state, Exception __exception)
         {
             if (__state == null) return __exception;
+            __state.Timing.Dispose();
             if (__exception != null) NativeActorSession.Current?.MarkFault(__exception);
             if (ReferenceEquals(loading, __state)) loading = null;
             return __exception;
@@ -186,6 +191,7 @@ internal static class NativeActorPersistence
     {
         var attempt = loading;
         if (attempt == null) return entry.GetAllItems();
+        using var timing = NativePerformance.MeasureCheckpoint("actor_hydration");
         if (attempt.Hydrated || attempt.Envelope.Day != StoreStation.Instance.dayCounter ||
             !attempt.Store.modData.TryGetValue(NativeActorCheckpoint.ModDataKey, out var encoded) || encoded != attempt.Envelope.Encoded ||
             !string.Equals(NativeActorCheckpoint.ReadPartnerSetup(attempt.Store.modData), attempt.Envelope.PartnerSetup, StringComparison.Ordinal))

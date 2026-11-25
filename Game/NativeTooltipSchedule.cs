@@ -28,6 +28,9 @@ internal sealed partial class NativeWorld
     private bool denseTooltips;
     private int denseReadIndex;
     private double nextDenseRead;
+    private const int AndroidTooltipComparisonCount=32;
+    private int androidTooltipComparisons;
+    private bool androidTooltipPairMismatch;
     private readonly HashSet<GraphNodeStorage> readVisited=new HashSet<GraphNodeStorage>();
     private readonly Stack<GraphNodeStorage> readParents=new Stack<GraphNodeStorage>();
     private int nextTicket;
@@ -96,7 +99,24 @@ internal sealed partial class NativeWorld
         // Native and Mod tooltips are presentation. A missing description for
         // one object must not abort the shop snapshot or its focused read.
         var normal=TryEvaluateTooltip(item,false);
+        // Both base methods in the audited port execute the identical native
+        // builder. Preserve independent calls for focused reads, custom item
+        // callbacks, subclasses, other runtimes and worlds with code mods.
+        bool share=NativePlatform.IsAuditedAndroidRuntime && !FullCaptureRequested && mayUsePrefetch &&
+            !androidTooltipPairMismatch && normal!=null && item.GetType()==typeof(GameItemElement) &&
+            item.tooltipRichTextFunc==null && !Focused(item);
+        if(share && androidTooltipComparisons==AndroidTooltipComparisonCount) return (normal,normal);
         var advanced=TryEvaluateTooltip(item,true);
+        if(share)
+        {
+            if(!NativeMirrorProbe.SameTooltip(normal,advanced))
+            {
+                androidTooltipPairMismatch=true;
+                UnityEngine.Debug.LogWarning("[probably_coop] Android native tooltip results differ; keeping separate reads");
+            }
+            else if(++androidTooltipComparisons==AndroidTooltipComparisonCount && NativePerformance.Detailed)
+                UnityEngine.Debug.Log("[probably_coop PERF] Android verified 32 identical native tooltip pairs");
+        }
         normal ??= advanced ?? new RichText(item.identifier ?? "", "", "", "", "", 0, 0, false);
         return (normal,advanced ?? normal);
     }

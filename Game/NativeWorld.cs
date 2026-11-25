@@ -37,7 +37,8 @@ internal sealed partial class NativeWorld
     private ulong lastCaptureContext, lastClockCommand;
     private bool anchorClockThisCapture;
     private bool? externalCaptureWriters;
-    private bool HasExternalCaptureWriters => externalCaptureWriters ??= ModLoader.Mods.Any(mod =>
+    private bool HasExternalCaptureWriters => externalCaptureWriters ??= HasEnabledCaptureWriters();
+    internal static bool HasEnabledCaptureWriters() => ModLoader.Mods.Any(mod =>
         mod?.IsEnabled==true && mod.Assembly!=null && mod.Manifest?.ID!=ModExtensionOwner);
     private int lastCaptureCash, lastCaptureDay;
     private object lastCaptureCustomer, lastCaptureMap;
@@ -197,11 +198,14 @@ internal sealed partial class NativeWorld
         TickPartnerHand();
         if(peerConnected) NativeCaptureComparison.Current?.Advance(Time.realtimeSinceStartupAsDouble);
         ValidateTripReadiness(); TickTripUi();
+        bool androidHost=NativePlatform.IsAuditedAndroidRuntime;
+        bool touching=androidHost && Input.touchCount!=0;
         if(peerConnected)
         {
             PublishFastTooltip();
             VerifyStockSlice(Time.realtimeSinceStartupAsDouble);
-            if(Input.GetMouseButtonDown(0) || Input.GetMouseButtonUp(0) || Input.GetMouseButtonUp(1) || Input.GetKeyDown(KeyCode.Space)) captureWake=true;
+            if(touching || Input.GetMouseButtonDown(0) || Input.GetMouseButtonUp(0) ||
+                Input.GetMouseButtonUp(1) || Input.GetKeyDown(KeyCode.Space)) captureWake=true;
         }
         if(connection.SynchronizationFailed) return;
         if(encoding!=null)
@@ -249,6 +253,10 @@ internal sealed partial class NativeWorld
                         verifiedRecordPublish++;
                         Debug.Log($"[probably_coop QA] PASS native-record-publish base={authorityBaseRevision} references={packed.Referenced} bytes={packed.Frame.Bytes}");
                     }
+                    // The room sends queued chunks after this callback. On the
+                    // port another full capture can take longer than a frame,
+                    // so let the completed snapshot send before starting one.
+                    if(androidHost) return;
                 }
             }
         }
@@ -270,10 +278,16 @@ internal sealed partial class NativeWorld
         var map=MapUIManager.Instance.Current;
         int day=StoreStation.Instance.dayCounter;
         bool dragging=ItemMouseDragHandler.current?.IsDraggingItem==true || ItemMultiSelectHandler.current?.IsGroupDragging==true;
+        bool liveCapture=dragging || partnerLease.ActiveSerial!=0 || store.currentClientInstance!=null ||
+            now<viewsExpiry && (remoteViews.Count>0 || remoteHover!=0) ||
+            androidHost && (touching || shop.Settling || MapUIManager.Instance.IsInTransit ||
+                store.isHandlingShootout || store.isClientBeingArrested);
         // Commands explicitly set nextCapture to zero. Known native changes wake the
-        // normal 4 Hz lane. Unhooked field writes keep a bounded verification pass.
+        // normal lane. The port still reads every field per capture; only its idle
+        // cadence changes, so unhooked writes have a bounded verification pass.
         if(basis!=null && nextCapture!=0 && now<nextIdleCapture && !captureWake &&
-            !HasExternalCaptureWriters && NativeCaptureComparison.Current==null && !FullCaptureRequested &&
+            (!androidHost || !liveCapture) &&
+            !HasExternalCaptureWriters && NativeCaptureComparison.Current==null && !ForceFullCaptureCadence &&
             lastCaptureContext==operationContext.Generation &&
             lastCaptureCash==store.playerCash && lastCaptureDay==day &&
             ReferenceEquals(lastCaptureCustomer,store.currentClientInstance) && Equals(lastCaptureMap,map) &&
@@ -290,8 +304,7 @@ internal sealed partial class NativeWorld
         // Invisible passive simulation (for example a cooling vessel inside
         // a crate) can coalesce. Visible machinery and customer interactions
         // retain the usual cadence, including the legacy extension poll.
-        nextIdleCapture=now+(dragging || partnerLease.ActiveSerial!=0 || lastCaptureCustomer!=null ||
-            now<viewsExpiry && (remoteViews.Count>0 || remoteHover!=0) ? 0.25 : 1.6);
+        nextIdleCapture=now+(liveCapture ? 0.25 : 1.6);
         JObject snapshot;
         ShopView shopView; byte[] shopBytes;
         var comparison=NativeCaptureComparison.Current;
@@ -379,7 +392,7 @@ internal sealed partial class NativeWorld
         commandProjection.Expire(CommandClock());
         CheckCommandReply(); TickGuestHand(); FlushBedrollBells(); FlushEndingContinue(); FlushWildClose(); FlushNews(); TickContinuousControls();
         FlushControlPreview(); FlushDynamicChoice();
-        PumpBubblePresentation(); TickShootingPresentation();
+        PumpBubblePresentation(); TickShootingPresentation(); TickSecurityPresentation(); TickDialoguePresentation();
         PublishViews();
         if(decoding==null)
         {
@@ -545,11 +558,11 @@ internal sealed partial class NativeWorld
             ApplyAuxiliary((JObject)data["auxiliary"]);
             RefreshPc(decoded.Index.ChangedBusiness.Contains("requests"));
             ApplyPhone((JObject)data["phone"]);
-            ApplyDialogue((JObject)data["dialogue"]);
             ApplyWild((JObject)data["wild"]);
             ApplyEnding((JObject)data["ending"]);
-            ApplySecurityScene((JObject)data["securityScene"]);
             ApplyShooting((JObject)data["shooting"]);
+            ApplySecurityScene((JObject)data["securityScene"]);
+            ApplyDialogue((JObject)data["dialogue"]);
             RefreshLabelEditor(decoded.Index,commandThrough);
             ApplyDynamicChoice((JObject)data["choice"]);
             ApplyFrontends((JArray)data["frontends"]);
@@ -601,6 +614,9 @@ internal sealed partial class NativeWorld
         // Routine publications retain unchanged subgraphs without walking them.
         bool fullCheckpoint = !borrowCapturedRecords || link.Revision - authorityBaseRevision >= 96;
         denseTooltips=(fullCheckpoint && HasActorProjection ? CaptureOwnershipGraph().PlacedItemCount : model.Objects.Count)>=DenseTooltipThreshold;
+        // Pace background descriptions even in a small Android shop. The
+        // partner's currently hovered description stays live.
+        denseTooltips |= NativePlatform.IsAuditedAndroidRuntime;
         useNativeAbilityGuards=denseTooltips && ReplicaItemAbility.NativeReturnContractUnmodified();
         var roots=new JArray(); model.Seen.Clear();
         using(model.Enter(fields))

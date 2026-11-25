@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using HarmonyLib;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -15,10 +16,8 @@ internal sealed partial class NativeEffectCampaign
 {
     private static readonly EntityKey CommerceKey = EntityKey.Scalar("shop.customer");
     private const int CommerceLimit = 160 * 1024;
-    private static readonly AccessTools.FieldRef<DialogUIManager, bool> EndPending =
-        AccessTools.FieldRefAccess<DialogUIManager, bool>("isEndPending");
-    private static readonly AccessTools.FieldRef<DialogUIManager, bool> AutoPending =
-        AccessTools.FieldRefAccess<DialogUIManager, bool>("isAutoAdvancePending");
+    private static readonly FieldInfo EndPending = AccessTools.Field(typeof(DialogUIManager), "isEndPending");
+    private static readonly FieldInfo AutoPending = AccessTools.Field(typeof(DialogUIManager), "isAutoAdvancePending");
 
     private StoreClientInstance observedCustomer, replicaCustomer;
     private Dialogue observedDialogue, replicaDialogue;
@@ -80,7 +79,7 @@ internal sealed partial class NativeEffectCampaign
         var customer = store.currentClientInstance;
         var line = ui.currentDialog;
         bool waiting = line != null && !ui.IsChoice() && !ui.IsLineStillDisplaying(line) &&
-            (ui.isWaitingForManualAdvance || EndPending(ui) || AutoPending(ui));
+            (ui.isWaitingForManualAdvance || (bool)EndPending.GetValue(ui) || (bool)AutoPending.GetValue(ui));
         int choiceMask = 0;
         if (line != null)
             for (int i = 0; i < line.choices.Count && i < ui.dialogChoiceBubbles.Count && i < 16; i++)

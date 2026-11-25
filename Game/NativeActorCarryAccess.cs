@@ -19,8 +19,6 @@ internal static class NativeActorCarryAccess
     internal const string ExpectedAssemblySha256 = "725CB999D019DFF1FF31BED353C7F9BB8D81A7605A15DE1F80F5A3A6CF7B1D05";
     private static readonly object Gate = new object();
     private static readonly MethodInfo TranspilerMethod = typeof(NativeActorCarryAccess).GetMethod(nameof(Transpile), BindingFlags.NonPublic | BindingFlags.Static);
-    private static readonly Dictionary<short, OpCode> Opcodes = typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static)
-        .Where(f => f.FieldType == typeof(OpCode)).Select(f => (OpCode)f.GetValue(null)).ToDictionary(op => op.Value);
     private static Func<EmporiumEntry, NativeActorCarry> resolver;
     private static Harmony owner;
     private static Dictionary<int, Target> installedTargets;
@@ -129,7 +127,7 @@ internal static class NativeActorCarryAccess
     private static Target[] ValidateNativeAssembly()
     {
         var module = typeof(EmporiumEntry).Module;
-        if (module.ModuleVersionId != new Guid(ExpectedMvid)) throw Invalid("Native actor carry module MVID changed");
+        if (!NativePlatform.MatchesActorModule(module, ExpectedMvid)) throw Invalid("Native actor carry module MVID changed");
         using (var stream = File.OpenRead(module.Assembly.Location))
         using (var sha = SHA256.Create())
             if (BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "") != ExpectedAssemblySha256)
@@ -142,30 +140,33 @@ internal static class NativeActorCarryAccess
             Accessor(field, false);
             if (name == SelectedName) Accessor(field, true);
         }
-        var expected = Manifest().ToDictionary(target => target.Token);
-        var found = new HashSet<int>();
-        foreach (var type in module.Assembly.GetTypes())
-        foreach (var method in Methods(type))
+        // The exact assembly hash pins the full audited method set. Only the
+        // known methods are resolved here. The whole-module scan runs offline.
+        var targets = Manifest().ToDictionary(target => target.Token);
+        var native = new NativeGameMethod(module);
+        foreach (var target in targets.Values)
         {
+            var method = native.Resolve(target.Signature);
+            target.Method = method;
+#if PROBABLY_COOP_ANDROID_HOST_PREVIEW
+            if (NativePlatform.IsAuditedAndroidRuntime)
+            {
+                // The port exposes the original IL bytes but cannot resolve
+                // their metadata operands through System.Reflection.
+                var bytes = method.GetMethodBody()?.GetILAsByteArray();
+                foreach (var site in target.Sites)
+                    NativePlatform.VerifyAuditedAndroidOperand(bytes, site.Offset, site.Field, site.Write, target.Signature);
+                continue;
+            }
+#endif
             var sites = ReadNativeSites(method);
-            if (sites.Length == 0) continue;
-            if (!expected.TryGetValue(method.MetadataToken, out var target))
-                throw Invalid("Unknown native actor carry access: " + Describe(method));
-            if (!found.Add(target.Token) || Describe(method) != target.Signature || sites.Length != target.Sites.Length)
-                throw Invalid("Native actor method changed: " + target.Signature);
+            if (method.MetadataToken != target.Token || sites.Length != target.Sites.Length)
+                throw Invalid("Native actor carry method changed: " + target.Signature);
             for (int i = 0; i < sites.Length; i++)
                 if (sites[i].Offset != target.Sites[i].Offset || sites[i].Field != target.Sites[i].Field || sites[i].Write != target.Sites[i].Write)
                     throw Invalid("Native actor operand changed: " + target.Signature + " IL_" + sites[i].Offset.ToString("X4"));
-            target.Method = method;
         }
-        if (found.Count != expected.Count) throw Invalid("Missing native actor methods from audited manifest");
-        return expected.Values.OrderBy(target => target.Token).ToArray();
-    }
-
-    private static IEnumerable<MethodBase> Methods(Type type)
-    {
-        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
-        return type.GetMethods(flags).Cast<MethodBase>().Concat(type.GetConstructors(flags));
+        return targets.Values.OrderBy(target => target.Token).ToArray();
     }
 
     // Inspect all field operands, not source text. This detects new reads in
@@ -175,59 +176,37 @@ internal static class NativeActorCarryAccess
         var bytes = method.GetMethodBody()?.GetILAsByteArray();
         if (bytes == null) return Array.Empty<Site>();
         var result = new List<Site>();
-        int position = 0;
-        while (position < bytes.Length)
+        foreach (var instruction in NativeIl.Read(bytes))
         {
-            int offset = position;
-            short code = bytes[position++];
-            if (code == 0xfe)
-            {
-                RequireBytes(bytes, position, 1);
-                code = unchecked((short)(0xfe00 | bytes[position++]));
-            }
-            if (!Opcodes.TryGetValue(code, out var opcode)) throw Invalid("Unknown native IL opcode");
-            int length;
-            switch (opcode.OperandType)
-            {
-                case OperandType.InlineNone: length = 0; break;
-                case OperandType.ShortInlineBrTarget:
-                case OperandType.ShortInlineI:
-                case OperandType.ShortInlineVar: length = 1; break;
-                case OperandType.InlineVar: length = 2; break;
-                case OperandType.InlineI8:
-                case OperandType.InlineR: length = 8; break;
-                case OperandType.InlineSwitch:
-                    RequireBytes(bytes, position, 4);
-                    int count = BitConverter.ToInt32(bytes, position);
-                    if (count < 0 || count > (bytes.Length - position - 4) / 4) throw Invalid("Invalid native IL switch");
-                    length = 4 + count * 4; break;
-                default: length = 4; break;
-            }
-            RequireBytes(bytes, position, length);
+            var opcode = instruction.Opcode;
             if (opcode.OperandType == OperandType.InlineField)
             {
-                var field = method.Module.ResolveField(BitConverter.ToInt32(bytes, position),
+                var field = method.Module.ResolveField(BitConverter.ToInt32(bytes, instruction.OperandOffset),
                     method.DeclaringType?.GetGenericArguments(), (method as MethodInfo)?.GetGenericArguments());
                 if (IsActorField(field))
                 {
                     if (opcode != OpCodes.Ldfld && opcode != OpCodes.Stfld)
-                        throw Invalid("Unsupported native actor carry opcode " + opcode + " in " + Describe(method));
-                    result.Add(new Site(offset, field.MetadataToken, opcode == OpCodes.Stfld));
+                        throw Invalid("Unsupported native actor carry opcode " + opcode + " in " + NativeGameMethod.Describe(method));
+                    result.Add(new Site(instruction.Offset, field.MetadataToken, opcode == OpCodes.Stfld));
                 }
             }
-            position += length;
         }
         return result.ToArray();
     }
-
-    private static void RequireBytes(byte[] bytes, int offset, int count)
-    { if (count < 0 || offset > bytes.Length - count) throw Invalid("Truncated native IL operand"); }
 
     private static bool IsActorField(FieldInfo field) => field != null && field.DeclaringType == typeof(EmporiumEntry) && FieldNames.Contains(field.Name);
 
     private static MethodInfo Accessor(FieldInfo field, bool write)
     {
-        var method = typeof(NativeActorCarryAccess).GetMethod((write ? "Set_" : "Get_") + (field.Name == SelectedName ? "selectedBackpack" : field.Name), BindingFlags.Static | BindingFlags.NonPublic);
+        MethodInfo method = (field.Name, write) switch
+        {
+            (nameof(EmporiumEntry.afterhourPocketSlotInvLeft), false) => AccessTools.Method(typeof(NativeActorCarryAccess), nameof(Get_afterhourPocketSlotInvLeft)),
+            (nameof(EmporiumEntry.afterhourPocketSlotInvRight), false) => AccessTools.Method(typeof(NativeActorCarryAccess), nameof(Get_afterhourPocketSlotInvRight)),
+            (nameof(EmporiumEntry.afterhourPocketSlotInvBackpack), false) => AccessTools.Method(typeof(NativeActorCarryAccess), nameof(Get_afterhourPocketSlotInvBackpack)),
+            (SelectedName, false) => AccessTools.Method(typeof(NativeActorCarryAccess), nameof(Get_selectedBackpack)),
+            (SelectedName, true) => AccessTools.Method(typeof(NativeActorCarryAccess), nameof(Set_selectedBackpack)),
+            _ => null,
+        };
         Type[] parameters = write ? new[] { typeof(EmporiumEntry), field.FieldType } : new[] { typeof(EmporiumEntry) };
         if (method == null || method.ReturnType != (write ? typeof(void) : field.FieldType) ||
             !method.GetParameters().Select(parameter => parameter.ParameterType).SequenceEqual(parameters))
@@ -237,6 +216,15 @@ internal static class NativeActorCarryAccess
 
     private static IEnumerable<CodeInstruction> Transpile(IEnumerable<CodeInstruction> instructions, MethodBase __originalMethod)
     {
+#if PROBABLY_COOP_ANDROID_HOST_PREVIEW
+        if (NativePlatform.IsAuditedAndroidRuntime && installedTargets != null)
+        {
+            string signature = NativeGameMethod.Describe(__originalMethod);
+            var match = installedTargets.Values.SingleOrDefault(target => target.Signature == signature);
+            if (match == null) throw Invalid("Unexpected Android actor carry target: " + signature);
+            return Rewrite(instructions, match.Sites, match.Signature);
+        }
+#endif
         if (__originalMethod.Module != typeof(EmporiumEntry).Module || installedTargets == null ||
             !installedTargets.TryGetValue(__originalMethod.MetadataToken, out var target))
             throw Invalid("Unexpected actor carry transpiler target");
@@ -257,7 +245,7 @@ internal static class NativeActorCarryAccess
             if (instruction.opcode != OpCodes.Ldfld && instruction.opcode != OpCodes.Stfld ||
                 i > 0 && result[i - 1].opcode.OpCodeType == OpCodeType.Prefix)
                 throw Invalid("Unsupported transformed actor carry instruction: " + diagnostic);
-            var key = (field.MetadataToken, instruction.opcode == OpCodes.Stfld);
+            var key = (AuditedFieldToken(field), instruction.opcode == OpCodes.Stfld);
             actual.TryGetValue(key, out int count); actual[key] = count + 1;
             instruction.opcode = OpCodes.Call;
             instruction.operand = Accessor(field, key.Item2);
@@ -267,15 +255,22 @@ internal static class NativeActorCarryAccess
         return result;
     }
 
-    private static string TypeName(Type type)
+    private static int AuditedFieldToken(FieldInfo field)
     {
-        if (type.IsByRef) return TypeName(type.GetElementType()) + "&";
-        if (type.IsArray) return TypeName(type.GetElementType()) + "[" + new string(',', type.GetArrayRank() - 1) + "]";
-        if (type.IsGenericType) return type.GetGenericTypeDefinition().FullName.Replace('+', '/') + "<" + string.Join(",", type.GetGenericArguments().Select(TypeName)) + ">";
-        return type.FullName?.Replace('+', '/') ?? type.Name;
+#if PROBABLY_COOP_ANDROID_HOST_PREVIEW
+        if (NativePlatform.IsAuditedAndroidRuntime)
+            return field.Name switch
+            {
+                SelectedName => 0x040023BB,
+                "afterhourPocketSlotInvLeft" => 0x040023BE,
+                "afterhourPocketSlotInvBackpack" => 0x040023BF,
+                "afterhourPocketSlotInvRight" => 0x040023C0,
+                _ => throw Invalid("Unmapped Android carry field: " + field.Name),
+            };
+#endif
+        return field.MetadataToken;
     }
-    private static string Describe(MethodBase method) => TypeName((method as MethodInfo)?.ReturnType ?? typeof(void)) + " " +
-        TypeName(method.DeclaringType) + "::" + method.Name + "(" + string.Join(",", method.GetParameters().Select(parameter => TypeName(parameter.ParameterType))) + ")";
+
     private static InvalidDataException Invalid(string message) => new InvalidDataException(message);
 
     private const string SelectedName = "<selectedBackpack>k__BackingField";

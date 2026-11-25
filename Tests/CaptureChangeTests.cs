@@ -95,15 +95,32 @@ internal static class CaptureChangeTests
         var original=NativeSnapshotPages.Unpack(full,default);
         var expected=(JObject)original.DeepClone();
         expected["roots"][0]["items"][0]["data"]["fields"]["Amount"]=38;
-        var changed=new NativeDeferredFields(workerItems:true);
-        var parent=Item(changed,1,false,()=>changed.BorrowRecord(basis,102,nested:true),38);
-        var world=new JObject { ["roots"]=new JArray(new JObject { ["items"]=new JArray(
-            new JObject { ["legacyId"]=1,["data"]=parent },
-            new JObject { ["legacyId"]=2,["data"]=changed.BorrowRecord(basis,2) }) }) };
-        changed.AuditedRecords.Add(1); changed.Seal();
-        var delta=changed.PackFrame(world,default,true,basis,19,out _,out _,full.Single);
-        Check(delta.Delta && changed.ConfirmedRecords.Contains(102) && changed.UntrackedRecords.SetEquals(new uint[]{1}),"nested comparison or audit fallback failed");
-        Check(JToken.DeepEquals(expected,NativeSnapshotBinary.Unpack(NativeRecordBasis.ExpandForAudit(NativeRecordFrame.Body(delta.Single,19),full.Single))),"editing a parent changed its borrowed child");
+        byte[] restoredDelta=null;
+        foreach(bool audit in new[]{true,false})
+        {
+            var changed=new NativeDeferredFields(workerItems:true);
+            var parent=Item(changed,1,false,()=>changed.BorrowRecord(basis,102,nested:true),38);
+            var world=new JObject { ["roots"]=new JArray(new JObject { ["items"]=new JArray(
+                new JObject { ["legacyId"]=1,["data"]=parent },
+                new JObject { ["legacyId"]=2,["data"]=changed.BorrowRecord(basis,2) }) }) };
+            changed.AuditedRecords.Add(1); changed.Seal();
+            var delta=changed.PackFrame(world,default,true,basis,19,out _,out _,audit ? full.Single : null);
+            Check(delta.Delta && changed.ConfirmedRecords.Contains(102) && changed.UntrackedRecords.SetEquals(new uint[]{1}),
+                "nested comparison or audit fallback failed");
+            Check(JToken.DeepEquals(expected,NativeSnapshotBinary.Unpack(NativeRecordBasis.ExpandForAudit(
+                NativeRecordFrame.Body(delta.Single,19),full.Single))),"editing a parent changed its borrowed child");
+            if(audit) restoredDelta=delta.Single;
+            else Check(restoredDelta.AsSpan().SequenceEqual(delta.Single),"inline frozen record changed the existing wire bytes");
+        }
+        var refreshed=new NativeDeferredFields(workerItems:true);
+        var fallback=World(refreshed,true,3);
+        ((JArray)fallback["roots"][0]["items"]).Add(new JObject { ["legacyId"]=1,["data"]=Item(refreshed,1,false,
+            ()=>refreshed.BorrowRecord(basis,102,nested:true),38) });
+        refreshed.Seal();
+        var paged=refreshed.PackFrame(fallback,default,true,basis,19,out var replacement,out int borrowedRoots,preferPages:true);
+        Check(paged.Full && replacement.Contains(102) && borrowedRoots==0,"full fallback lost the inline nested record");
+        Check(JToken.DeepEquals(expected["roots"][0]["items"][0]["data"],NativeSnapshotPages.Unpack(paged,default)["roots"][0]["items"][1]["data"]),
+            "materializing full fallback changed the inline nested record");
         var illegal=new NativeDeferredFields(workerItems:true);
         var invalid=World(illegal,true,5);
         ((JArray)invalid["roots"][0]["items"]).Add(new JObject { ["legacyId"]=2,["data"]=illegal.BorrowRecord(basis,2) });

@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Reflection;
 using HarmonyLib;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -15,20 +16,15 @@ internal sealed partial class NativeEffectCampaign
     private static readonly EntityKey PhoneKey = EntityKey.Scalar("shop.phone");
     private const int PhoneLimit = 96 * 1024;
     private const byte PhoneHost = 2;
-    internal static readonly AccessTools.FieldRef<PhoneUIManager, long> DialNumber =
-        AccessTools.FieldRefAccess<PhoneUIManager, long>("currentNumber");
-    internal static readonly AccessTools.FieldRef<PhoneUIManager, float> DialTimer =
-        AccessTools.FieldRefAccess<PhoneUIManager, float>("clickTimer");
-    private static readonly AccessTools.FieldRef<PhoneUIManager, float> PhoneSequence =
-        AccessTools.FieldRefAccess<PhoneUIManager, float>("sequenceTimer");
-    private static readonly AccessTools.FieldRef<PhoneUIManager, bool> PhoneRinging =
-        AccessTools.FieldRefAccess<PhoneUIManager, bool>("isCalling");
-    private static readonly AccessTools.FieldRef<PhoneUIManager, bool> PhoneTalking =
-        AccessTools.FieldRefAccess<PhoneUIManager, bool>("isTalking");
-    private static readonly AccessTools.FieldRef<DialoguePhoneUIManager, bool> PhoneEndPending =
-        AccessTools.FieldRefAccess<DialoguePhoneUIManager, bool>("isEndPending");
-    private static readonly AccessTools.FieldRef<DialoguePhoneUIManager, bool> PhoneAutoPending =
-        AccessTools.FieldRefAccess<DialoguePhoneUIManager, bool>("isAutoAdvancePending");
+    private static readonly FieldInfo DialNumberField = AccessTools.Field(typeof(PhoneUIManager), "currentNumber");
+    private static readonly FieldInfo DialTimerField = AccessTools.Field(typeof(PhoneUIManager), "clickTimer");
+    private static readonly FieldInfo PhoneSequence = AccessTools.Field(typeof(PhoneUIManager), "sequenceTimer");
+    private static readonly FieldInfo PhoneRinging = AccessTools.Field(typeof(PhoneUIManager), "isCalling");
+    private static readonly FieldInfo PhoneTalking = AccessTools.Field(typeof(PhoneUIManager), "isTalking");
+    private static readonly FieldInfo PhoneEndPending = AccessTools.Field(typeof(DialoguePhoneUIManager), "isEndPending");
+    private static readonly FieldInfo PhoneAutoPending = AccessTools.Field(typeof(DialoguePhoneUIManager), "isAutoAdvancePending");
+    internal static long DialNumber(PhoneUIManager phone) => (long)DialNumberField.GetValue(phone);
+    private static float DialTimer(PhoneUIManager phone) => (float)DialTimerField.GetValue(phone);
     private byte[] publishedPhone;
     private JObject replicaPhone;
     private byte phoneOwner;
@@ -57,9 +53,9 @@ internal sealed partial class NativeEffectCampaign
 
     private static PhonePhase CurrentPhonePhase(PhoneUIManager phone)
     {
-        if (PhoneTalking(phone)) return PhonePhase.Conversation;
-        if (PhoneRinging(phone)) return PhonePhase.Ringing;
-        if (PhoneSequence(phone) > 0) return PhonePhase.Connecting;
+        if ((bool)PhoneTalking.GetValue(phone)) return PhonePhase.Conversation;
+        if ((bool)PhoneRinging.GetValue(phone)) return PhonePhase.Ringing;
+        if ((float)PhoneSequence.GetValue(phone) > 0) return PhonePhase.Connecting;
         if (phone.statusDisplay.text == LocHelper.GetLocalizedUI("ui_phone_no_answer")) return PhonePhase.Unanswered;
         return PhonePhase.Ready;
     }
@@ -126,7 +122,7 @@ internal sealed partial class NativeEffectCampaign
                 if (choice.IsInteractable()) mask |= 1 << i;
             }
         bool advance = displayed && dialog.choices.Count == 0 &&
-            (ui.isWaitingForManualAdvance || PhoneEndPending(ui) || PhoneAutoPending(ui));
+            (ui.isWaitingForManualAdvance || (bool)PhoneEndPending.GetValue(ui) || (bool)PhoneAutoPending.GetValue(ui));
         if (phase != sourcePhonePhase || advance != sourceCanAdvance || mask != sourcePhoneChoiceMask ||
             choiceView != sourcePhoneChoices)
             phoneDirty = true;
@@ -219,7 +215,7 @@ internal sealed partial class NativeEffectCampaign
                         if (intent.Action == ActivityAction.QuickDial) phone.AutoCall(intent.Value);
                         else
                         {
-                            DialNumber(phone) = intent.Value;
+                            DialNumberField.SetValue(phone, intent.Value);
                             phone.StartCalling();
                         }
                         break;
@@ -292,14 +288,14 @@ internal sealed partial class NativeEffectCampaign
         else if (oldOwner != 0)
         {
             queuedDial = queuedHangup = false;
-            DialNumber(phone) = 0;
+            DialNumberField.SetValue(phone, 0L);
         }
         if (!phone.phonePanel.activeSelf) return;
         var phase = (PhonePhase)(byte)facts["phase"];
         if (owner != 0 || oldOwner != 0)
         {
-            DialTimer(phone) = -1;
-            DialNumber(phone) = owner == NetSession.GuestPeer ? (long)facts["number"] : 0;
+            DialTimerField.SetValue(phone, -1f);
+            DialNumberField.SetValue(phone, owner == NetSession.GuestPeer ? (long)facts["number"] : 0L);
         }
         if (owner != 0 || DialTimer(phone) <= 0)
             phone.statusDisplay.text = LocHelper.GetLocalizedUI(phase switch

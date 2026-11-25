@@ -31,6 +31,9 @@ internal sealed class SteamRoom : ICoopRoom
     private double nextSendError;
     private bool linkFailed;
     private bool publishedJoin;
+    private double nextQualityCheck;
+    private CSteamID qualityPeer;
+    private (int Ping, float IncomingDelivery, float OutgoingDelivery, int SendCapacity)? quality;
 
     public CoopSession Session { get; private set; }
     public bool HasLobby => lobby != CSteamID.Nil;
@@ -40,6 +43,20 @@ internal sealed class SteamRoom : ICoopRoom
     public bool CanApprove => IsHost && peer==candidate && candidate!=CSteamID.Nil && Session?.JoinPending==true;
     public bool AcceptingJoins => IsHost && Session?.AcceptingJoins==true;
     internal bool FriendsCanJoin => publishedJoin;
+    internal (int Ping, float IncomingDelivery, float OutgoingDelivery, int SendCapacity)? ConnectionQuality()
+    {
+        if (peer == CSteamID.Nil || Session?.State != LinkState.Connected) return null;
+        double now = Now;
+        if (peer == qualityPeer && now < nextQualityCheck) return quality;
+        qualityPeer = peer;
+        nextQualityCheck = now + 1;
+        var identity = Identity(peer);
+        var state = SteamNetworkingMessages.GetSessionConnectionInfo(ref identity, out _, out var status);
+        quality = state == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected
+            ? (status.m_nPing, status.m_flConnectionQualityLocal, status.m_flConnectionQualityRemote, status.m_nSendRateBytesPerSecond)
+            : null;
+        return quality;
+    }
     public string Code => HasLobby ? RoomCode.Encode(lobby.m_SteamID) : "";
     public string Status { get; private set; } = "idle";
     public string Detail { get; private set; } = "";
@@ -139,6 +156,7 @@ internal sealed class SteamRoom : ICoopRoom
             Leave("lobby_timeout");
         if (!HasLobby) return;
 
+        Session?.ObserveNetworkPump(now);
         if (now >= nextRosterCheck)
         {
             nextRosterCheck = now + 0.25;
@@ -155,6 +173,7 @@ internal sealed class SteamRoom : ICoopRoom
         Drain(ControlChannel, now);
         Drain(CursorChannel, now);
         if (Session == null) return;
+        Session.ObserveNetworkPump(now);
         beforeSessionTick?.Invoke();
         Session.Tick(now);
 
@@ -270,7 +289,7 @@ internal sealed class SteamRoom : ICoopRoom
 
     private CoopSession MakeSession(bool host)
     {
-        var result = new CoopSession(host, fingerprint, Send,requireApproval:host);
+        var result = new CoopSession(host, fingerprint, Send,requireApproval:host,measurementClock:()=>Now);
         result.RemoteCursor += packet => RemoteCursor?.Invoke(packet);
         result.Received += kind =>
         {

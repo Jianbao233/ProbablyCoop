@@ -57,14 +57,14 @@ internal sealed partial class NativeWorld
         return new JObject { ["line"]=row.Line,["visible"]=bubble.gameObject.activeSelf,["text"]=row.Text,
             ["rich"]=bubble.textfield.richText,["skip"]=row.Skipped,["color"]=new JArray(color.r,color.g,color.b,color.a) };
     }
-    private void ApplyNativeBubble(TextBubble bubble,JObject data)
+    private void ApplyNativeBubble(TextBubble bubble,JObject data,bool visibleLocally=true)
     {
         if(data==null || data["line"]?.Type!=JTokenType.Integer || !ulong.TryParse(data["line"].ToString(),out ulong line) || line==0 ||
             data["text"]?.Type!=JTokenType.String || ((string)data["text"]).Length>32768 ||
             data["visible"]?.Type!=JTokenType.Boolean || data["rich"]?.Type!=JTokenType.Boolean || data["skip"]?.Type!=JTokenType.Boolean ||
             data["color"] is not JArray color || color.Count!=4) throw new InvalidDataException("Invalid native bubble line");
         if(!localBubbles.TryGetValue(bubble,out var row)) localBubbles[bubble]=row=new LocalBubble();
-        row.Line=line; row.Text=(string)data["text"]; row.Visible=(bool)data["visible"]; row.Rich=(bool)data["rich"]; row.Skipped=(bool)data["skip"];
+        row.Line=line; row.Text=(string)data["text"]; row.Visible=(bool)data["visible"] && visibleLocally; row.Rich=(bool)data["rich"]; row.Skipped=(bool)data["skip"];
         bubble.SetColor(new Color((float)color[0],(float)color[1],(float)color[2],(float)color[3]));
         if(!row.Visible)
         {

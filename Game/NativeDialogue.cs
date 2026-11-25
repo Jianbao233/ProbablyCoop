@@ -9,6 +9,7 @@ namespace ProbablyCoop;
 internal sealed partial class NativeWorld
 {
     private JObject dialogueState;
+    private bool customerDialogueDeferred, securityDialogueDeferred;
     private StoreClient remoteDialogueClient;
     private DialogUIManager dialoguePaletteUi;
     private string dialogueFaction, dialogueColor;
@@ -40,17 +41,42 @@ internal sealed partial class NativeWorld
         StoreUIManager.Instance.isAboutToStartMainDialog=(bool)data["pendingStart"];
         var ui=DialogUIManager.Instance;
         ApplyDialoguePalette(ui);
-        ApplyPhoneBubble(ui.clientBubble,(JObject)data["client"]); ApplyPhoneBubble(ui.playerBubble,(JObject)data["player"]);
-        ApplyPhoneBubble(ui.secBubble,(JObject)data["sec"]);
-        ui.clientNameTMP.text=(string)data["name"]; ui.clientNameBubble.SetActive((bool)data["nameVisible"]);
-        ui.secNameBubble.SetActive((bool)data["secNameVisible"]);
+        ApplyCustomerDialogue(ui,data);
+        ApplySecurityDialogue(ui,data);
+    }
+    private void ApplyCustomerDialogue(DialogUIManager ui,JObject data)
+    {
+        // The host may reach the counter earlier than the guest. Let the
+        // guest finish its original walk before showing the latest line.
+        customerDialogueDeferred=CustomerSpeakerApproaching();
+        ApplyNativeBubble(ui.clientBubble,(JObject)data["client"],!customerDialogueDeferred);
+        ApplyNativeBubble(ui.playerBubble,(JObject)data["player"],!customerDialogueDeferred);
+        ui.clientNameTMP.text=(string)data["name"];
+        ui.clientNameBubble.SetActive(!customerDialogueDeferred && (bool)data["nameVisible"]);
         var choices=(JArray)data["choices"];
         for(int i=0;i<ui.dialogChoiceBubbles.Count;i++)
         {
-            var b=ui.dialogChoiceBubbles[i]; bool visible=i<choices.Count && (bool)choices[i]["visible"];
+            var b=ui.dialogChoiceBubbles[i];
+            bool visible=!customerDialogueDeferred && i<choices.Count && (bool)choices[i]["visible"];
             b.gameObject.SetActive(visible); if(!visible) continue;
             b.TMP.richText=(bool)choices[i]["rich"]; b.TMP.text=(string)choices[i]["text"]; b.SetInteractable((bool)choices[i]["enabled"]);
         }
+    }
+    private void ApplySecurityDialogue(DialogUIManager ui,JObject data)
+    {
+        var bubble=(JObject)data["sec"];
+        bool showName=(bool)data["secNameVisible"];
+        securityDialogueDeferred=(showName || (bool?)bubble?["visible"] == true) && SecuritySpeakerApproaching();
+        ApplyNativeBubble(ui.secBubble,bubble,!securityDialogueDeferred);
+        ui.secNameBubble.SetActive(showName && !securityDialogueDeferred);
+    }
+    private void TickDialoguePresentation()
+    {
+        if(DialogUIManager.Instance is not { } ui || ui==null) return;
+        if(customerDialogueDeferred && !CustomerSpeakerApproaching())
+            ApplyCustomerDialogue(ui,dialogueState);
+        if(securityDialogueDeferred && !SecuritySpeakerApproaching())
+            ApplySecurityDialogue(ui,dialogueState);
     }
     private void ApplyDialoguePalette(DialogUIManager ui)
     {
@@ -72,6 +98,7 @@ internal sealed partial class NativeWorld
     internal bool PendingMainDialogue => dialogueState!=null && (bool)dialogueState["pendingStart"];
     internal bool RequestDialogue(int choice=-1)
     {
+        if(customerDialogueDeferred || securityDialogueDeferred) return false;
         JArray skip=null;
         if(choice==-1) SkipLocalBubbles(false,out skip);
         if(!HasDialogue) return skip!=null;

@@ -390,6 +390,10 @@ internal static class NativeShootingQaEvidence
     private static readonly Dictionary<ulong,int> removalCalls=new();
     internal static bool Enabled=>NativeBackgroundQa.Enabled &&
         (Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa-mechanisms-only")>=0 ||
+#if PROBABLY_COOP_GRID_QA
+         Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa-survivor-shot")>=0 ||
+         Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa-fatal-aug-shot")>=0 ||
+#endif
          Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa-requested-shooting")>=0);
     internal static void Reset(){SourceShots=SourceShootouts=SourceAchievements=GoodKills=BadKills=LocalRecoil=LocalFlash=0;offers.Clear();removalCalls.Clear();}
     internal static void TrackOffer(GameItemElement item,int round)=>offers.Add(item,new Offer {Round=round});

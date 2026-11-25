@@ -350,9 +350,9 @@ internal static class NativeActorDialogueLineBinding
 {
     private static IEnumerable<MethodBase> TargetMethods()
     {
-        foreach (var type in new[] { typeof(DialogUIManager), typeof(DialoguePhoneUIManager) })
-            yield return AccessTools.Method(type, "ContinueConversation");
-        yield return AccessTools.Method(typeof(DialoguePhoneUIManager), "StartDialogue");
+        yield return AccessTools.Method(typeof(DialogUIManager), nameof(DialogUIManager.ContinueConversation));
+        yield return AccessTools.Method(typeof(DialoguePhoneUIManager), nameof(DialoguePhoneUIManager.ContinueConversation));
+        yield return AccessTools.Method(typeof(DialoguePhoneUIManager), nameof(DialoguePhoneUIManager.StartDialogue));
     }
     private static void Prefix(object __instance, out Dialogue __state) => __state = NativeActorContinuations.Line(__instance);
     private static void Postfix(object __instance, Dialogue __state)
@@ -379,8 +379,10 @@ internal static class NativeActorDialogueContinuation
 {
     private static IEnumerable<MethodBase> TargetMethods()
     {
-        foreach (var type in new[] { typeof(DialogUIManager), typeof(DialoguePhoneUIManager) })
-            foreach (string method in new[] { "ScheduleFlow", "OnCurrentTextDisplayed" }) yield return AccessTools.Method(type, method);
+        yield return AccessTools.Method(typeof(DialogUIManager), "ScheduleFlow");
+        yield return AccessTools.Method(typeof(DialogUIManager), nameof(DialogUIManager.OnCurrentTextDisplayed));
+        yield return AccessTools.Method(typeof(DialoguePhoneUIManager), "ScheduleFlow");
+        yield return AccessTools.Method(typeof(DialoguePhoneUIManager), nameof(DialoguePhoneUIManager.OnCurrentTextDisplayed));
     }
     private static void Prefix(object __instance, MethodBase __originalMethod, out IDisposable __state)
     {

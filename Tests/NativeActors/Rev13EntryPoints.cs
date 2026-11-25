@@ -151,7 +151,8 @@ internal static class Rev13EntryPoints
         var proofType=Nested(registry,"PreparedResume");
         string file=Path.Combine(Path.GetTempPath(),"save_9.es3");
         var original=new byte[]{13,27,37};
-        var proof=proofType.GetConstructors(instance).Single().Invoke(new object[]{file,original,envelope});
+        var digest=System.Security.Cryptography.SHA256.HashData(original);
+        var proof=proofType.GetConstructors(instance).Single().Invoke(new object[]{file,digest,envelope});
         var match=Get(proofType,"Match");
         var registered=new HashSet<Guid>{run};
         object Match(string path,int slot,HashSet<Guid> runs,byte[] bytes) =>

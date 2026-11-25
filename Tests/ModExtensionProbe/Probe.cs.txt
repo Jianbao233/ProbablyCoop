@@ -16,6 +16,7 @@ public sealed class ProbeMod : IMod
     private int count;
     private int displayed = -1;
     private int phase;
+    private int localActivations;
     private bool sawHostSession;
     private ulong firstRevision;
     private bool forceReconnect;
@@ -25,6 +26,7 @@ public sealed class ProbeMod : IMod
     public void OnEnable()
     {
         ModHelper.OnMessage(ModId,CoopExtensionApi.DiscoveryChannel,Discover);
+        ModHelper.Expose(ModId, CoopExtensionApi.LocalItemActivationService, (Func<GameItem, bool>)OpenStorageView);
         var arguments = Environment.GetCommandLineArgs();
         if(!arguments.Contains("--probably-coop-qa-extension-probe") ||
             !Application.productName.StartsWith("Probably Stolen Coop RegressionRev12Water ",StringComparison.Ordinal))
@@ -38,6 +40,7 @@ public sealed class ProbeMod : IMod
     public void OnDisable()
     {
         ModHelper.OffMessage(ModId,CoopExtensionApi.DiscoveryChannel,Discover);
+        ModHelper.Expose(ModId, CoopExtensionApi.LocalItemActivationService, null);
         if(runner!=null) UnityEngine.Object.Destroy(runner);
         runner=null;
         session=null;
@@ -62,6 +65,7 @@ public sealed class ProbeMod : IMod
     {
         session=next;
         phase=0;
+        localActivations=0;
         displayed=-1;
         firstRevision=0;
         sawHostSession=false;
@@ -120,6 +124,11 @@ public sealed class ProbeMod : IMod
         var shop = EmporiumEntry.Instance;
         if (shop?.invElement == null) return false;
         var item = DirectoryMaster.Item("labeler");
+        ModHelper.SetSource(item, ModId, "ProbablyCoop Extension Probe");
+        item.mayActivateSlotItemFunc = (_, _, _) => true;
+        item.canActivateSlotItemFunc = (_, _, _) => true;
+        item.onActivateSlotItemFunc = (_, _, _) =>
+            Debug.LogError("[coop-extension-probe] FAIL local opening was sent to host");
         var layout = new DeclaredStorage();
         var window = new PixelWindow(true, StorageProbeName);
         window.Attach(layout);
@@ -134,7 +143,7 @@ public sealed class ProbeMod : IMod
         return true;
     }
 
-    private static bool VerifyStorageFixture()
+    private bool VerifyStorageFixture()
     {
         var shop = EmporiumEntry.Instance;
         var item = shop.invElement.childItems.Concat(shop.backInvinvElement.childItems)
@@ -147,6 +156,21 @@ public sealed class ProbeMod : IMod
             !window.children.Contains(second) || !second.parents.Contains(window) ||
             !ReferenceEquals(second.childItem.parentInventory, second))
             throw new InvalidOperationException("The declared native slots lost their order or graph ownership.");
+        if (!item.MayActivateSlotItem() || !item.CanActivateSlotItem())
+            throw new InvalidOperationException("Original context activation was unavailable.");
+        item.ActivateSlotItem();
+        if (localActivations != 1 || CustomUIManager.Instance.GetWindow(ModId + ":local-view")?.IsAlive != true)
+            throw new InvalidOperationException("Original context activation did not open one local window.");
+        CustomUIManager.Instance.CloseWindow(ModId + ":local-view");
+        Debug.Log("[coop-extension-probe] PASS original context activation opened one guest-only window");
+        return true;
+    }
+
+    private bool OpenStorageView(GameItem item)
+    {
+        if (GeneralHelper.GetCustomName(item) != StorageProbeName) return false;
+        localActivations++;
+        CustomUIManager.Instance.CreateWindow(ModId + ":local-view", StorageProbeName).Show();
         return true;
     }
 

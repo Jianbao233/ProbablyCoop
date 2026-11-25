@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using Newtonsoft.Json.Linq;
+using ProbablyCoop.Api;
 using ProbablyCoop.Core;
 
 namespace ProbablyCoop;
@@ -91,7 +92,7 @@ internal sealed partial class NativeWorld
     {
         if(!TryData(item,out var data)) return;
         if(CloseKnownFrontend(item,action)) return;
-        if(action=="activate" && OpenLocalDocument(item)) return;
+        if(action=="activate" && (OpenLocalDocument(item) || OpenModLocalItem(item))) return;
         // These three native tools first open an actor-local editor. Its eventual
         // business actions are separately routed, so the host's panel stays independent.
         if(action=="target" && TargetEditor(item) is EditorKind editor && TargetQuery(item,target,true))
@@ -102,6 +103,29 @@ internal sealed partial class NativeWorld
         if(target!=null && !TryData(target,out _)) return;
         Submit(new JObject { ["kind"]="item",["action"]=action,["id"]=(uint)data["entity"],["token"]=(string)data["moveToken"],
             ["target"]=model.ReplicaId(target),["targetToken"]=target!=null ? (string)model.Data[model.ReplicaId(target)]["moveToken"] : "" });
+    }
+
+    private bool OpenModLocalItem(GameItem item)
+    {
+        const string sourceTag = "MOD_ID_TAG";
+        if (!Ready || !item.IsTag(sourceTag) || !GeneralHelper.IsItemEffectivelyOwned(item) ||
+            !Accessible(item.parentInventory)) return false;
+        string modId = item.GetTagReadonly(sourceTag).GetString();
+        if (string.IsNullOrEmpty(modId) || !ModHelper.IsModRunning(modId)) return false;
+
+        var open = ModHelper.Lookup<Func<GameItem, bool>>(modId, CoopExtensionApi.LocalItemActivationService);
+        if (open == null) return false;
+        try
+        {
+            return open(item);
+        }
+        catch (Exception error)
+        {
+            // A provider may already have handled the click before throwing.
+            // Never send a second activation to the host after that failure.
+            UnityEngine.Debug.LogWarning($"[probably_coop] local item activation failed in {modId}: {error}");
+            return true;
+        }
     }
     private readonly ContentsProofCache contentsProofs=new ContentsProofCache();
     private readonly List<ContentsProofCache.Row> contentsProofRows=new List<ContentsProofCache.Row>();

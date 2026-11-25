@@ -15,6 +15,10 @@ internal sealed partial class NativeBackgroundQa
     private int workshopStep;
     private double workshopUntil;
     private bool workshopMade, workshopPurified, workshopInstalled, workshopHostDone;
+#if PROBABLY_COOP_GRID_QA
+    private int workshopMountSounds, workshopUnmountSounds;
+    internal static int LocalWorkshopMountSounds, LocalWorkshopUnmountSounds;
+#endif
 
     private void SeedWorkshopQa()
     {
@@ -123,6 +127,10 @@ internal sealed partial class NativeBackgroundQa
                 if(WaterHelper.GetWaterPurity(workshopWater)<=workshopPurity) return false;
                 Require(DurabilityHelper.GetRealDurability(workshopPurifier)<workshopDurability,"guest purifier durability differs after use");
                 Record("PASS guest-native-water-purification","guest used the native tool on dirty water and received changed purity and tool durability");
+#if PROBABLY_COOP_GRID_QA
+                workshopMountSounds=LocalWorkshopMountSounds;
+                workshopUnmountSounds=LocalWorkshopUnmountSounds;
+#endif
                 ReleaseWholeIntoContainer((GameItemElement)workshopPart,workshopGun);
                 break;
             case 7:
@@ -135,6 +143,13 @@ internal sealed partial class NativeBackgroundQa
             case 8:
                 if(!ReferenceEquals(workshopPart.parentInventory,workshopPartOrigin)) return false;
                 Require(WorkshopReliability()==workshopReliability,"guest gun reliability did not return to its initial value");
+#if PROBABLY_COOP_GRID_QA
+                int mountSounds=LocalWorkshopMountSounds-workshopMountSounds;
+                int unmountSounds=LocalWorkshopUnmountSounds-workshopUnmountSounds;
+                Require(mountSounds==1 && unmountSounds==1,
+                    $"original guest workshop cues: installed={mountSounds}, removed={unmountSounds}; expected one of each");
+                Record("PASS guest-native-gun-part-audio","original install and remove AudioManager.Play2 each succeeded once");
+#endif
                 Record("PASS guest-native-gun-modification","original drag installed and removed the same springs, and synced both reliability values");
                 workshopStep=9;
                 return true;
@@ -143,3 +158,16 @@ internal sealed partial class NativeBackgroundQa
         return false;
     }
 }
+
+#if PROBABLY_COOP_GRID_QA
+[HarmonyPatch(typeof(AudioManager), nameof(AudioManager.Play2))]
+internal static class NativeWorkshopQaAudioObserver
+{
+    private static void Postfix(string identifier, bool __result)
+    {
+        if (!__result || !NativeGuest.Active || !NativeBackgroundQa.Enabled) return;
+        if (identifier == "modding1") NativeBackgroundQa.LocalWorkshopMountSounds++;
+        if (identifier == "modding2") NativeBackgroundQa.LocalWorkshopUnmountSounds++;
+    }
+}
+#endif

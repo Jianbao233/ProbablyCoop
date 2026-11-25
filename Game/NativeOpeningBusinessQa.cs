@@ -32,7 +32,9 @@ internal sealed partial class NativeBackgroundQa
     private void OpeningClickArrow(ReplicaLink link,bool right)
     {
         var ui=NegociationUIManager.Instance; ui.OpenUI(); ui.RefreshUI();
-        var button=(Button)AccessTools.Field(typeof(NegociationUIManager),right ? "selectorNext" : "selectorPrev").GetValue(ui);
+        var selector=right ? AccessTools.Field(typeof(NegociationUIManager),"selectorNext") :
+            AccessTools.Field(typeof(NegociationUIManager),"selectorPrev");
+        var button=(Button)selector.GetValue(ui);
         Require(button!=null && button.interactable,"native barter selector unavailable");
         button.onClick.Invoke();
         Require(QaWaiting(link),"native barter selector emitted no authenticated request");

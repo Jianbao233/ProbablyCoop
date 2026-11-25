@@ -2,6 +2,7 @@ using System;
 using System.Net;
 using ProbablyCoop.Core;
 using Steamworks;
+using UnityEngine;
 
 namespace ProbablyCoop;
 
@@ -40,7 +41,12 @@ internal sealed class RoomSelector : ICoopRoom
         _ => TransportKind.None
     };
     internal IPEndPoint Ipv4HostEndpoint => (active as LocalRoom)?.Ipv4HostEndpoint;
+    internal bool CanReloadInShop => IsHost && Session is { WorldReloadPending: false } connection &&
+        (connection.State == LinkState.Waiting ||
+            (connection.State == LinkState.Connected && connection.Native.FullRevision != 0));
     internal bool FriendsCanJoin => active is SteamRoom steam && steam.FriendsCanJoin;
+    internal (int Ping, float IncomingDelivery, float OutgoingDelivery, int SendCapacity)? SteamQuality() =>
+        (active as SteamRoom)?.ConnectionQuality();
     public int Sent => active?.Sent ?? 0;
     public int Received => active?.Received ?? 0;
     public event Action<Packet> RemoteCursor;
@@ -107,7 +113,7 @@ internal sealed class RoomSelector : ICoopRoom
         DisposeActive();
         if (!direct && (NativePlatform.IsAndroid || !SteamManager.Initialized))
         {
-            selectionStatus = NativePlatform.IsAndroid ? "android_guest_only" : "steam_unavailable";
+            selectionStatus = NativePlatform.IsAndroid ? "android_no_steam" : "steam_unavailable";
             return false;
         }
 
@@ -128,6 +134,12 @@ internal sealed class RoomSelector : ICoopRoom
     {
         active?.Tick(beforeSessionTick);
         NativeRoomPacing.Update(this);
+    }
+
+    internal void AnnounceSceneLoad()
+    {
+        if (IsHost && Session?.BeginWorldReload(Time.realtimeSinceStartupAsDouble) == true)
+            Tick();
     }
 
     private void DisposeActive()

@@ -1,5 +1,6 @@
 #if PROBABLY_COOP_GRID_QA
 using System;
+using System.Linq;
 using ProbablyCoop.Core;
 using UnityEngine;
 
@@ -11,6 +12,20 @@ internal sealed partial class CoopPanel
 
     private void TickJoinReviewQa()
     {
+        if (NativeBackgroundQa.Enabled && NativeBackgroundQa.IsGuestProduct && NativeJoinWizardQa.TabletSmoke &&
+            reviewWindow?.IsAlive == true && shownReview != null && joinReviewQaStep == 0)
+        {
+            var differences = shownReview.Rows.Where(row => row.Kind != RoomModManifest.Difference.LocalOnly).ToArray();
+            QaJoinRequire(!shownReview.Blocked && differences.Length == 1 &&
+                differences[0].Id == "probably_coop_tablet_qa_relay" &&
+                differences[0].Kind == RoomModManifest.Difference.Missing,
+                "Tablet QA encountered an unapproved mod difference.");
+            confirmReview.button.onClick.Invoke();
+            reviewWindow.Get("join_accept_differences").button.onClick.Invoke();
+            QaJoinRequire(triedWithDifferences, "Tablet QA confirmation did not admit the guest.");
+            joinReviewQaStep = 3;
+            return;
+        }
         if (!NativeBackgroundQa.Enabled || !NativeBackgroundQa.IsGuestProduct || !NativeJoinWizardQa.Enabled ||
             reviewWindow?.IsAlive != true || joinReviewQaStep >= 3) return;
         if (joinReviewQaFrame == 0) { joinReviewQaFrame = Time.frameCount; return; }
@@ -80,5 +95,6 @@ internal static class NativeJoinWizardQa
     internal static bool Enabled => Array.IndexOf(Arguments, "--probably-coop-qa-join-review") >= 0;
     internal static bool Blocked => Array.IndexOf(Arguments, "--probably-coop-qa-join-blocked") >= 0;
     internal static bool LateFailure => Array.IndexOf(Arguments, "--probably-coop-qa-join-failure") >= 0;
+    internal static bool TabletSmoke => Array.IndexOf(Arguments, "--probably-coop-qa-tablet-smoke") >= 0;
 }
 #endif

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using DG.Tweening;
 using HarmonyLib;
+using Newtonsoft.Json.Linq;
 using ProbablyCoop.Core;
 using UnityEngine;
 
@@ -12,6 +13,13 @@ namespace ProbablyCoop;
 internal sealed partial class NativeBackgroundQa
 {
     private readonly bool pairedOpeningQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-paired-opening") >= 0;
+    private readonly bool survivorShotQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-survivor-shot") >= 0;
+    private readonly bool fatalAugShotQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-fatal-aug-shot") >= 0;
+    private static readonly bool WithholdOfficerDepartureCue =
+        Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-miss-officer-departure") >= 0;
+    private static bool officerDepartureCueWithheld;
+    private static readonly bool SharedFieldAudioQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-field-audio") >= 0;
+    private static int guestDoorSounds;
     private readonly bool openingRentQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-opening-rent") >= 0;
     private readonly bool labelLocaleQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-label-locale") >= 0;
     private readonly bool reverseOpeningQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-reverse-opening") >= 0;
@@ -28,6 +36,15 @@ internal sealed partial class NativeBackgroundQa
     private double securityAt;
     private Vector3 officerLastPosition;
     private bool officerSeen;
+    private bool reportCustomerQueued;
+    private bool pairedScavengeSent;
+    private int pairedScavengeBefore;
+    private bool survivorWoundSeen;
+    private ulong survivorEpisode;
+    private int policeApproachFrames, policeDepartureFrames, cashBeforeShot;
+    private bool bodySeenAfterShot, policeArrivedDuringShot, policeMovedOffCamera;
+    private bool policeDialogueSeen, policeDialogueEarly;
+    private double nextShotDialogueAdvance;
 
     private void TickPairedOpening(RoomSelector room, CoopPanel panel, NativeShop shop, bool inMenu, double now)
     {
@@ -136,15 +153,35 @@ internal sealed partial class NativeBackgroundQa
         }
         if (labelLocaleQa && !TickLabelLocaleQa()) return;
         if (!TickPairedTravel()) return;
+        if (survivorShotQa) { TickButcherSurvivor(); return; }
+        if (fatalAugShotQa) { TickFatalAugShot(now); return; }
         if (securityAt == 0) securityAt = now + 4;
         var ui = StoreUIManager.Instance;
         if (host)
         {
             if (pairedStep == 4 && now >= securityAt)
             {
-                ui.StartArrestSequence();
+                var store = PlayerStore.Instance;
+                if (store.storeState == PlayerStore.StoreState.MORNING)
+                {
+                    if (store.CanStartDay()) StoreShutterButton.Instance.OnClick();
+                    return;
+                }
+                if (!reportCustomerQueued)
+                {
+                    var client = StoreClientListWanted.CreateWanted2Return();
+                    client.mainDialogue = null;
+                    store.storeClientManager.AddNextClient(client);
+                    store.TryCallNextClient();
+                    reportCustomerQueued = true;
+                    return;
+                }
+                var target = store.currentClientInstance?.GetClientBlueprint();
+                if (target?.identifier != "wanted2_return" || !store.isClientArrived || ui.isAboutToStartMainDialog) return;
+                StoreSecButton.Instance.OnClick();
+                Require(target.reported, "the original security button did not report the selected customer");
                 pairedStep = 5;
-                securityAt = now + 5;
+                securityAt = now + 8;
             }
             if (pairedStep == 5 && now >= securityAt)
             {
@@ -175,8 +212,205 @@ internal sealed partial class NativeBackgroundQa
         {
             Require(securityFrames >= 12, $"guest saw only {securityFrames} changing officer frames");
             if (ui.secGameObject2.gameObject.activeSelf) return;
+            Require(NativeWorld.Guest.QaSecurityAlarms == 1, "the original report alarm was missing or replayed");
+            Record("PASS security alarm audio", "the guest played the report alarm once through the original shop source");
             Record("PASS local-security-motion", $"{securityFrames} moving frames on local native path; both officers hidden");
             Finish("PASS guest paired opening and security");
+        }
+    }
+
+    private void TickButcherSurvivor()
+    {
+        var store = PlayerStore.Instance;
+        var world = host ? NativeWorld.Host : NativeWorld.Guest;
+        var ui = StoreUIManager.Instance;
+        var client = store.currentClientInstance?.GetClientBlueprint();
+        if (host && pairedStep == 4)
+        {
+            if (store.storeState == PlayerStore.StoreState.MORNING)
+            {
+                if (store.CanStartDay()) StoreShutterButton.Instance.OnClick();
+                return;
+            }
+            Require(store.storeState == PlayerStore.StoreState.OPEN && !store.IsClientPresent(),
+                "expected an open, empty store for the original Butcher visit");
+            Shotgun.Unlock();
+            store.storeClientManager.AddNextClient(StoreClientListWanted.CreateWanted2Return());
+            store.TryCallNextClient();
+            pairedStep = 5;
+            return;
+        }
+        if (!host && pairedStep == 4)
+        {
+            if (client?.identifier != "wanted2_return" || !store.isClientArrived || ui.isAboutToStartMainDialog) return;
+            Require(client.survivesShot, "the replica lost the native Butcher survivor flag");
+            if (world.HasDialogue) { DialogUIManager.Instance.OnAdvancePressed(); return; }
+            ui.shotgun.GetComponent<Shotgun>().OnClick();
+            pairedStep = 5;
+        }
+        Require(!ui.body.activeSelf && !ui.secGameObject.gameObject.activeSelf && !store.isHandlingShootout,
+            "a survivor shot incorrectly entered the lethal aftermath");
+        if (!host && pairedStep == 5 && world.ShootingState == NativeWorld.ShootingPhase.Aiming &&
+            ui.isShootingMode && ui.shootingUI.activeSelf)
+        {
+            ui.Shoot();
+            survivorEpisode = world.ShootingEpisode;
+            pairedStep = 6;
+        }
+        if (ui.shootingWoundRenderer.gameObject.activeSelf)
+        {
+            if (!survivorWoundSeen) NativeOffscreenCapture.Capture("qa-butcher-survivor");
+            survivorWoundSeen = true;
+        }
+        if (!host && pairedStep == 6 && world.ShootingEpisode == survivorEpisode && world.HasDialogue)
+            DialogUIManager.Instance.OnAdvancePressed();
+        if (world.ShootingState != NativeWorld.ShootingPhase.Complete || !survivorWoundSeen ||
+            ui.isShootingMode || client?.identifier == "wanted2_return" || ui.shootingWoundRenderer.gameObject.activeSelf) return;
+        Require(ui.mainCamera.activeSelf && !ui.isShot && ui.shotClientInstance == null,
+            "the original survivor scene left the camera or shooting state locked");
+        if (host)
+            Require(NativeShootingQaEvidence.SourceShots == 1 && NativeShootingQaEvidence.SourceShootouts == 0,
+                "the original Butcher action did not run once");
+        else
+            Require(NativeShootingQaEvidence.LocalFlash == 1 && NativeShootingQaEvidence.LocalGunSounds == 1 &&
+                NativeShootingQaEvidence.LocalBodySounds == 0, "the guest missed or replayed the survivor shot sound");
+        if (pairedStep == 7) return;
+        pairedStep = 7;
+        NativeOffscreenCapture.Capture("qa-butcher-survivor-cleared");
+        Record("PASS original Butcher survivor", "native wound, shot sound, dialogue and return to the shop without a body or police flags");
+        Record(host ? "PASS host paired opening and security" : "PASS guest paired opening and security", "original Butcher survivor branch");
+    }
+
+    private void TickFatalAugShot(double now)
+    {
+        if (pairedStep == 7) return;
+        const string customer = "QA_FATAL_AUG_SHOT";
+        var store = PlayerStore.Instance;
+        var ui = StoreUIManager.Instance;
+        var world = host ? NativeWorld.Host : NativeWorld.Guest;
+        var current = store.currentClientInstance?.GetClientBlueprint();
+        if (pairedStep == 4 && host)
+        {
+            if (store.storeState == PlayerStore.StoreState.MORNING)
+            {
+                if (store.CanStartDay()) StoreShutterButton.Instance.OnClick();
+                return;
+            }
+            Require(!store.IsClientPresent(), "fatal aug test requires an empty store");
+            Shotgun.Unlock();
+            var target = new StoreClient { identifier = customer, displayName = "QA visitor",
+                spriteName = SpriteDict.GetRandomScavSpriteName(), isIntroduced = true, dismissable = true,
+                clientIntent = StoreClient.ClientIntent.SELL, clientFaction = StoreClient.FACTION_LOWER,
+                mainDialogue = new Dialogue().SetText("CLIENT", "QA visitor arrival") };
+            AugHelper.MakeDisguisedAug(target, 1);
+            Require(target.isAug && !target.survivesShot, "expected a susceptible disguised aug");
+            cashBeforeShot = store.playerCash;
+            store.storeClientManager.AddNextClient(target);
+            store.TryCallNextClient();
+            pairedStep = 5;
+            return;
+        }
+        if (pairedStep == 4 && !host && current?.identifier == customer && store.isClientArrived && !ui.isAboutToStartMainDialog)
+        {
+            if (world.HasDialogue) { DialogUIManager.Instance.OnAdvancePressed(); return; }
+            // Exercise different native frame rates without slowing the socket
+            // or changing the host timeline.
+            ui.bodyFrameDuration = 2.7f / Math.Max(1, ui.shootingBodySprites.Count);
+            ui.shotgun.GetComponent<Shotgun>().OnClick();
+            pairedStep = 5;
+        }
+        if (pairedStep == 5 && !host && world.ShootingState == NativeWorld.ShootingPhase.Aiming &&
+            ui.isShootingMode && ui.shootingUI.activeSelf)
+        {
+            ui.Shoot();
+            pairedStep = 6;
+        }
+        if (pairedStep < 5) return;
+        bodySeenAfterShot |= ui.body.activeSelf || ui.shootingBodyRenderer.gameObject.activeSelf;
+        var officer = ui.secGameObject;
+        var path = officer.GetComponent<DOTweenPath>().tween;
+        bool cameraVisible = ui.mainCamera.activeSelf && !ui.isShootingMode && !ui.blackscreen.gameObject.activeInHierarchy;
+        var dialogue = DialogUIManager.Instance;
+        if (!host && (dialogue.secBubble.gameObject.activeSelf || dialogue.secNameBubble.activeSelf))
+        {
+            bool atCounter = cameraVisible && officer.gameObject.activeSelf && path != null &&
+                !path.IsBackwards() && path.ElapsedPercentage() >= 0.999f;
+            policeDialogueEarly |= !atCounter;
+            if (atCounter && !policeDialogueSeen) NativeOffscreenCapture.Capture("qa-fatal-aug-police-dialogue");
+            policeDialogueSeen |= atCounter;
+        }
+        if (!host && world.ShootingState == NativeWorld.ShootingPhase.Police && !cameraVisible)
+        {
+            policeArrivedDuringShot |= ui.isShootingMode;
+            policeMovedOffCamera |= officer.gameObject.activeSelf;
+        }
+        if (!host && officer.gameObject.activeSelf)
+        {
+            var position = officer.transform.localPosition;
+            if (cameraVisible && officerSeen && path != null && path.IsActive() && path.IsPlaying() &&
+                Vector3.Distance(officerLastPosition, position) > 0.001f)
+            {
+                if (path.IsBackwards())
+                {
+                    if (++policeDepartureFrames == 60 && WithholdOfficerDepartureCue)
+                        NativeOffscreenCapture.Capture("qa-fatal-aug-police-recovered-departure");
+                }
+                else if (++policeApproachFrames == 60) NativeOffscreenCapture.Capture("qa-fatal-aug-police-arrival");
+            }
+            officerSeen = true;
+            officerLastPosition = position;
+        }
+        if (host && world.ShootingState == NativeWorld.ShootingPhase.Police && world.HasDialogue && now >= nextShotDialogueAdvance)
+        {
+            if (nextShotDialogueAdvance == 0) { nextShotDialogueAdvance = now + 4; return; }
+            nextShotDialogueAdvance = now + 0.4;
+            DialogUIManager.Instance.OnAdvancePressed();
+        }
+        if (world.ShootingState != NativeWorld.ShootingPhase.Complete || ui.isShootingMode ||
+            ui.body.activeSelf || ui.isShot || officer.gameObject.activeSelf || current?.identifier == customer) return;
+        Require(bodySeenAfterShot && ui.mainCamera.activeSelf && !ui.secGameObject2.gameObject.activeSelf,
+            "the original body or subsequent cleanup was missing");
+        if (host)
+        {
+            Require(NativeShootingQaEvidence.SourceShots == 1 && NativeShootingQaEvidence.SourceShootouts == 1 &&
+                NativeShootingQaEvidence.GoodKills == 1 && store.playerCash > cashBeforeShot,
+                "the native fatal aug aftermath/reward must run once at the host");
+        }
+        else
+        {
+            Require(policeArrivedDuringShot && !policeMovedOffCamera && policeApproachFrames >= 12 && policeDepartureFrames >= 12 &&
+                NativeShootingQaEvidence.LocalGunSounds == 1 && NativeShootingQaEvidence.LocalBodySounds == 1 &&
+                NativeShootingQaEvidence.SourceShootouts == 0 && NativeShootingQaEvidence.GoodKills == 0,
+                $"guest aug aftermath: approachFrames={policeApproachFrames} departureFrames={policeDepartureFrames} " +
+                $"gun={NativeShootingQaEvidence.LocalGunSounds} body={NativeShootingQaEvidence.LocalBodySounds} " +
+                $"duringShot={policeArrivedDuringShot} offCamera={policeMovedOffCamera}");
+            Require(policeDialogueSeen && !policeDialogueEarly,
+                $"security dialogue must wait for the guest's original walk: shown={policeDialogueSeen} early={policeDialogueEarly}");
+            if (WithholdOfficerDepartureCue)
+            {
+                Require(officerDepartureCueWithheld, "officer departure cue was not withheld");
+                Record("PASS guest coalesced officer departure", "using only the terminal hidden cue, officer walked out locally");
+            }
+            Record("PASS guest aug shooting aftermath", $"original path moving frames: arrival {policeApproachFrames}, departure {policeDepartureFrames}; local gun and body audio once");
+            Record("PASS guest security dialogue timing", "native security speech and name appear only after the local officer reaches the counter");
+        }
+        pairedStep = 7;
+        Record(host ? "PASS host paired opening and security" : "PASS guest paired opening and security", "native fatal aug shot and security cleanup");
+    }
+
+    [HarmonyPatch(typeof(NativeWorld), "ApplyOfficer")]
+    private static class QaWithholdOfficerDeparture
+    {
+        private static bool Prepare() => WithholdOfficerDepartureCue;
+
+        private static bool Prefix(JArray data)
+        {
+            if (!NativeGuest.Active || (NativeWorld.OfficerMotion)(int)data[1] != NativeWorld.OfficerMotion.Leaving)
+                return true;
+            if (!officerDepartureCueWithheld)
+                Debug.Log("[probably_coop QA] withheld original officer departure cue");
+            officerDepartureCueWithheld = true;
+            return false;
         }
     }
 
@@ -397,6 +631,12 @@ internal sealed partial class NativeBackgroundQa
                 Require(store.GetAfterhourState(destination).visits == 1, "native location initialized more than once");
                 var ground = EmporiumEntry.Instance.afterhourInventory;
                 Require(TryPlaceInEmptyCell(DirectoryMaster.Item("processed_meat"), ground), "cannot seed an empty test ground");
+                if (SharedFieldAudioQa && NativeActorSession.Current is { } session)
+                {
+                    using var scope = session.Enter(NativeActorRun.Slot.Partner);
+                    NativeActorFieldAccess.Set_dumpingGroundMinorWoundImmunitySearchesLeft(store, 1);
+                    NativeActorFieldAccess.Set_dumpingGroundMajorWoundImmunitySearchesLeft(store, 1);
+                }
                 pairedTravelStep = 2;
             }
             if (pairedTravelStep == 2 && world.ProposedTrip == "return" && world.TripReady == 2)
@@ -422,6 +662,26 @@ internal sealed partial class NativeBackgroundQa
             if (pairedTravelStep == 1 && map.Current?.Id == destination &&
                 EmporiumEntry.Instance.afterhourInventory.childItems.Any(item => item.identifier == "processed_meat"))
             {
+                if (SharedFieldAudioQa)
+                {
+                    var sound = StoreSoundPlayer.Instance;
+                    var siteAmbient = sound.GetAmbient(location.AmbienceId);
+                    Require(siteAmbient != null && sound.ambianceAudioSource.clip == siteAmbient,
+                        "guest kept its shop ambience at the dumping ground");
+                    Require(guestDoorSounds == 0, "guest played a return cue before leaving the dumping ground");
+                    if (!pairedScavengeSent)
+                    {
+                        if (NativeActorFieldAccess.Get_dumpingGroundMinorWoundImmunitySearchesLeft(store) != 1 ||
+                            !ScavHelper.CanScavenge()) return false;
+                        pairedScavengeBefore = ScavHelper.GetScavTimeLeft();
+                        ScavHelper.ScavengeDumpingGrounds();
+                        pairedScavengeSent = true;
+                        return false;
+                    }
+                    if (ScavHelper.GetScavTimeLeft() != pairedScavengeBefore - 1 || world.QaScavengeCues == 0) return false;
+                    Require(world.QaScavengeCues == 1, "the original scavenging sound repeated");
+                    Record("PASS guest native scavenging audio", "original partner request consumed one attempt and played the local sound once");
+                }
                 NativeOffscreenCapture.Capture("qa-paired-ground");
                 map.Return();
                 pairedTravelStep = 2;
@@ -429,11 +689,30 @@ internal sealed partial class NativeBackgroundQa
             if (pairedTravelStep == 2 && !map.IsOutside)
             {
                 Require(EmporiumEntry.Instance.afterhourInventory.childItems.Count == 0, "guest still has cleared ground items after return");
+                if (SharedFieldAudioQa)
+                {
+                    var sound = StoreSoundPlayer.Instance;
+                    Require(sound.storeAmbient != null && sound.ambianceAudioSource.clip == sound.storeAmbient,
+                        "guest did not restore the original shop ambience on return");
+                    Require(guestDoorSounds == 1, "guest did not play the original return door sound exactly once");
+                    Record("PASS guest native travel audio", "local dumping ground ambience, shop ambience restored, one return door cue");
+                }
                 pairedTravelStep = 4;
                 Record("PASS guest-paired-ground", "partner projected the host's real ground at the original location and returned to the store");
             }
         }
         return pairedTravelStep == 4;
+    }
+
+    [HarmonyPatch(typeof(AudioManager), nameof(AudioManager.Play2))]
+    private static class QaGuestTravelDoor
+    {
+        private static bool Prepare() => SharedFieldAudioQa;
+
+        private static void Postfix(string identifier, bool __result)
+        {
+            if (NativeGuest.Active && __result && identifier == "close_door") guestDoorSounds++;
+        }
     }
 }
 #endif

@@ -28,7 +28,7 @@ internal sealed class LoopbackLink : IDisposable
     internal int ExtendedDrains { get; private set; }
 
     internal LoopbackLink(byte[] fingerprint, double now, string code = null, IPAddress bindAddress = null,
-        int listenPort = 0, IPEndPoint mappedEndpoint = null, bool requireApproval=false)
+        int listenPort = 0, IPEndPoint mappedEndpoint = null, bool requireApproval=false, Func<double> measurementClock=null)
     {
         if (fingerprint?.Length != Wire.FingerprintSize)
             throw new ArgumentException("Invalid fingerprint.", nameof(fingerprint));
@@ -60,7 +60,7 @@ internal sealed class LoopbackLink : IDisposable
         else peer = lan && mappedEndpoint != null ? mappedEndpoint : new IPEndPoint(advertised ?? IPAddress.Loopback, port);
         string prefix = lan ? $"PSI-{advertised}" : "PSL";
         Code = $"{prefix}-{port.ToString(CultureInfo.InvariantCulture)}-{id:N}";
-        Session = new CoopSession(host, fingerprint, Send, requireApproval);
+        Session = new CoopSession(host, fingerprint, Send, requireApproval, measurementClock, measureCarrierTraffic:true);
         if (!host) Session.Connect(now);
     }
 
@@ -69,6 +69,7 @@ internal sealed class LoopbackLink : IDisposable
 
     internal void Tick(double now,Action beforeSessionTick=null)
     {
+        Session.ObserveNetworkPump(now);
         int count=0;
         long start=Stopwatch.GetTimestamp();
         for (; count < 80 && socket.Available > 0; count++)
@@ -85,6 +86,10 @@ internal sealed class LoopbackLink : IDisposable
                 (mac == null && !IPAddress.IsLoopback(sender.Address)) ||
                 (peer != null && !peer.Equals(sender)) ||
                 !CryptographicOperations.FixedTimeEquals(bytes.AsSpan(0, 16), Tag(bytes))) continue;
+            // Count authenticated traffic from the active peer even if the
+            // snapshot is missing another fragment and cannot be reassembled.
+            if (Session.State == LinkState.Connected)
+                Session.Measurements.AddReceived(bytes.Length);
             byte marker = bytes[16];
             if (marker == LeaveMarker && bytes.Length == HeaderSize)
             {
@@ -117,6 +122,7 @@ internal sealed class LoopbackLink : IDisposable
         if(count>24) ExtendedDrains++;
         // Commands received this tick may change the authority. Capture after
         // draining them, before the single bounded replication send tick.
+        Session.ObserveNetworkPump(now);
         beforeSessionTick?.Invoke();
         Session.Tick(now);
         if (host && Session.State is LinkState.TimedOut or LinkState.Incompatible)
@@ -154,7 +160,12 @@ internal sealed class LoopbackLink : IDisposable
     private bool SendDatagram(byte[] datagram)
     {
         Tag(datagram).CopyTo(datagram);
-        try { return socket.Send(datagram, datagram.Length, peer) == datagram.Length; }
+        try
+        {
+            if (socket.Send(datagram, datagram.Length, peer) != datagram.Length) return false;
+            if (Session.State == LinkState.Connected) Session.Measurements.AddSent(datagram.Length);
+            return true;
+        }
         catch (SocketException) { return false; }
     }
 

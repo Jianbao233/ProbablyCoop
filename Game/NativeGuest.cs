@@ -22,9 +22,18 @@ internal sealed class NativeGuest
     private readonly NativeGuestTrade trade = new NativeGuestTrade();
     private readonly NativeWorld world = new NativeWorld(false);
     private readonly ReplicaLink.Stamp connectionStamp;
+    private readonly CoopSession originalConnection;
+    private readonly ulong worldGeneration;
 
-    private NativeGuest(CoopSession session) { connectionStamp=session.Native.CaptureStamp(); }
+    private NativeGuest(CoopSession session)
+    {
+        originalConnection = session;
+        worldGeneration = session.WorldGeneration;
+        connectionStamp = session.Native.CaptureStamp();
+    }
     internal bool Matches(CoopSession session) => session!=null && connectionStamp.IsCurrent(session.Native);
+    internal bool ReloadRequested(CoopSession session) => ReferenceEquals(originalConnection, session) &&
+        session.State == LinkState.Connected && session.WorldGeneration > worldGeneration;
 
     internal static NativeGuest Enter(CoopSession session)
     {

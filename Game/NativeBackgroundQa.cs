@@ -219,6 +219,21 @@ internal sealed partial class NativeBackgroundQa
             }
             if (now - started > 900+soakSeconds) throw new InvalidOperationException($"timeout stage={stage}");
 #if PROBABLY_COOP_GRID_QA
+            if (!host && NativeJoinWizardQa.TabletSmoke)
+            {
+                if (NativeWorld.Guest?.Ready == true && StoreStation.Instance.dayCounter == 9)
+                {
+                    if (!loaded)
+                    {
+                        loaded = true;
+                        Require(PlayerStore.Instance.saveSlotId == -1 && PlayerStore.Instance.playerCash == 180,
+                            "Android host day-nine projection has the wrong cash or save slot.");
+                        NativeOffscreenCapture.Capture("qa-tablet-guest-day9");
+                        Record("PASS guest tablet host checkpoint", "Connected over IPv4 messages relayed by USB; native day 9 and 180 cash.");
+                    }
+                }
+                return;
+            }
             if (workshopApproval) { TickWorkshopApproval(inMenu,now); return; }
             if (localTraitsQa) { TickLocalTraits(room, shop, inMenu, now); return; }
             if (soloImportQa) { TickSoloImport(room, panel, inMenu); return; }
@@ -260,6 +275,7 @@ internal sealed partial class NativeBackgroundQa
                 }
                 if (shop == null) return;
 #if PROBABLY_COOP_GRID_QA
+                if (roomReloadQa) { TickRoomReloadHost(room, panel, now); return; }
                 if (extensionProbeQa) return;
                 if (workshopMachine != null) { TickWorkshopMachine(room,now,true); return; }
                 if (captureChangesQa) { TickCaptureChangesHost(room,now); return; }
@@ -460,6 +476,9 @@ internal sealed partial class NativeBackgroundQa
             }
             var link = room.Session?.Shop;
             if (guest == null || link?.View.Active != true || now < next) return;
+#if PROBABLY_COOP_GRID_QA
+            if (roomReloadQa) { TickRoomReloadGuest(room, now); return; }
+#endif
             if (NativeWorld.Guest?.Ready != true) return;
 #if PROBABLY_COOP_GRID_QA
             if (extensionProbeQa) return;

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using HarmonyLib;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -18,12 +19,11 @@ internal sealed partial class NativeEffectCampaign
     private static readonly System.Reflection.MethodInfo WildBuy = AccessTools.Method(typeof(WildNetworkUI), "OnUseClicked");
     private static readonly System.Reflection.MethodInfo WildClose = AccessTools.Method(typeof(WildNetworkUI), "OnWindowClosed");
     private static readonly System.Reflection.MethodInfo ServiceToggle = AccessTools.Method(typeof(EndOfDayUIManager), "OnToggled");
-    private static readonly AccessTools.FieldRef<EndOfDayUIManager, List<(StoreService service, TabletCheckbox checkbox)>> ServiceRows =
-        AccessTools.FieldRefAccess<EndOfDayUIManager, List<(StoreService, TabletCheckbox)>>("rows");
-    private static readonly AccessTools.FieldRef<StoreEventManager, List<StoreEvent>> ActiveSceneEvents =
-        AccessTools.FieldRefAccess<StoreEventManager, List<StoreEvent>>("activeEvents");
-    private static readonly AccessTools.FieldRef<StoreReputation, double> ReputationAmount =
-        AccessTools.FieldRefAccess<StoreReputation, double>("amount");
+    private static readonly FieldInfo ServiceRows = AccessTools.Field(typeof(EndOfDayUIManager), "rows");
+    private static readonly FieldInfo SceneEvents = AccessTools.Field(typeof(StoreEventManager), "activeEvents");
+    private static readonly FieldInfo ReputationAmount = AccessTools.Field(typeof(StoreReputation), "amount");
+    private static List<StoreEvent> ActiveSceneEvents(StoreEventManager manager) =>
+        (List<StoreEvent>)SceneEvents.GetValue(manager);
     private byte[] publishedFacilities;
     private JObject facilityView;
     private JArray replicaRequests, replicaEvents;
@@ -346,7 +346,7 @@ internal sealed partial class NativeEffectCampaign
         {
             var reputation = store.storeReputations.FirstOrDefault(candidate => candidate.factionId == (string)row[0]);
             if (reputation == null) continue;
-            ReputationAmount(reputation) = (double)row[1];
+            ReputationAmount.SetValue(reputation, (double)row[1]);
             var perks = ((JArray)row[2]).Values<string>().ToHashSet(StringComparer.Ordinal);
             foreach (var perk in reputation.perks) perk.isUnlocked = perks.Contains(perk.perkId);
         }
@@ -357,8 +357,8 @@ internal sealed partial class NativeEffectCampaign
         if (eventsChanged)
         {
             replicaEvents = (JArray)facts["events"];
-            ActiveSceneEvents(StoreStation.Instance.storeEventManager) =
-                replicaEvents.Cast<JObject>().Select(NativeWorld.ReadEvent).ToList();
+            SceneEvents.SetValue(StoreStation.Instance.storeEventManager,
+                replicaEvents.Cast<JObject>().Select(NativeWorld.ReadEvent).ToList());
             if (NewsUIManager.Instance.uiGameObject.activeSelf) NewsUIManager.Instance.PopulateUI();
         }
         if (requestsChanged)
@@ -437,7 +437,7 @@ internal sealed partial class NativeEffectCampaign
     {
         var ui = EndOfDayUIManager.Instance;
         if (!ui.IsOpen) return;
-        foreach (var row in ServiceRows(ui))
+        foreach (var row in (List<(StoreService service, TabletCheckbox checkbox)>)ServiceRows.GetValue(ui))
         {
             row.checkbox.SetOn(row.service.isUsing);
             row.checkbox.SetInteractable(!row.service.isMandatory && !row.service.IsOnCooldown());

@@ -77,6 +77,7 @@ internal static class NativeActorCheckpoint
         internal int Day;
         internal int CurrentUniqueId;
         internal EffectItemIds? EffectWatermarks;
+        internal bool UsesEffectReplication;
         internal string Encoded;
         internal string PartnerSetup;
         internal JObject NativeHost;
@@ -119,6 +120,9 @@ internal static class NativeActorCheckpoint
     // inventory capacities and onLoaded effects require a separate hydration
     // preflight and effect scope; success here never authorizes direct DecodeNodes.
     internal static Envelope Decode(string encoded, IEnumerable<int> sharedItemIds)
+        => DecodeWithCarryIds(encoded, sharedItemIds, out _);
+
+    private static Envelope DecodeWithCarryIds(string encoded, IEnumerable<int> sharedItemIds, out HashSet<int> carryIds)
     {
         var value = Parse(encoded, MaximumEnvelopeCharacters);
         if (Int(value["schema"]) != SchemaVersion) throw Invalid("unsupported actor checkpoint schema; create a new cooperative run");
@@ -133,7 +137,7 @@ internal static class NativeActorCheckpoint
         if (Int(personal["schema"]) != 1 || Identity(personal["run"]) != run ||
             personal["actors"] is not JArray actors || actors.Count != 2) throw Invalid("personal pair");
         NativeActorState.Deserialize(actors[0]); NativeActorState.Deserialize(actors[1]);
-        ValidateRoots(value, sharedItemIds, out _);
+        ValidateRoots(value, sharedItemIds, out carryIds);
         return new Envelope(run, slot, day, checkpoint, value);
     }
 
@@ -243,7 +247,7 @@ internal static class NativeActorCheckpoint
             receipt.Run != expectedRun || receipt.Slot != expectedSlot || receipt.Day != expectedDay)
             throw Invalid("loaded native identity");
         var sharedIds = ReadSharedIds(receipt.NativeInventories);
-        var decoded = Decode(receipt.Encoded, sharedIds);
+        var decoded = DecodeWithCarryIds(receipt.Encoded, sharedIds, out var carryIds);
         if (decoded.Run != receipt.Run || decoded.Slot != receipt.Slot || decoded.Day != receipt.Day ||
             expectedCheckpoint.HasValue && decoded.Checkpoint != expectedCheckpoint.Value)
             throw Invalid("loaded world/actor pair");
@@ -251,7 +255,6 @@ internal static class NativeActorCheckpoint
             throw Invalid("loaded native host/personal mismatch");
         if (!string.Equals(receipt.PartnerSetup, decoded.PartnerSetup, StringComparison.Ordinal))
             throw Invalid("loaded partner setup/checkpoint mismatch");
-        ValidateRoots(Parse(decoded.Encoded, MaximumEnvelopeCharacters), sharedIds, out var carryIds);
         var ids = sharedIds.Concat(carryIds);
         if (receipt.CurrentUniqueId < 0 || receipt.EffectWatermarks is EffectItemIds watermarks &&
             (!watermarks.Valid || receipt.CurrentUniqueId >= EffectItemIds.HostStart) ||
@@ -315,67 +318,78 @@ internal static class NativeActorCheckpoint
         if (station == null || station.Length > MaximumSlotBytes)
             throw Invalid("missing/oversized native entries");
         var receipt = new Receipt();
+        // RawEnumerator already decrypted/decompressed entry bodies.
+        using (var body = ES3Reader.Create(player, new ES3Settings(false)))
+            ReadPlayerFields(body, receipt, fromSolo);
+        using (var body = ES3Reader.Create(station, new ES3Settings(false)))
+            ReadStationFields(body, receipt);
+        return receipt;
+    }
+
+    internal static void ReadPlayerFields(ES3Reader body, Receipt receipt, bool fromSolo = false,
+        Func<ES3Reader, string, bool> readPreview = null)
+    {
         var host = NativeActorState.CreateDefault();
         var fields = new HashSet<string>(StringComparer.Ordinal);
-        // RawEnumerator already decrypted/decompressed entry bodies. Do not
-        // apply default encryption/compression a second time.
-        using (var body = ES3Reader.Create(player, new ES3Settings(false)))
-            foreach (string name in body.Properties)
+        foreach (string name in body.Properties)
+        {
+            if (!fields.Add(name)) throw Invalid("duplicate native player field");
+            switch (name)
             {
-                if (!fields.Add(name)) throw Invalid("duplicate native player field");
-                switch (name)
-                {
-                    case "runID":
-                        if (!Guid.TryParse(body.Read<string>(), out receipt.Run) || receipt.Run == Guid.Empty) throw Invalid("native run");
+                case "runID":
+                    if (!Guid.TryParse(body.Read<string>(), out receipt.Run) || receipt.Run == Guid.Empty) throw Invalid("native run");
+                    break;
+                case "saveSlotId": receipt.Slot = body.Read<int>(); break;
+                case "currentUniqueId": receipt.CurrentUniqueId = body.Read<int>(); break;
+                case "playerName": host.playerName = body.Read<string>(); break;
+                case "healthData": host.healthData = body.Read<HealthData>(); break;
+                case "startingPerks": host.startingPerks = body.Read<List<StartingPerk>>(); break;
+                case "appraiserLevel": host.appraiserLevel = body.Read<int>(); break;
+                case "appraisalProgress": host.appraisalProgress = body.Read<double>(); break;
+                case "appraisalPromotionDeclined": host.appraisalPromotionDeclined = body.Read<bool>(); break;
+                case "appraisalPromotionDay": host.appraisalPromotionDay = body.Read<int>(); break;
+                case "appraisalBlacklist": host.appraisalBlacklist = body.Read<List<string>>(); break;
+                case "scavengingAttempts": host.scavengingAttempts = body.Read<int>(); break;
+                case "dumpingGroundMajorWoundImmunitySearchesLeft": host.dumpingGroundMajorWoundImmunitySearchesLeft = body.Read<int>(); break;
+                case "dumpingGroundMinorWoundImmunitySearchesLeft": host.dumpingGroundMinorWoundImmunitySearchesLeft = body.Read<int>(); break;
+                case "modData":
+                    var modData = body.Read<Dictionary<string, string>>();
+                    if (fromSolo)
+                    {
+                        if (HasCoopData(modData)) throw Invalid("solo source already contains cooperation data");
                         break;
-                    case "saveSlotId": receipt.Slot = body.Read<int>(); break;
-                    case "currentUniqueId": receipt.CurrentUniqueId = body.Read<int>(); break;
-                    case "playerName": host.playerName = body.Read<string>(); break;
-                    case "healthData": host.healthData = body.Read<HealthData>(); break;
-                    case "startingPerks": host.startingPerks = body.Read<List<StartingPerk>>(); break;
-                    case "appraiserLevel": host.appraiserLevel = body.Read<int>(); break;
-                    case "appraisalProgress": host.appraisalProgress = body.Read<double>(); break;
-                    case "appraisalPromotionDeclined": host.appraisalPromotionDeclined = body.Read<bool>(); break;
-                    case "appraisalPromotionDay": host.appraisalPromotionDay = body.Read<int>(); break;
-                    case "appraisalBlacklist": host.appraisalBlacklist = body.Read<List<string>>(); break;
-                    case "scavengingAttempts": host.scavengingAttempts = body.Read<int>(); break;
-                    case "dumpingGroundMajorWoundImmunitySearchesLeft": host.dumpingGroundMajorWoundImmunitySearchesLeft = body.Read<int>(); break;
-                    case "dumpingGroundMinorWoundImmunitySearchesLeft": host.dumpingGroundMinorWoundImmunitySearchesLeft = body.Read<int>(); break;
-                    case "modData":
-                        var modData = body.Read<Dictionary<string, string>>();
-                        if (fromSolo)
-                        {
-                            if (HasCoopData(modData)) throw Invalid("solo source already contains cooperation data");
-                            break;
-                        }
-                        if (modData == null || !modData.TryGetValue(ModDataKey, out receipt.Encoded)) throw Invalid("missing coop entry");
-                        receipt.PartnerSetup = ReadPartnerSetup(modData);
-                        if (modData.TryGetValue(EffectItemIds.SaveKey, out string allocation))
-                        {
-                            if (!modData.TryGetValue(EffectItemIds.RunKey, out var mode) || mode != EffectItemIds.RunSchema ||
-                                !EffectItemIds.TryRead(allocation, out var watermarks)) throw Invalid("effect item ID watermarks");
-                            receipt.EffectWatermarks = watermarks;
-                        }
-                        break;
-                    default:
-                        if (NativeInventoryFields.Contains(name)) receipt.NativeInventories.Add(name, body.Read<string>());
-                        else body.Skip();
-                        break;
-                }
+                    }
+                    if (modData == null || !modData.TryGetValue(ModDataKey, out receipt.Encoded)) throw Invalid("missing coop entry");
+                    receipt.PartnerSetup = ReadPartnerSetup(modData);
+                    receipt.UsesEffectReplication = modData.TryGetValue(EffectItemIds.RunKey, out var mode) && mode == EffectItemIds.RunSchema;
+                    if (modData.TryGetValue(EffectItemIds.SaveKey, out string allocation))
+                    {
+                        if (!receipt.UsesEffectReplication ||
+                            !EffectItemIds.TryRead(allocation, out var watermarks)) throw Invalid("effect item ID watermarks");
+                        receipt.EffectWatermarks = watermarks;
+                    }
+                    break;
+                default:
+                    if (NativeInventoryFields.Contains(name)) receipt.NativeInventories.Add(name, body.Read<string>());
+                    else if (readPreview?.Invoke(body, name) != true) body.Skip();
+                    break;
             }
-        if (!fields.IsSupersetOf(new[] { "runID", "saveSlotId", "currentUniqueId", "modData" }) ||
+        }
+        if (receipt.Slot < 0 || !fields.IsSupersetOf(new[] { "runID", "saveSlotId", "currentUniqueId", "modData" }) ||
             !fields.IsSupersetOf(NativeInventoryFields) || !fields.IsSupersetOf(NativeActorFields)) throw Invalid("incomplete native player entry");
         receipt.NativeHost = host.Serialize();
-        fields.Clear();
-        using (var body = ES3Reader.Create(station, new ES3Settings(false)))
-            foreach (string name in body.Properties)
-            {
-                if (!fields.Add(name)) throw Invalid("duplicate native station field");
-                if (name == "dayCounter") receipt.Day = body.Read<int>();
-                else body.Skip();
-            }
-        if (!fields.Contains("dayCounter") || receipt.Slot < 0 || receipt.Day < 0) throw Invalid("native slot/day");
-        return receipt;
+    }
+
+    internal static void ReadStationFields(ES3Reader body, Receipt receipt)
+    {
+        var fields = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string name in body.Properties)
+        {
+            if (!fields.Add(name)) throw Invalid("duplicate native station field");
+            if (name == "dayCounter") receipt.Day = body.Read<int>();
+            else body.Skip();
+        }
+        if (!fields.Contains("dayCounter") || receipt.Day < 0) throw Invalid("native slot/day");
     }
 
     internal static bool HasCoopData(Dictionary<string, string> data) => data != null &&

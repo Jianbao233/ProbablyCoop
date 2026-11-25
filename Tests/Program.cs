@@ -273,6 +273,54 @@ for (double now = 19; now <= 619; now++)
 }
 Check(host.State == LinkState.Connected && guest.State == LinkState.Connected, "ten simulated minutes of heartbeat");
 Console.WriteLine("PASS core: handshake, duplicate requests, conflicts, snapshot, cursor ordering, timeout and reconnect");
+Check(host.Measurements.RoundTripMilliseconds == 0 && guest.Measurements.RoundTripMilliseconds == 0 &&
+    host.Measurements.TimeoutPercent == 0 && guest.Measurements.TimeoutPercent == 0 &&
+    host.Measurements.UploadBytesPerSecond > 0 && host.Measurements.DownloadBytesPerSecond > 0,
+    "heartbeat serials echo through the connected peers and produce transport statistics");
+var measurements = new ConnectionMeasurements();
+measurements.Reset(10);
+var unanswered = measurements.BeginProbe(10);
+var answered = measurements.BeginProbe(12);
+measurements.AcceptPong(unanswered, 12.1);
+Check(measurements.RoundTripMilliseconds == null && measurements.TimeoutPercent == 100 && measurements.CompletedProbes == 1,
+    "the first lost probe reports a timeout even before any successful sample");
+measurements.AcceptPong(answered, 12.25);
+measurements.AddSent(3072);
+measurements.AddReceived(1536);
+measurements.Tick(13);
+Check(measurements.TimeoutPercent == 50 && measurements.RoundTripMilliseconds == 250 &&
+    measurements.UploadBytesPerSecond == 1024 && measurements.DownloadBytesPerSecond == 512,
+    "measurements count a missed probe and calculate traffic using elapsed time");
+for (int i = 0; i < 30; i++) measurements.AcceptPong(measurements.BeginProbe(14 + i * 2), 14.1 + i * 2);
+Check(measurements.TimeoutPercent == 0, "old loss falls out of the rolling probe window");
+measurements.Reset(100);
+Check(measurements.RoundTripMilliseconds == null && measurements.TimeoutPercent == null &&
+    measurements.UploadBytesPerSecond == 0 && measurements.DownloadBytesPerSecond == 0,
+    "new connection starts with no measurement history");
+Console.WriteLine("PASS connection measurements: RTT echo, rolling probe loss, directional traffic and epoch reset");
+measurements.ObserveLocalPump(100);
+measurements.BeginProbe(100);
+measurements.ObserveLocalPump(100.5);
+var afterPause = measurements.BeginProbe(100.5);
+Check(measurements.CompletedProbes == 0 && measurements.LocallyDelayedProbes == 1 &&
+    measurements.TimeoutPercent == null && measurements.RecentLocalStallMilliseconds == 500,
+    "a local stall crosses the unanswered probe without recording network loss");
+measurements.ObserveLocalPump(100.6);
+measurements.AcceptPong(afterPause, 100.6);
+for (int i=1; i<=160; i++) measurements.ObserveLocalPump(100.6+i*0.1);
+Check(measurements.RecentLocalStallMilliseconds == null && measurements.TimeoutPercent == 0,
+    "the local stall notice expires independently of the valid probe rate");
+for (int i=1; i<=30; i++)
+{
+    double time=116.6+i*0.1;
+    measurements.ObserveLocalPump(time);
+    measurements.AcceptPong(measurements.BeginProbe(time), time);
+}
+Check(measurements.LocallyDelayedProbes == 0 && measurements.CompletedProbes == 30,
+    "samples affected by local stalls leave the rolling window");
+Console.WriteLine("PASS connection processing gaps: exclude affected probes, expire notice and clear old samples");
+DirectConnectionMeasurementsTests.Run();
+CheckWorldReload(build);
 
 var incompatible = (byte[])build.Clone();
 incompatible[0] = 1;
@@ -601,6 +649,64 @@ void Drain(double now)
 static void Check(bool condition, string name)
 {
     if (!condition) throw new InvalidOperationException(name);
+}
+
+static void CheckWorldReload(byte[] fingerprint)
+{
+    var toHost = new Queue<byte[]>();
+    var toGuest = new Queue<byte[]>();
+    var host = new CoopSession(true, fingerprint, (data, _) => { toGuest.Enqueue(data); return true; });
+    var guest = new CoopSession(false, fingerprint, (data, _) => { toHost.Enqueue(data); return true; });
+    void Drain(double t)
+    {
+        while (toGuest.Count > 0 || toHost.Count > 0)
+        {
+            while (toHost.TryDequeue(out var command)) host.Receive(command, false, t);
+            while (toGuest.TryDequeue(out var update)) guest.Receive(update, false, t);
+        }
+    }
+
+    host.Connect(0);
+    guest.Connect(0);
+    guest.Tick(0);
+    Drain(0);
+    guest.ChangeTile(3, 0.5);
+    byte[] previousAction = toHost.Dequeue();
+    var hostStamp = host.Native.CaptureStamp();
+    var guestStamp = guest.Native.CaptureStamp();
+    Check(host.BeginWorldReload(1) && !guest.BeginWorldReload(1) && !host.BeginWorldReload(1), "only the host can stage one reload");
+    Check(!hostStamp.IsCurrent(host.Native) && !host.Receive(previousAction, false, 1), "stale host action refused immediately");
+    host.Tick(1);
+    toGuest.Clear(); // Drop the first reload notification.
+    host.Tick(2);
+    byte[] firstWelcome = toGuest.Dequeue();
+    Check(guest.Receive(firstWelcome, false, 2) && !guestStamp.IsCurrent(guest.Native) && guest.WorldGeneration == 1,
+        "retry rotates the guest world while preserving the connected room");
+    toHost.Clear(); // Drop the first acknowledgement.
+    host.Tick(3);
+    Drain(3);
+    Check(host.State == LinkState.Connected && guest.State == LinkState.Connected && !host.WorldReloadPending,
+        "duplicate notification supplies a replacement acknowledgement without rejoining");
+    guest.ChangeTile(4, 4);
+    Drain(4);
+    Check(host.Tiles == 16 && guest.Tiles == 16, "ordinary requests work on the replacement epoch");
+
+    Check(host.BeginWorldReload(5), "second checkpoint reload can start in the same room");
+    host.Tick(5);
+    Drain(5);
+    Check(guest.WorldGeneration == 2 && !guest.Receive(firstWelcome, false, 5.1) && !host.WorldReloadPending && host.Tiles == 0,
+        "late reload from the former generation cannot roll back a newer world");
+    guest.Tick(26);
+    host.Tick(26);
+    Check(host.State == LinkState.Connected && guest.State == LinkState.Connected,
+        "a slow announced host load survives twenty seconds without receiving new packets");
+    toHost.Clear();
+    toGuest.Clear();
+    guest.Tick(66);
+    host.Tick(66);
+    Check(host.State == LinkState.TimedOut && guest.State == LinkState.TimedOut,
+        "a stalled announced load still expires after the bounded grace period");
+    Console.WriteLine("PASS in-room reload handshake: lost start and acknowledgement, old action and announcement, repeat reload and connected room");
 }
 
 static Process StartPeer(string role, string port = null)

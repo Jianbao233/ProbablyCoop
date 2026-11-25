@@ -15,6 +15,7 @@ internal sealed partial class CoopPanel : IDisposable
     private readonly RoomSelector room;
     private readonly bool localTest;
     private readonly CoopOpeningLobby opening;
+    private readonly Func<CoopRun.Checkpoint, bool> requestWorldReload;
     private GameObject menuButton;
     private TextMeshProUGUI menuLabel, originalMenuLabel;
     private readonly RoomPanelEntries entries = new();
@@ -30,6 +31,7 @@ internal sealed partial class CoopPanel : IDisposable
     private int checkpointStartFrame;
     private CustomUIElement code, roomCode, status, join, copy, leave, approve, decline, access;
     private CustomUIElement shopStatus, heading, carry, steamHint, playerNameInput, newRun, reopenOpening;
+    private CustomUIElement resumeRun, importSolo, shopResume;
     private RectTransform panelBody;
     private ScrollRect panelScroll;
     private CustomUIElement lanToggle, joinFromMenu;
@@ -44,7 +46,7 @@ internal sealed partial class CoopPanel : IDisposable
     private (string Code, int? Day)? recoveryExit;
     private string joinFailureCode;
     private bool issueCopied;
-    private GameObject setupRow, joinColumn, lanControls, saveRow, roomActions, approvalRow, joinLog,
+    private GameObject setupRow, joinColumn, lanControls, saveRow, roomActions, approvalRow, joinLog, shopOverview,
         progressSection;
     private bool showLanOptions;
     private double nextTerminalRefresh;
@@ -62,11 +64,12 @@ internal sealed partial class CoopPanel : IDisposable
     private double copiedUntil;
     private double steamJoinBusyUntil;
     private string displaySignature;
-    private int? joinRequestedFrame;
+    private int? joinRequestedFrame, hostRequestedFrame;
     private bool partnerPickerVisible, restoreAfterPartnerPicker;
 
-    internal CoopPanel(RoomSelector room,bool localTest,CoopOpeningLobby opening)
-    { this.room=room; this.localTest=localTest; this.opening=opening; }
+    internal CoopPanel(RoomSelector room,bool localTest,CoopOpeningLobby opening,
+        Func<CoopRun.Checkpoint, bool> requestWorldReload)
+    { this.room=room; this.localTest=localTest; this.opening=opening; this.requestWorldReload=requestWorldReload; }
     private static string Loc(string key)=>ModHelper.GetLocalized("probably_coop",key);
 
     internal void SetContext(bool menu,bool shop)
@@ -74,6 +77,7 @@ internal sealed partial class CoopPanel : IDisposable
         if(menu==inMenu && shop==inShop) return;
         inMenu=menu; inShop=shop;
         joinRequestedFrame=null;
+        hostRequestedFrame=null;
         partnerPickerVisible=restoreAfterPartnerPicker=false;
         reopenJoinPanel |= joinPanelWasVisible && joinPhase!=null && room.IsGuest;
         if(window?.IsAlive==true) window.Close();
@@ -131,6 +135,11 @@ internal sealed partial class CoopPanel : IDisposable
             joinRequestedFrame=null;
             if(window?.IsVisible==true) Join();
         }
+        if (hostRequestedFrame is int hostFrame && hostFrame != Time.frameCount)
+        {
+            hostRequestedFrame = null;
+            if (window?.IsVisible == true) HostLan();
+        }
         if(Input.GetKeyDown(KeyCode.F7) && !InputFocused(code) && !ipv4.InputFocused && !InputFocused(roomCode))
         {
             if(checkpoints?.IsVisible==true) checkpoints.Close();
@@ -181,9 +190,14 @@ internal sealed partial class CoopPanel : IDisposable
         // native report open while waiting is otherwise harmless.
         if(recoveryAttempt!=null && AdvCalendarUIManager.Instance is { } report &&
             report.UIPanel?.activeInHierarchy==true) report.CloseUI();
-        if(window?.IsAlive==true) { window.Show(); window.BringToFront(); displaySignature=null; Refresh(); return; }
+        if(window?.IsAlive==true)
+        {
+            window.Show(); window.BringToFront(); displaySignature=null; Refresh();
+            RevealJoinApproval();
+            return;
+        }
         var builder=CustomUIManager.Window("probably_coop_panel",Loc("title"),inMenu ? "menu" : "overlay")
-            .SetSize(1160,660).Center().SetDraggable(true).SetCloseOnEscape();
+            .SetSize(inShop ? 1560 : 1160,660).Center().SetDraggable(true).SetCloseOnEscape();
         builder.BeginScrollFlexible(160);
         panelScroll=builder.CurrentContainer.GetComponentInParent<ScrollRect>();
         if(panelScroll!=null)
@@ -193,15 +207,41 @@ internal sealed partial class CoopPanel : IDisposable
         }
         builder.BeginColumn(14);
         panelBody=builder.CurrentContainer;
+        if (inShop)
+        {
+            builder.BeginPanel(alignment: TextAnchor.UpperLeft, padding: 20, spacing: 8);
+            shopOverview=builder.CurrentContainer.gameObject;
+            TintPanel(builder, new Color32(53, 46, 63, 255), ensureBackground: true);
+            builder.BeginRow(14, TextAnchor.MiddleLeft);
+        }
         builder.AddLabel(Loc(inShop ? "native_header" : "room_header")); heading=builder.Last;
+        if (inShop)
+        {
+            StyleLabel(heading, TextAlignmentOptions.Left, new Color32(235, 218, 191, 255), 34);
+            builder.AddFlexibleSpace();
+            builder.AddButton(Loc("world_reload_button"), () => OpenCheckpoints(), "reload_in_shop");
+            shopResume=builder.Last;
+            GrowShopControl(shopResume, 24, 48);
+            builder.End();
+        }
         builder.AddLabel(""); status=builder.Last; status.text.richText=false;
+        if (inShop)
+        {
+            StyleLabel(status, TextAlignmentOptions.Left, new Color32(207, 195, 192, 255), 24);
+            AddJoinApproval(builder);
+            builder.End();
+        }
         BeginSection(builder);
+        if (inShop) TintPanel(builder, new Color32(45, 44, 56, 255), ensureBackground: true);
         builder.BeginRow(12,TextAnchor.MiddleLeft);
         builder.AddHeader(Loc("terminal_title"));
+        if (inShop) GrowShopControl(builder.Last, 26);
         builder.AddFlexibleSpace();
         builder.AddButton(Loc("terminal_details_title"),OpenConnectionDetails,"connection_details");
+        if (inShop) GrowShopControl(builder.Last, 24, 42);
         builder.End();
         builder.AddLabel(""); terminalSummary=builder.Last; terminalSummary.text.richText=false;
+        if (inShop) GrowShopControl(terminalSummary, 22);
         builder.End();
 
         builder.BeginPanel(alignment:TextAnchor.UpperLeft,padding:16,spacing:10);
@@ -240,52 +280,66 @@ internal sealed partial class CoopPanel : IDisposable
         builder.AddHeader(Loc("join_room_heading"));
         builder.AddInput(Loc("join_code_hint"),onTyping:_=>RefreshAvailability()); code=builder.Last;
         code.input.characterLimit=64;
-        code.input.onSubmit.AddListener(_=>RequestJoin());
+        if (!NativePlatform.IsAndroid) code.input.onSubmit.AddListener(_=>RequestJoin());
         builder.BeginRow(6);
         builder.AddButton(Loc("paste_room_code"),PasteRoomCode);
         builder.AddButton(Loc("join"),RequestJoin); join=builder.Last;
         builder.End();
         ipv4.AddMapping(builder, RequestJoin);
-        if(NativePlatform.IsAndroid) builder.AddLabel(Loc("status_android_guest_only"));
+        if(NativePlatform.IsAndroid && !NativePlatform.SupportsHosting) builder.AddLabel(Loc("status_android_guest_only"));
         builder.End();
 
         BeginSection(builder, balanced:true);
         var hostColumn=builder.CurrentContainer.gameObject;
         builder.AddHeader(Loc("host_room_heading"));
-        builder.AddButton(Loc(localTest ? "local_create" : "create"),()=>{room.Create();Refresh();});
+        if (!NativePlatform.IsAndroid)
+            builder.AddButton(Loc(localTest ? "local_create" : "create"),()=>{room.Create();Refresh();});
         builder.AddButton(Loc("show_lan_options"),()=>{
             showLanOptions=!showLanOptions;
             Refresh();
         }); lanToggle=builder.Last;
         builder.BeginColumn(10);
         lanControls=builder.CurrentContainer.gameObject;
-        ipv4.AddHost(builder, HostLan, compact:true);
+        ipv4.AddHost(builder, RequestHostLan, compact:true);
         hostColumn.SetActive(NativePlatform.SupportsHosting);
         builder.End().End().End();
         builder.AddLabel(Loc("join_from_menu")); joinFromMenu=builder.Last;
 
-        builder.BeginRow(6);
-        roomActions=builder.CurrentContainer.gameObject;
+        if (inShop)
+        {
+            BeginSection(builder);
+            roomActions=builder.CurrentContainer.gameObject;
+            builder.AddHeader(Loc("shop_room_controls"));
+            GrowShopControl(builder.Last, 26);
+        }
+        builder.BeginRow(10);
+        if (!inShop) roomActions=builder.CurrentContainer.gameObject;
         builder.AddInput(Loc("room_code")); roomCode=builder.Last;
         roomCode.input.readOnly=true;
         builder.AddButton(Loc("copy"),CopyRoomCode); copy=builder.Last;
         builder.AddButton(Loc("leave"),LeaveRoom); leave=builder.Last;
+        if (inShop)
+        {
+            roomCode.input.textComponent.fontSize = 23;
+            GrowShopControl(roomCode, 23, 46);
+            GrowShopControl(copy, 23, 46);
+            GrowShopControl(leave, 23, 46);
+        }
         builder.End();
+        if (inShop) builder.End();
         builder.AddButton(Loc("opening_reopen"),opening.Reopen); reopenOpening=builder.Last;
         builder.AddButton(Loc("pause_joins"),()=>{ room.SetAcceptingJoins(!room.AcceptingJoins); Refresh(); }); access=builder.Last;
-        builder.BeginRow(6);
-        approvalRow=builder.CurrentContainer.gameObject;
-        builder.AddButton(Loc("approve"),()=>{ room.Approve(); Refresh(); }); approve=builder.Last;
-        if(approve.text!=null) approve.text.richText=false;
-        builder.AddButton(Loc("decline_join"),()=>{ room.Decline(); Refresh(); }); decline=builder.Last;
-        builder.End();
+        if (inShop) GrowShopControl(access, 23, 39);
+        if (!inShop) AddJoinApproval(builder);
         BeginSection(builder);
         saveRow=builder.CurrentContainer.gameObject;
         builder.AddHeader(Loc("coop_saves_heading"));
+        if (inShop) GrowShopControl(builder.Last, 26);
         builder.BeginRow(12);
         builder.AddButton(Loc("new_run"),StartCoopGame,"coop_new_run"); newRun=builder.Last;
-        builder.AddButton(Loc("resume_run"),()=>OpenCheckpoints());
-        builder.AddButton(Loc("solo_import_button"),OpenSoloCheckpoints,"import_solo");
+        builder.AddButton(Loc("resume_run"),()=>OpenCheckpoints(), "resume_coop");
+        resumeRun=builder.Last;
+        builder.AddButton(Loc("solo_import_button"),OpenSoloCheckpoints,"import_solo"); importSolo=builder.Last;
         builder.End();
         builder.End();
         BeginSection(builder);
@@ -327,6 +381,30 @@ internal sealed partial class CoopPanel : IDisposable
         StoreUIManager.Instance?.Notify(Loc("player_name_changed"));
     }
 
+    private void AddJoinApproval(CustomUIBuilder builder)
+    {
+        builder.BeginRow(inShop ? 14 : 6, TextAnchor.MiddleLeft);
+        approvalRow = builder.CurrentContainer.gameObject;
+        builder.AddButton(Loc("approve"), () => { room.Approve(); Refresh(); }, "approve_partner");
+        approve = builder.Last;
+        if (approve.text != null) approve.text.richText = false;
+        builder.AddButton(Loc("decline_join"), () => { room.Decline(); Refresh(); }, "decline_partner");
+        decline = builder.Last;
+        if (inShop)
+        {
+            GrowShopControl(approve, 23, 44);
+            GrowShopControl(decline, 23, 44);
+        }
+        builder.End();
+    }
+
+    private void RevealJoinApproval()
+    {
+        if (!inShop || !room.CanApprove || window?.IsVisible != true || panelScroll == null) return;
+        panelScroll.StopMovement();
+        panelScroll.verticalNormalizedPosition = 1;
+    }
+
     private static void CopyContact(string value,string messageKey)
     {
         GUIUtility.systemCopyBuffer=value;
@@ -340,6 +418,18 @@ internal sealed partial class CoopPanel : IDisposable
         var layout=builder.CurrentContainer.GetComponent<LayoutElement>();
         layout.minWidth=0;
         layout.preferredWidth=0;
+    }
+
+    private static void GrowShopControl(CustomUIElement element, float fontSize, float minimumHeight = 0)
+    {
+        if (element.text != null)
+        {
+            element.text.enableAutoSizing = false;
+            element.text.fontSize = fontSize;
+        }
+        if (minimumHeight == 0) return;
+        var layout = element.root.GetComponent<LayoutElement>() ?? element.root.AddComponent<LayoutElement>();
+        layout.minHeight = Mathf.Max(layout.minHeight, minimumHeight);
     }
 
     private void PasteRoomCode()
@@ -364,16 +454,22 @@ internal sealed partial class CoopPanel : IDisposable
         if(room.CanApprove && !notifiedJoinRequest)
         {
             if(inMenu) Open();
-            else StoreUIManager.Instance?.Notify(Loc("join_request_notification"));
+            else
+            {
+                RevealJoinApproval();
+                StoreUIManager.Instance?.Notify(Loc(NativePlatform.IsAndroid ? "join_request_notification_touch" : "join_request_notification"));
+            }
         }
         notifiedJoinRequest=room.CanApprove;
+        if(joinSession!=null && room.Status=="peer_timeout")
+        {
+            PeerTimedOut();
+            return;
+        }
         if(!room.IsGuest)
         {
-            if(joinPhase!="sync_failed" && room.Status!="partner_setup_rejected")
-            {
-                if(joinSession!=null && room.Status=="peer_timeout") JoinFailed();
-                else ResetJoin();
-            }
+            if(joinPhase is not ("sync_failed" or "sync_disconnected") && room.Status!="partner_setup_rejected")
+                ResetJoin();
             return;
         }
         var session=room.Session;
@@ -404,6 +500,29 @@ internal sealed partial class CoopPanel : IDisposable
             SetJoinPhase(session?.State==LinkState.Connected ? "sync_preparing" :
                 room.Status=="await_approval" ? "status_await_approval" : "sync_connecting",0f);
     }
+
+    internal void ObserveWorldReload()
+    {
+        ResetJoin();
+        joinSession = room.Session;
+        SetJoinPhase("sync_preparing", 0f);
+        AddConnectionEvent("INFO", Loc("world_reload_sync"));
+        reopenJoinPanel = true;
+    }
+    internal string PeerTimedOut()
+    {
+        if(joinPhase=="sync_ready")
+        {
+            joinFailureCode=CoopIssueCode.Synchronization(NativeSyncFailure.None,false,false);
+            Debug.LogWarning($"[probably_coop] {joinFailureCode} guest connection timed out after entering the shop");
+            SetJoinPhase("sync_disconnected",joinPercentage);
+            issueCopied=false;
+        }
+        if(joinPhase=="sync_disconnected") return "peer_timeout";
+        if(joinPhase!="sync_failed") JoinFailed();
+        return "sync_failed";
+    }
+
     internal void JoinFailed(ModExtensionJoinException mismatch=null,NativeSyncFailure reason=NativeSyncFailure.None,
         bool localError=false,bool duringPlay=false)
     {
@@ -451,7 +570,7 @@ internal sealed partial class CoopPanel : IDisposable
         if(joinPhase==phase) return;
         joinPhase=phase;
         AddJoinStep(Loc(phase));
-        AddConnectionEvent(phase=="sync_failed" ? "ERROR" : "INFO",
+        AddConnectionEvent(phase is "sync_failed" or "sync_disconnected" ? "ERROR" : "INFO",
             Loc(phase=="sync_ready" && triedWithDifferences ? "join_mod_ready" : phase));
     }
     private void AddJoinStep(string line)
@@ -488,7 +607,7 @@ internal sealed partial class CoopPanel : IDisposable
         bool showProgress=joinPhase!=null;
         bool showHistory=showProgress && joinHistoryOpen;
         bool showAccess=room.IsHost && room.HasLobby;
-        bool showSaves=NativePlatform.SupportsHosting && inMenu && !room.IsGuest;
+        bool showSaves=CanPickCoopCheckpoint;
         var issue = CurrentIssue();
         var connectionState=RoomConnectionStatus.Format(room,joinPhase,joinCounters);
         terminalSummary.SetText(issue.Code==null ? connectionState.Summary : $"[{issue.Code}] {issue.Advice}");
@@ -497,11 +616,12 @@ internal sealed partial class CoopPanel : IDisposable
         var endpoint = room.Ipv4HostEndpoint;
         string signature=$"{room.Status}/{room.Detail}/{room.Code}/{room.Busy}/{room.CanApprove}/"+
             $"{room.PartnerName}/{session?.State}/{real}/{inShop}/{NativeActorCarryUi.Available}/{MapUIManager.Instance?.IsOutside}/{justCopied}/{steamJoinBusy}/{room.FriendsCanJoin}/{showMapping}"+
-            $"/{joinPhase}/{joinPercentage:F3}/{joinCounters}/{joinFailureReason}/{history}/{showHistory}/{session?.Native.SynchronizationFailed}/{room.AcceptingJoins}/{showLan}/{issue.Code}/{opening.HasGuestDraft}/{available}";
+            $"/{joinPhase}/{joinPercentage:F3}/{joinCounters}/{joinFailureReason}/{history}/{showHistory}/{session?.Native.SynchronizationFailed}/{room.AcceptingJoins}/{showLan}/{showSaves}/{issue.Code}/{opening.HasGuestDraft}/{available}";
         if(signature==displaySignature) return;
         displaySignature=signature;
         heading.SetText(Loc(inShop || real ? "native_header" : "room_header"));
         heading.SetVisible(!showSetup);
+        if (inShop && shopOverview != null) shopOverview.SetActive(!showSetup || room.Status != "idle");
         steamHint.SetVisible(room.FriendsCanJoin);
         setupRow.SetActive(showSetup);
         joinColumn.SetActive(showJoin);
@@ -530,12 +650,12 @@ internal sealed partial class CoopPanel : IDisposable
             (showAccess && !room.AcceptingJoins ? "\n"+Loc("joins_paused") : ""));
         status.SetVisible(!showSetup || room.Status!="idle" || steamJoinBusy);
         progressSection.SetActive(showProgress);
-        joinProgressTrack.SetActive(showProgress);
+        joinProgressTrack.SetActive(showProgress && joinPhase!="sync_disconnected");
         joinProgressLabel.SetVisible(showProgress);
         if(showProgress)
         {
-            string label=(joinPhase=="sync_failed" && joinFailureCode!=null ? $"[{joinFailureCode}] " : "")+Loc(joinPhase);
-            if(joinCounters.Length!=0)
+            string label=(joinFailureCode!=null ? $"[{joinFailureCode}] " : "")+Loc(joinPhase);
+            if(joinCounters.Length!=0 && joinPhase!="sync_disconnected")
                 label+=" · "+(joinPhase=="sync_failed" ? string.Format(Loc("sync_previous_progress"),joinCounters) : joinCounters);
             if(joinFailureReason.Length!=0) label+="\n"+joinFailureReason;
             joinProgressLabel.SetText(label);
@@ -545,7 +665,11 @@ internal sealed partial class CoopPanel : IDisposable
         joinHistoryToggle.SetText(Loc(showHistory ? "sync_hide_log" : "sync_show_log"));
         joinLog.SetActive(showHistory);
         if(showHistory) joinHistory.SetText(history);
-        saveRow.SetActive(showSaves);
+        saveRow.SetActive(inMenu && showSaves);
+        newRun.SetVisible(inMenu);
+        importSolo.SetVisible(inMenu);
+        resumeRun.SetVisible(showSaves);
+        if (inShop) shopResume.SetVisible(showSaves);
         bool pairedOpening=NativeOpening.CanHost && room.IsHost;
         bool waitingForPartner=pairedOpening && session?.State!=LinkState.Connected;
         newRun.SetText(Loc(pairedOpening ? "opening_title" : "new_run"));
@@ -577,7 +701,7 @@ internal sealed partial class CoopPanel : IDisposable
     private void ResizePanel(Vector2 available)
     {
         var rect=window.Rect;
-        float width=Mathf.Min(1160,Mathf.Max(480,available.x-64));
+        float width=Mathf.Min(inShop ? 1560 : 1160,Mathf.Max(480,available.x-64));
         if(!Mathf.Approximately(rect.rect.width,width))
             window.SetSize(width,rect.rect.height);
         LayoutRebuilder.ForceRebuildLayoutImmediate(rect);
@@ -703,6 +827,12 @@ internal sealed partial class CoopPanel : IDisposable
         Refresh();
     }
 
+    private void RequestHostLan()
+    {
+        if (NativePlatform.IsAndroid) hostRequestedFrame = Time.frameCount;
+        else HostLan();
+    }
+
     private void HostLan()
     {
         if(!CanConnect || string.IsNullOrWhiteSpace(ipv4.Address)) return;
@@ -739,13 +869,17 @@ internal sealed partial class CoopPanel : IDisposable
         },()=>{ if(window?.IsAlive==true) window.Show(); });
     }
 
+    private bool CanPickCoopCheckpoint => NativePlatform.SupportsHosting &&
+        (inMenu ? !room.IsGuest : inShop && room.CanReloadInShop);
+
     private void OpenCheckpoints(bool includeHistory=false)
     {
-        if (!NativePlatform.SupportsHosting || !inMenu || room.IsGuest) return;
+        if (!CanPickCoopCheckpoint) return;
         if (checkpoints?.IsAlive == true) checkpoints.Close();
-        var builder = CustomUIManager.Window("probably_coop_checkpoints", Loc("resume_run"), "menu")
+        var builder = CustomUIManager.Window("probably_coop_checkpoints", Loc(inMenu ? "resume_run" : "world_reload_button"),
+                inMenu ? "menu" : "overlay")
             .SetSize(540, 440).Center().SetDraggable(true).SetCloseOnEscape()
-            .OnClose(()=>{ CancelCheckpointScan(); if(inMenu && window?.IsAlive==true) window.Show(); });
+            .OnClose(()=>{ CancelCheckpointScan(); if(CanPickCoopCheckpoint && window?.IsAlive==true) window.Show(); });
         builder.BeginRow(6);
         builder.AddLabel(Loc("scan_checkpoints_loading")); checkpointStatus=builder.Last;
         if(!includeHistory)
@@ -764,7 +898,7 @@ internal sealed partial class CoopPanel : IDisposable
     private void TickCheckpointScan()
     {
         if(checkpointBuilder==null || Time.frameCount<=checkpointStartFrame) return;
-        if(!inMenu || room.IsGuest || checkpoints?.IsAlive!=true)
+        if(!CanPickCoopCheckpoint || checkpoints?.IsAlive!=true)
         {
             CancelCheckpointScan();
             return;
@@ -814,7 +948,7 @@ internal sealed partial class CoopPanel : IDisposable
         string label=$"{checkpoint.Name} · {Loc("day")} {checkpoint.Day} · {checkpoint.Cash}"+
             (checkpoint.Historical ? " · "+Loc("history_checkpoint") : "")+
             (checkpoint.NeedsRecovery ? " · "+Loc("recover_checkpoint") : "");
-        builder.AddButton(label,()=>Resume(checkpoint));
+        builder.AddButton(label,()=>Resume(checkpoint), "coop_checkpoint_" + checkpoint.File);
         if(builder.Last.text!=null) builder.Last.text.richText=false;
         builder.Last.SetInteractable(checkpoint.HasActors);
         builder.Last.SetTooltip(checkpoint.HasActors ? checkpoint.SavedAt.ToString("yyyy-MM-dd HH:mm")+
@@ -907,6 +1041,11 @@ internal sealed partial class CoopPanel : IDisposable
 
     internal void Resume(CoopRun.Checkpoint checkpoint)
     {
+        if (!inMenu)
+        {
+            ConfirmWorldReload(checkpoint);
+            return;
+        }
         var menu = MainMenuUIController.Instance;
         if (!inMenu || menu == null || room.IsGuest) return;
         void Load()
@@ -920,6 +1059,7 @@ internal sealed partial class CoopPanel : IDisposable
                 }
                 checkpoints?.Close();
                 window?.Hide();
+                room.AnnounceSceneLoad();
                 menu.StartNewGameClick();
             }
             catch (Exception ex)
@@ -936,6 +1076,29 @@ internal sealed partial class CoopPanel : IDisposable
             menu.confirmPanelUIManager.OpenPanel(warning, Load);
         }
         else Load();
+    }
+
+    private void ConfirmWorldReload(CoopRun.Checkpoint checkpoint)
+    {
+        var storeUi = StoreUIManager.Instance;
+        var confirm = storeUi?.confirmPanelUIManager;
+        if (!CanPickCoopCheckpoint || checkpoint?.HasActors != true || confirm == null) return;
+        string prompt = string.Format(Loc("world_reload_confirm"), checkpoint.Name, checkpoint.Day);
+        string locale = LocHelper.GetCurrentLocaleCode();
+        if (!string.IsNullOrEmpty(checkpoint.Locale) && checkpoint.Locale != locale)
+            prompt += "\n" + LocHelper.GetLocalizedMainMenu("load_locale_mismatch_warning", checkpoint.Locale, locale);
+        checkpoints?.Hide();
+        confirm.OpenPanel(prompt, () =>
+        {
+            if (!requestWorldReload(checkpoint))
+            {
+                storeUi.Notify(Loc("world_reload_busy"));
+                if (checkpoints?.IsAlive == true) checkpoints.Show();
+                return;
+            }
+            checkpoints?.Close();
+            window?.Hide();
+        }, () => { if (checkpoints?.IsAlive == true) checkpoints.Show(); });
     }
 
     private void StartCoopGame()
@@ -955,6 +1118,30 @@ internal sealed partial class CoopPanel : IDisposable
     }
 
 #if PROBABLY_COOP_GRID_QA
+    internal bool QaChooseWorldReload(CoopRun.Checkpoint checkpoint)
+    {
+        if (checkpoints?.IsAlive != true)
+        {
+            Open();
+            window.Get("reload_in_shop").button.onClick.Invoke();
+            return false;
+        }
+        var row = checkpoints.Get("coop_checkpoint_" + checkpoint.File);
+        if (row?.button == null) return false;
+        row.button.onClick.Invoke();
+        var confirm = StoreUIManager.Instance.confirmPanelUIManager;
+        if (!confirm.panel.activeInHierarchy) throw new InvalidOperationException("Missing in-room checkpoint confirmation.");
+        confirm.OnYesClick();
+        return true;
+    }
+
+    internal void QaOpenInShopPanel() => Open();
+    internal void QaOpenConnectionDetails()
+    {
+        window?.Hide();
+        OpenConnectionDetails();
+    }
+
     internal void QaStartPairedOpening()
     {
         Open();

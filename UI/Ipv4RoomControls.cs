@@ -20,7 +20,7 @@ internal sealed class Ipv4RoomControls
     {
         builder.AddInput(Loc("mapped_address_hint")); mapping = builder.Last;
         mapping.input.characterLimit = 24;
-        mapping.input.onSubmit.AddListener(_ => join());
+        if (!NativePlatform.IsAndroid) mapping.input.onSubmit.AddListener(_ => join());
     }
 
     internal void AddHost(CustomUIBuilder builder, Action create, bool compact = false)
@@ -29,11 +29,16 @@ internal sealed class Ipv4RoomControls
         builder.AddInput(Loc("host_address_hint"), onTyping: value => host.SetInteractable(!string.IsNullOrWhiteSpace(value)));
         address = builder.Last;
         address.input.characterLimit = 15;
-        address.input.onSubmit.AddListener(_ => create());
         if (compact) builder.BeginRow(6);
         builder.AddInput(Loc("udp_port_hint")); port = builder.Last;
         port.input.characterLimit = 5;
-        port.input.onSubmit.AddListener(_ => create());
+        // Android's IME uses submit to finish editing each field. The player
+        // may still need to enter a specific port before creating the room.
+        if (!NativePlatform.IsAndroid)
+        {
+            address.input.onSubmit.AddListener(_ => create());
+            port.input.onSubmit.AddListener(_ => create());
+        }
         builder.AddButton(Loc("lan_create"), create); host = builder.Last;
         if (compact) builder.WithTooltip(Loc("ipv4_mapping_hint"));
         builder.End();

@@ -5,6 +5,7 @@ using System.Reflection;
 using DG.Tweening;
 using HarmonyLib;
 using Newtonsoft.Json.Linq;
+using ProbablyCoop.Api;
 using UnityEngine;
 
 namespace ProbablyCoop;
@@ -22,7 +23,16 @@ internal sealed partial class NativeWorld
     private bool motionObserved;
     private ulong appliedMotion;
     private uint appliedMotionCustomer;
+    private string appliedMotionSprite;
     private CustomerMotion appliedMotionPhase;
+
+#if PROBABLY_COOP_GRID_QA
+    internal void QaPublishPortrait(string key)
+    {
+        RecordCustomerMotion(CustomerMotion.AtCounter);
+        motionSprite = key;
+    }
+#endif
 
     // Called by the original host animation transitions, before the next capture.
     // Identity and start time stay stable even when two customers share a portrait.
@@ -42,6 +52,11 @@ internal sealed partial class NativeWorld
                 ?? blueprint?.spriteName ?? "";
         }
         nextCapture = 0;
+    }
+
+    internal void RecordDialogueCustomerHidden()
+    {
+        if (customerMotion == CustomerMotion.AtCounter) RecordCustomerMotion(CustomerMotion.Hidden);
     }
 
     private JObject CaptureCustomerMotion()
@@ -85,22 +100,33 @@ internal sealed partial class NativeWorld
         if (actor == null) return;
         bool restoring = appliedMotion == 0;
         uint customer = (uint)data["customer"];
-        bool completingApproach = appliedMotionCustomer == customer && appliedMotionPhase == CustomerMotion.Approaching;
+        bool customerChanged = appliedMotionCustomer != customer;
+        bool completingApproach = !customerChanged && appliedMotionPhase == CustomerMotion.Approaching;
+        bool recoveringApproach = !restoring && customer != 0 &&
+            (customerChanged || appliedMotionPhase is CustomerMotion.Hidden or CustomerMotion.Leaving or CustomerMotion.LeavingRight) &&
+            MapUIManager.Instance?.IsOutside == false;
         bool completingDeparture = appliedMotionPhase is CustomerMotion.Leaving or CustomerMotion.LeavingRight;
         appliedMotion = sequence;
         appliedMotionCustomer = customer;
         appliedMotionPhase = phase;
         if (phase == CustomerMotion.Hidden)
         {
+            appliedMotionSprite = null;
             // The local path owns its final visual frame and OnLeft callback.
             // A slightly earlier host snapshot must not truncate that animation.
             if (restoring || !completingDeparture || !actor.IsMoving()) StoreUIManager.Instance.HideClient();
             return;
         }
-        string sprite = (string)data["sprite"];
-        if (!SpriteDict.Instance.spriteDictionary.TryGetValue(sprite, out var portrait))
-            throw new InvalidDataException("Missing customer portrait");
-        actor.image.sprite = portrait;
+        string sprite = (string)data["sprite"] ?? "";
+        if (sprite.Length == 0) sprite = "default";
+        bool newAppearance = restoring || customerChanged || appliedMotionSprite != sprite || actor.image.sprite == null;
+        // Native lookup also lets local mods provide portraits without adding an
+        // entry to the dictionary. Missing keys use the game's stock fallback.
+        if (newAppearance)
+        {
+            actor.image.sprite = SpriteDict.Instance.ShowClientSprite(sprite);
+            appliedMotionSprite = sprite;
+        }
         StoreUIManager.Instance.DisplayClient();
         switch (phase)
         {
@@ -109,9 +135,12 @@ internal sealed partial class NativeWorld
                 SeekCustomerPath(actor.GetComponent<DOTweenPath>(), age, false, restoring);
                 break;
             case CustomerMotion.AtCounter:
-                // A normal arrival completes its local walk. A reconnect has no
-                // earlier animation to finish and can restore the current endpoint.
-                if (restoring || !completingApproach) actor.SetImmediatlyArrive();
+                // Intermediate snapshots may be coalesced while the guest is in
+                // the shop. Start the local walk once even if the at-counter
+                // state is the first cue. A join restores an established pose.
+                if (completingApproach) break;
+                if (recoveringApproach) actor.StartApprochingStore();
+                else actor.SetImmediatlyArrive();
                 break;
             case CustomerMotion.Leaving:
                 actor.StartLeavingStore();
@@ -122,8 +151,15 @@ internal sealed partial class NativeWorld
                 SeekCustomerPath(actor.pathRight, age, false, restoring);
                 break;
         }
+        if (newAppearance)
+            ModHelper.SendMessage("probably_coop", "customer-appearance-v1", new CoopCustomerAppearance(sprite, restoring));
         Debug.Log($"[probably_coop] customer motion sequence={sequence} phase={phase} restore={restoring}");
     }
+
+    private bool CustomerSpeakerApproaching() =>
+        appliedMotionPhase is CustomerMotion.Approaching or CustomerMotion.AtCounter &&
+        StoreClientMono.Instance is { } actor && actor != null &&
+        actor.gameObject.activeInHierarchy && actor.IsMoving();
 
     private static void SeekCustomerPath(DOTweenPath path, double age, bool backwards, bool restoring)
     {
@@ -173,6 +209,9 @@ internal static class NativeCustomerTransitions
         }
         if (method == nameof(StoreClientMono.OnLeft) && (bool)IgnoreLeft.GetValue(__instance)) return true;
         if (method == nameof(StoreClientMono.OnArrived) && !(bool)Walking.GetValue(__instance)) return true;
+        if (method is (nameof(StoreClientMono.StartLeavingStore) or nameof(StoreClientMono.StartLeavingStoreRight)) &&
+            !__instance.gameObject.activeSelf)
+            return true;
         var phase = method switch
         {
             nameof(StoreClientMono.StartApprochingStore) => NativeWorld.CustomerMotion.Approaching,
@@ -184,5 +223,23 @@ internal static class NativeCustomerTransitions
         NativeWorld.Host?.RecordCustomerMotion(phase);
         NativeInventoryPilot.RecordCustomerMotion(phase);
         return true;
+    }
+}
+
+[HarmonyPatch(typeof(Dialogue), nameof(Dialogue.ExecuteEndAction))]
+internal static class NativeDialogueCustomerVisibility
+{
+    private static void Prefix(Dialogue __instance, out NativeWorld __state)
+    {
+        __state = NativeWorld.Host;
+        if (__state == null || __instance.isEndActionExecuted || __instance.endAction == null ||
+            StoreClientMono.Instance is not { } actor || actor == null || !actor.gameObject.activeSelf) __state = null;
+    }
+
+    private static void Postfix(NativeWorld __state)
+    {
+        // Some native dialogue callbacks hide the visitor without a walk.
+        if (__state != null && StoreClientMono.Instance is { } actor && actor != null && !actor.gameObject.activeSelf)
+            __state.RecordDialogueCustomerHidden();
     }
 }

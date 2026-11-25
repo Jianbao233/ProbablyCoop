@@ -29,8 +29,9 @@ internal static class NativeOpening
     private static readonly System.Reflection.FieldInfo LabelsField = AccessTools.Field(typeof(CodeInstruction), "labels");
     private static System.Collections.IList Labels(CodeInstruction instruction) =>
         (System.Collections.IList)LabelsField.GetValue(instruction);
-    internal static bool CanHost => NativePlatform.SupportsHosting &&
-        typeof(NewGameData).Module.ModuleVersionId == new Guid(NativeActorCarryAccess.ExpectedMvid);
+    private static bool CanInstallHostHooks => NativePlatform.SupportsAuthorityContract &&
+        NativePlatform.MatchesActorModule(typeof(NewGameData).Module, NativeActorCarryAccess.ExpectedMvid);
+    internal static bool CanHost => NativePlatform.SupportsHosting && CanInstallHostHooks;
 
     internal static CoopOpening Current => CoopRun.Armed && pending?.Request == NewGameData.Instance ? pending : null;
 
@@ -144,7 +145,7 @@ internal static class NativeOpening
     [HarmonyPatch(typeof(EmporiumEntry), "Start")]
     private static class SceneStart
     {
-        [HarmonyPrepare] private static bool Prepare() => CanHost;
+        [HarmonyPrepare] private static bool Prepare() => CanInstallHostHooks;
         private static void Finalizer(Exception __exception)
         {
             if (pending == null) return;
@@ -157,7 +158,7 @@ internal static class NativeOpening
     [HarmonyPatch(typeof(NewGameData), nameof(NewGameData.HandleInitialItem))]
     private static class NativeItems
     {
-        [HarmonyPrepare] private static bool Prepare() => CanHost;
+        [HarmonyPrepare] private static bool Prepare() => CanInstallHostHooks;
         private static void Prefix(out bool __state)
         {
             __state = mixedBenefits;
@@ -212,7 +213,7 @@ internal static class NativeOpening
     [HarmonyPatch(typeof(StartingPerkContent), nameof(StartingPerkContent.HandleNewGamePerk))]
     private static class FinishPerkInitialization
     {
-        [HarmonyPrepare] private static bool Prepare() => CanHost;
+        [HarmonyPrepare] private static bool Prepare() => CanInstallHostHooks;
         private static void Prefix(out bool __state)
         {
             __state = mixedBenefits;
@@ -234,7 +235,7 @@ internal static class NativeOpening
     [HarmonyPatch(typeof(GraphUtils), nameof(GraphUtils.DestroyIfUnplaced))]
     private static class StartingSpace
     {
-        [HarmonyPrepare] private static bool Prepare() => CanHost;
+        [HarmonyPrepare] private static bool Prepare() => CanInstallHostHooks;
         private static void Prefix(GameItem item, string context)
         {
             if (Current != null && item?.unitCount > 0 && item.parentInventory == null &&
@@ -278,7 +279,7 @@ internal static class NativeOpening
     [HarmonyPatch]
     private static class CartelCareerGate
     {
-        [HarmonyPrepare] private static bool Prepare() => CanHost;
+        [HarmonyPrepare] private static bool Prepare() => CanInstallHostHooks;
         private static IEnumerable<System.Reflection.MethodBase> TargetMethods()
         {
             yield return AccessTools.Method(typeof(StoreClientManager), nameof(StoreClientManager.HandleCartelClient));

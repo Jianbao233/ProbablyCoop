@@ -24,6 +24,10 @@ internal sealed class CoopRuntime : MonoBehaviour
     private bool returningGuest;
     private (string Code, int? Day)? recoveryExit;
     private CoopRun.Checkpoint mutationResume;
+    private (CoopRun.Checkpoint Checkpoint, CoopSession Connection)? queuedReload;
+    private CoopRun.Checkpoint loadingCheckpoint;
+    private double reloadDeadline;
+    private int reloadOrigin;
     private PlayerStore checkedStore;
     private bool stopped;
     private Action captureAfterReceive;
@@ -45,7 +49,14 @@ internal sealed class CoopRuntime : MonoBehaviour
                 mutationResume = shop?.MutationResume;
                 recoveryExit = (shop?.FailedMutation?.Code ?? (attempt == null ? "DAY-205" : CoopIssueCode.Settlement(attempt)), day);
             })) return;
-            var scene = SceneManager.GetActiveScene().name;
+            var activeScene = SceneManager.GetActiveScene();
+            if (queuedReload is { } requested)
+            {
+                queuedReload = null;
+                if (TryReload(activeScene, requested.Checkpoint, requested.Connection)) return;
+            }
+            if (loadingCheckpoint != null && !CheckHostReload(activeScene)) return;
+            var scene = activeScene.name;
             bool inMenu = scene == "EmporiumMenu" || MainMenuUIController.Instance != null &&
                 EmporiumEntry.Instance == null;
             if (guest != null && (NativeGuest.MenuExitRequested || scene == "EmporiumMenu" && guest.EnteredShop))
@@ -95,11 +106,14 @@ internal sealed class CoopRuntime : MonoBehaviour
                 }
             }
             if (CustomUIManager.Instance == null) return;
+#if PROBABLY_COOP_ANDROID_HOST_PREVIEW
+            if (inMenu && room == null && NativePlatform.PrepareAndroidHosting()) return;
+#endif
             if (room == null)
             {
                 var fingerprint = ReadFingerprint();
                 room = new RoomSelector(fingerprint, localTest);
-                panel = new CoopPanel(room, localTest, opening);
+                panel = new CoopPanel(room, localTest, opening, QueueReload);
                 pointer = new NativePointer(room);
                 if (inMenu && localTest)
                 {
@@ -149,6 +163,16 @@ internal sealed class CoopRuntime : MonoBehaviour
             captureAfterReceive ??= CaptureHostAfterReceive;
             room.Tick(captureAfterReceive);
             var connection = room.Session;
+            if (guest?.ReloadRequested(connection) == true)
+            {
+                guest = null;
+                returningGuest = true;
+                dayUi.Reset();
+                NativeActorCarryUi.Reset();
+                panel.ObserveWorldReload();
+                NativeGuest.ReturnToMenu();
+                return;
+            }
             opening.Tick(room, inMenu);
             panel.ObserveJoin(guest!=null,NativeWorld.Guest?.Ready==true);
             if(room.IsGuest && connection?.Native.SynchronizationFailed==true)
@@ -173,9 +197,7 @@ internal sealed class CoopRuntime : MonoBehaviour
                 if (!room.IsGuest || connection?.State != LinkState.Connected || !connection.Shop.View.Active ||
                     !guest.Matches(connection))
                 {
-                    bool timedOut = room.Status=="peer_timeout";
-                    if (timedOut) panel.JoinFailed(duringPlay:true);
-                    LeaveGuest(timedOut ? "sync_failed" : "idle");
+                    LeaveGuest(room.Status=="peer_timeout" ? panel.PeerTimedOut() : "idle");
                     return;
                 }
                 try { guest.Tick(connection); dayUi.Tick(connection.Shop); }
@@ -219,6 +241,104 @@ internal sealed class CoopRuntime : MonoBehaviour
             Debug.LogError($"[probably_coop] runtime stopped: {exception}");
             Stop();
         }
+    }
+
+    private bool QueueReload(CoopRun.Checkpoint checkpoint)
+    {
+        var connection = room?.Session;
+        if (checkpoint?.HasActors != true || queuedReload.HasValue || !CanReload(connection)) return false;
+        queuedReload = (checkpoint, connection);
+        return true;
+    }
+
+    private bool CanReload(CoopSession connection)
+    {
+        var actors = NativeActorSession.Current;
+        return loadingCheckpoint == null && room?.CanReloadInShop == true && ReferenceEquals(room.Session, connection) &&
+            shop?.CanReloadWorld == true &&
+            actors is { CanCommit: true, TransitionActive: false } && shop.Matches(actors.Store);
+    }
+
+    private bool TryReload(Scene scene, CoopRun.Checkpoint checkpoint, CoopSession connection)
+    {
+        if (scene.name != "InventoryScene" || !CanReload(connection))
+        {
+            StoreUIManager.Instance?.Notify(ModHelper.GetLocalized("probably_coop", "world_reload_busy"));
+            return false;
+        }
+        if (!CoopRun.PrepareResume(checkpoint, out var verified))
+        {
+            StoreUIManager.Instance?.Notify(ModHelper.GetLocalized("probably_coop", "checkpoint_unavailable"));
+            return false;
+        }
+
+        loadingCheckpoint = verified;
+        reloadOrigin = scene.handle;
+        reloadDeadline = Time.realtimeSinceStartupAsDouble + 60;
+        try
+        {
+            bool notifyPeer = connection.State == LinkState.Connected;
+            if (notifyPeer && !connection.BeginWorldReload(Time.realtimeSinceStartupAsDouble))
+                throw new InvalidOperationException("Unable to begin the co-op world reload.");
+            connection.Shop.SetAuthority(null);
+            panel.SetContext(false, false);
+            if (notifyPeer) room.Tick();
+            world?.Close(); world = null;
+            shop.Dispose(); shop = null;
+            dayUi.Reset();
+            NativeActorCarryUi.Reset();
+            NativeActorSession.Current.Dispose();
+            checkedStore = null;
+            FreezeScene(scene);
+            EmporiumEntry.ResetData();
+            PlayerStore.ResetData();
+            StoreStation.ResetData();
+            EmporiumEntry.sceneLoadStartTime = Time.realtimeSinceStartup;
+            SceneManager.LoadSceneAsync("InventoryScene", LoadSceneMode.Single);
+        }
+        catch (Exception error) { AbortHostReload(error); }
+        return true;
+    }
+
+    private bool CheckHostReload(Scene scene)
+    {
+        var target = loadingCheckpoint;
+        var loaded = NativeActorSession.Current?.VerifiedCheckpoint;
+        if (scene.handle != reloadOrigin && scene.name == "InventoryScene" &&
+            loaded?.Run == target.Run && loaded.Slot == target.Slot && loaded.Day == target.Day &&
+            loaded.Checkpoint == target.Nonce && NativeActorSession.Current?.Faulted == false)
+        {
+            loadingCheckpoint = null;
+            Debug.Log($"[probably_coop] cooperative checkpoint reloaded in room, day={loaded.Day}, slot={loaded.Slot}");
+            return true;
+        }
+        if (Time.realtimeSinceStartupAsDouble >= reloadDeadline || loaded != null && scene.handle != reloadOrigin)
+            AbortHostReload(new InvalidOperationException("The native scene did not load the selected co-op checkpoint."));
+        // During an unattended reload, leave incoming joins queued until we
+        // can attach the new shop. A connected peer still needs the reload notice.
+        else if (room.Session?.State == LinkState.Connected) room.Tick();
+        return false;
+    }
+
+    private void AbortHostReload(Exception error)
+    {
+        loadingCheckpoint = null;
+        Debug.LogError("[probably_coop] in-room checkpoint reload failed: " + error);
+        CloseSession();
+        NativeActorSession.Current?.Dispose();
+        FreezeScene(SceneManager.GetActiveScene());
+        EmporiumEntry.ResetData();
+        PlayerStore.ResetData();
+        StoreStation.ResetData();
+        NewGameData.HardReset();
+        SceneManager.LoadScene("EmporiumMenu", LoadSceneMode.Single);
+    }
+
+    private static void FreezeScene(Scene scene)
+    {
+        if (scene.name != "InventoryScene") return;
+        foreach (var root in scene.GetRootGameObjects())
+            if (root != null) root.SetActive(false);
     }
 
     private void FailGuestSynchronization(Exception error=null)

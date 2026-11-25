@@ -60,9 +60,7 @@ internal sealed partial class NativeBackgroundQa
         var manager=(HighlightManager)AccessTools.Field(typeof(ItemMouseDragHandler),"highlightManager").GetValue(drag);
         var grid=EmporiumEntry.Instance.invElement;
         var slot=new SlotMarker { inventory=grid, itemGridShape=new GridShapeBuilder(1,1).SetDataFill(1).Build() };
-        var highlight=AccessTools.MethodDelegate<System.Func<GameInventory,SlotMarker,RenderHandler.BackgroundColor,bool,System.Collections.Generic.List<TreeNodeRender>>>(
-            AccessTools.Method(typeof(NativeDragTargetHighlight),"Highlight"));
-        var nodes=highlight(grid,slot,RenderHandler.BackgroundColor.Green,true);
+        var nodes=NativeDragTargetHighlight.Highlight(grid,slot,RenderHandler.BackgroundColor.Green,true);
         Require(nodes?.Count==1 && nodes[0].image.enabled,"native hover did not paint the fixture grid");
         manager.Clear();
         Require(!nodes[0].image.enabled,"native hover clear left green in a prior cell");

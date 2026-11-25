@@ -33,5 +33,8 @@ public sealed class ModEntry : IMod
             Object.Destroy(next.gameObject);
             next = null;
         }
+#if PROBABLY_COOP_ANDROID_HOST_PREVIEW
+        NativePlatform.ResetAndroidHosting();
+#endif
     }
 }

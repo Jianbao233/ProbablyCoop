@@ -26,6 +26,7 @@ internal sealed partial class NativeEffectCampaign : ISyncWorld, ISyncWholeItemM
 
     internal WorldSession Session { private get; set; }
     internal bool Dispatching { get; private set; }
+    internal bool DispatchingNight => host && Dispatching && running.Kind == TeamTransitionKind.Sleep;
     internal bool Busy => running.Kind != TeamTransitionKind.None;
     internal NativeActorState RemoteHost => remoteHost;
     internal Guid RunId => run;

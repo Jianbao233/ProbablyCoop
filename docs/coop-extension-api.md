@@ -25,6 +25,42 @@ Connect a custom control's click handler to `Request`.
 v1 提供共享动作和状态同步。实际储物请使用联机已支持的原版库存节点。自定义按钮可以用
 `Request` 提交动作。可以用下文的接口向联机层声明自定义布局下的原版储物节点。
 
+## Guest-local item windows / 客机本地物品窗口
+
+Use this optional service if the original item Activate command opens a local
+window, such as a manual or a settings panel. The publisher must own the
+item's source tag. Set it with the game's `ModHelper.SetSource` when creating
+the item. Keep the original item ability checks enabled so the native context
+menu offers the action.
+
+如果物品的原版「激活」只负责打开说明或设置窗口，可以声明一个本机服务。
+创建物品时用游戏的 `ModHelper.SetSource` 标记所属 Mod，并保留原版激活条件，
+让右键菜单仍能显示该动作。
+
+```csharp
+// OnEnable
+ModHelper.Expose(MyModId, CoopExtensionApi.LocalItemActivationService,
+    (Func<GameItem, bool>)(item =>
+    {
+        if (item.identifier != MyTerminalItemId) return false;
+        OpenTerminalWindow(item);
+        return true;
+    }));
+
+// OnDisable
+ModHelper.Expose(MyModId, CoopExtensionApi.LocalItemActivationService, null);
+```
+
+The guest calls the service on the game thread for their own accessible item.
+Return `true` after handling the click locally. Return `false` for items that
+should follow the ordinary activation path. Host and single-player actions
+keep the Mod's original handler. Inventory, money, and story changes use
+the shared action API below.
+
+客机只对自己能访问且已拥有的物品，在游戏线程调用物品所属 Mod 的服务。
+本地处理后返回 `true`，其他物品返回 `false` 继续走普通激活流程。
+房主与单人仍使用 Mod 原有处理。库存、现金和剧情改动通过下文的共享动作提交。
+
 ## Custom storage wrappers / 自定义储物布局
 
 A custom `PixelElement` that owns native storage can implement
@@ -160,6 +196,23 @@ game-thread updates outside the extension callbacks.
 `IsClosed` 用来丢弃已经过期的会话。客机正在加载、掉线或更新投影时，停用共享操作，
 等新的会话或状态到达。共享状态回调在主线程执行，`ReadState` 直接读取本 Mod 的数据，
 `ProjectState` 直接用传入内容刷新界面。
+
+## Customer appearance on the guest
+
+ProbablyCoop resolves the portrait key through the original `SpriteDict.ShowClientSprite`
+and `GetSprite` path. A cosmetic Mod whose usual entry point is customer generation
+can also listen for `probably_coop:customer-appearance-v1` with `ModHelper.OnMessage`.
+The payload is `CoopCustomerAppearance`. Its `PortraitKey` is the requested asset key
+and `Restoring` indicates the first projected appearance after joining or reloading.
+The guest can apply a local visual override to `StoreClientMono.Instance.image`
+inside this callback. Remove the listener on disable. This message is local to the
+guest and requires no shared-action registration.
+
+客机通过原版 `SpriteDict.ShowClientSprite` 和 `GetSprite` 查找立绘。如果美化 Mod
+原先是在生成顾客时换图，也可以用 `ModHelper.OnMessage` 监听本地消息
+`probably_coop:customer-appearance-v1`。参数 `CoopCustomerAppearance` 提供立绘资源键
+`PortraitKey` 和是否为入房或读档后的首次恢复 `Restoring`。回调内可以调整客机自己的
+`StoreClientMono.Instance.image`。停用 Mod 时移除监听。这个消息只在本机触发，无需登记共享动作。
 
 ## Verify an adapter
 

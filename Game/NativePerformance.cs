@@ -37,6 +37,8 @@ internal static class NativePerformance
         "guest.command_to_projection" or "guest.command_reply_applied" or "runtime.update" or "qa.render" or
         "host.effect_capture" or "host.effect_sync_frame" or "host.effect_inventory");
     internal static Scope Measure(string name) => new Scope(Keep(name) ? name : null);
+    internal static CheckpointScope MeasureCheckpoint(string stage) =>
+        new CheckpointScope(NativePlatform.IsAuditedAndroidRuntime || Detailed ? stage : null);
     internal static Scope Measure(string name,FrameWork work)
     {
         if(Enabled) lastWork|=work;
@@ -122,5 +124,24 @@ internal static class NativePerformance
         private readonly long start;
         internal Scope(string name) { this.name = name; start = name == null ? 0 : Stopwatch.GetTimestamp(); }
         public void Dispose() { if (name != null) Record(name, (Stopwatch.GetTimestamp() - start) * 1000d / Stopwatch.Frequency); }
+    }
+
+    internal readonly struct CheckpointScope : IDisposable
+    {
+        private readonly string stage;
+        private readonly long start;
+
+        internal CheckpointScope(string stage)
+        {
+            this.stage = stage;
+            start = stage == null ? 0 : Stopwatch.GetTimestamp();
+        }
+
+        public void Dispose()
+        {
+            if (stage == null) return;
+            double milliseconds = (Stopwatch.GetTimestamp() - start) * 1000d / Stopwatch.Frequency;
+            UnityEngine.Debug.Log(FormattableString.Invariant($"[probably_coop PERF] checkpoint {stage} ms={milliseconds:F1}"));
+        }
     }
 }

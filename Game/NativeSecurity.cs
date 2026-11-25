@@ -10,6 +10,7 @@ namespace ProbablyCoop;
 internal sealed partial class NativeWorld
 {
     private JObject securityScene;
+    private bool securityPresentationPending;
     private uint reportRevision;
     private readonly OfficerState[] officers = { new OfficerState(), new OfficerState() };
 
@@ -73,12 +74,37 @@ internal sealed partial class NativeWorld
     }
     private void ApplySecurityScene(JObject data)
     {
-        securityScene=data;
-        var ui=StoreUIManager.Instance;
+        securityScene = data;
+        securityPresentationPending = true;
+        TickSecurityPresentation();
+    }
+
+    private void TickSecurityPresentation()
+    {
+        if (!securityPresentationPending || StoreUIManager.Instance is not { } ui) return;
+        // The source can start the officers while the guest is still in its
+        // original body/camera animation. Keep the latest phase until the
+        // local shop camera can show the original walk.
+        if (ui.isShootingMode || guestShootingEntered &&
+            (!guestShootingLeaving || ui.blackscreen?.gameObject.activeInHierarchy == true)) return;
+        securityPresentationPending = false;
+        var data = securityScene;
         if(ui.StoreGlass.IsClosed!=(bool)data["glass"]) ui.StoreGlass.ToggleShutterDoor();
         var rows = (JArray)data["officers"];
         ApplyOfficer(officers[0], ui.secGameObject, (JArray)rows[0]);
         ApplyOfficer(officers[1], ui.secGameObject2, (JArray)rows[1]);
+    }
+
+    private bool SecuritySpeakerApproaching()
+    {
+        if(securityScene?["officers"]?[0]?[1] is not { } phase ||
+            (OfficerMotion)(int)phase is not (OfficerMotion.Entering or OfficerMotion.AtCounter)) return false;
+        if(securityPresentationPending) return true;
+        var actor=officers[0].Actor;
+        if(actor==null || !actor.gameObject.activeInHierarchy) return false;
+        var tween=actor.GetComponent<DOTweenPath>()?.tween;
+        // The source can already be speaking while the recipient's original walk is still running.
+        return tween!=null && tween.IsActive() && !tween.IsBackwards() && !tween.IsComplete();
     }
 
     private static void ApplyOfficer(OfficerState state, GenericClientMono actor, JArray data)
@@ -93,7 +119,9 @@ internal sealed partial class NativeWorld
                 actor.StartArrive();
                 break;
             case OfficerMotion.AtCounter:
-                if (restoring || state.Motion != OfficerMotion.Entering || revision - state.Revision != 1)
+                if (!restoring && state.Motion is (OfficerMotion.Hidden or OfficerMotion.Cleared or OfficerMotion.Leaving))
+                    actor.StartArrive();
+                else if (restoring || state.Motion != OfficerMotion.Entering && !actor.gameObject.activeSelf)
                     actor.SetImmediatlyArrive();
                 break;
             case OfficerMotion.Leaving:
@@ -101,9 +129,17 @@ internal sealed partial class NativeWorld
                 actor.StartLeave();
                 break;
             case OfficerMotion.Hidden:
-                // Let the original rewind finish if the departure already started
-                // here. Its OnLeft hides the actor, including on a slower peer.
-                if (!restoring && state.Motion == OfficerMotion.Leaving && revision - state.Revision == 1) break;
+                // Hidden is the original walk's endpoint. If its start was
+                // coalesced, use the still-visible actor's local path.
+                if (!restoring && actor.gameObject.activeSelf)
+                {
+                    if (state.Motion == OfficerMotion.Leaving) break;
+                    if (state.Motion is OfficerMotion.Entering or OfficerMotion.AtCounter)
+                    {
+                        actor.StartLeave();
+                        break;
+                    }
+                }
                 goto case OfficerMotion.Cleared;
             case OfficerMotion.Cleared:
                 if (actor.GetComponent<DOTweenPath>() is DOTweenPath path) path.DOPause();

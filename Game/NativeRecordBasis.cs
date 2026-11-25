@@ -16,8 +16,12 @@ internal sealed class NativeRecordBasis
     private readonly Dictionary<JToken,NativeDeferredFields.Block> fields;
     internal int Count=>items.Count;
     internal bool Contains(uint id)=>records.TryGetValue(id,out var item) && item!=null;
-    internal bool MatchesRecord(uint id,JObject item,Dictionary<JToken,NativeDeferredFields.Block> captured)=>
-        Contains(id) && Equal(item,records[id],captured);
+    internal JObject FrozenRecord(uint id)=>records.TryGetValue(id,out var item) && item!=null
+        ? item : throw new InvalidDataException("Missing borrowed native record");
+    internal IReadOnlyDictionary<JToken,NativeDeferredFields.Block> FrozenFields=>fields;
+    internal bool MatchesRecord(uint id,JObject item,Dictionary<JToken,NativeDeferredFields.Block> captured,
+        Dictionary<JObject,JObject> borrowed)=>
+        Contains(id) && Equal(item,records[id],captured,borrowed);
 
     // Copy only on the encoder worker, when a new full checkpoint is needed.
     // The acknowledged basis and its frozen arrays are immutable. Native/Unity
@@ -133,7 +137,8 @@ internal sealed class NativeRecordBasis
         return NativeSnapshotBinary.Pack(expanded,cancellation);
     }
 
-    internal List<(JObject Row,JObject Data)> ReferenceUnchanged(JObject current,Dictionary<JToken,NativeDeferredFields.Block> currentFields,CancellationToken cancellation,HashSet<JToken> verified=null)
+    internal List<(JObject Row,JObject Data)> ReferenceUnchanged(JObject current,Dictionary<JToken,NativeDeferredFields.Block> currentFields,
+        CancellationToken cancellation,HashSet<JToken> verified,Dictionary<JObject,JObject> borrowed)
     {
         var reused=new List<(JObject,JObject)>();
         var seen=new HashSet<uint>();
@@ -149,7 +154,7 @@ internal sealed class NativeRecordBasis
             var item=(JObject)row["data"];
             uint id=(uint)item["entity"];
             if(!duplicate.Contains(id) && items.TryGetValue(id,out var original) && original!=null &&
-                (verified?.Contains(item)==true || Equal(item,original,currentFields)))
+                (verified?.Contains(item)==true || Equal(item,original,currentFields,borrowed)))
             {
                 reused.Add((row,item));
                 row["data"]=id;
@@ -158,13 +163,16 @@ internal sealed class NativeRecordBasis
         return reused;
     }
 
-    private bool Equal(JToken current,JToken original,Dictionary<JToken,NativeDeferredFields.Block> currentFields)
+    private bool Equal(JToken current,JToken original,Dictionary<JToken,NativeDeferredFields.Block> currentFields,
+        Dictionary<JObject,JObject> borrowed=null)
     {
+        if(borrowed!=null && current is JObject marker && borrowed.TryGetValue(marker,out var record))
+            return Equal(record,original,fields);
         if(ReferenceEquals(current,original)) return true;
         if(current.Type!=original.Type) return false;
         if(current is JValue value) return ScalarEqual(value.Value,((JValue)original).Value);
         if(current is JProperty p)
-            return p.Name==((JProperty)original).Name && Equal(p.Value,((JProperty)original).Value,currentFields);
+            return p.Name==((JProperty)original).Name && Equal(p.Value,((JProperty)original).Value,currentFields,borrowed);
         var container=(JContainer)current; var previous=(JContainer)original;
         if(container.Count!=previous.Count) return false;
         if(container.Count==0)
@@ -174,7 +182,7 @@ internal sealed class NativeRecordBasis
             return a==null ? b==null : b!=null && BlockEqual(a,b);
         }
         for(JToken next=current.First,prior=original.First;next!=null;next=next.Next,prior=prior.Next)
-            if(!Equal(next,prior,currentFields)) return false;
+            if(!Equal(next,prior,currentFields,borrowed)) return false;
         return true;
     }
 

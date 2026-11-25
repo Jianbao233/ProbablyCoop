@@ -15,12 +15,28 @@ terminal_transport_steam,Steam P2P
 terminal_transport_ipv4,IPv4 直连
 terminal_transport_local,本机回环
 terminal_transport_none,无连接方式
-terminal_packets,累计包数 · 发送 {0:N0} · 接收 {1:N0}
+terminal_packets,累计联机消息 · 发送 {0:N0} · 接收 {1:N0}
+terminal_network_probes,{0} · {1}
+terminal_latency,游戏探测往返延迟 {0} 毫秒
+terminal_steam_latency,Steam 往返延迟 {0} 毫秒
+terminal_probe_loss,游戏探测超时 {0:N1}%（{1} 次）
+terminal_probe_pending,等待可用的游戏探测结果
+terminal_local_stall,最近一次本机联机处理停顿 · {0:N0} 毫秒
+terminal_local_probe_stall,近期 {0:N0} 次探测受本机停顿影响 · 未计入延迟和超时率
+terminal_network_rates,联机消息流量 · 上行 {0:N1} KiB/s · 下行 {1:N1} KiB/s
+terminal_udp_rates,UDP 流量 · 上行 {0:N1} KiB/s · 下行 {1:N1} KiB/s
+terminal_steam_delivery,Steam 未按序送达 · 上行 {0} · 下行 {1}
+terminal_steam_capacity,Steam 估计可用上行带宽 · {0:N1} KiB/s
+world_reload_button,在房间内载入合作档
+world_reload_confirm,载入「{0}」第 {1} 天？未保存的进度将丢失。房间保持开放，已连接的合伙人会自动同步到新进度。
+world_reload_busy,暂时无法读档。请先放下物品并结束正在进行的操作或日结。
+world_reload_sync,房主正在载入合作档。同步后将自动回到店内。
 terminal_revision,世界同步修订 · {0:N0}
 terminal_batches,库存检查点 · {0:N0} / {1:N0} 批 · {2:N0} KiB
 terminal_no_session,当前没有活动连接的收发数据。
 room_header,创建或加入同一家店铺
 native_header,共享经营 · 房间管理
+shop_room_controls,房间码与房间操作
 native_hint,F7 管理房间和随身物品。
 open,打开（F7）
 prototype,原型 · 共享测试格子
@@ -36,7 +52,7 @@ perk_mixed_coop,个人效果按当前角色生效。开局赠品和自动发生�
 perk_gambling_coop,赌博成瘾不会随天数解除。{0}可随机解除一种成瘾，{1}可指定移除。彩票提前开放和自动购票按房主的天赋结算。
 ipv4_mapping_hint,frp 和游戏在同一台电脑时，房主可填 127.0.0.1 和固定端口。UDP 隧道的本地目标填相同地址和端口。异地客机粘贴原房间码，再填写隧道的公网 IPv4 和外部端口。
 udp_port_hint,UDP 端口（留空自动）
-mapped_address_hint,隧道公网 IPv4:外部端口（通过隧道加入时填写）
+mapped_address_hint,隧道公网 IPv4:外部端口
 udp_listening,IPv4 监听 {0}（UDP）
 status_bad_udp_port,请输入 1–65535 的 UDP 端口，或留空自动分配。
 status_udp_port_in_use,该 UDP 端口已被占用，请换一个端口。
@@ -63,6 +79,7 @@ approve,接受
 pending,等待主机
 status_idle,创建房间或粘贴房间码。
 status_android_idle,请填写电脑房主提供的房间码。
+status_android_no_steam,此安卓移植版使用 IPv4 联机。请向房主要 IPv4 房间码。
 status_local_idle,开启一个仅供本机副机加入的测试房间。
 status_local_waiting,本机房间已创建，复制 PSL 房间码给副机。
 status_local_connected,本机副机已连接。
@@ -85,6 +102,7 @@ resume_joins,开放客机申请
 joins_paused,已暂停客机加入。
 decline_join,拒绝
 join_request_notification,有客机申请加入。按 F7 打开联机面板处理。
+join_request_notification_touch,有客机申请加入。点小营养果或从暂停菜单打开联机面板处理。
 status_handshake,正在核对版本并建立 P2P 连接…
 status_connected,合伙人已连接。
 status_shop_connected,已连接共享店铺。
@@ -102,6 +120,7 @@ sync_checking,已收齐数据，正在核对入房资料
 sync_installing,正在加载原版店铺
 sync_ready,店铺已加载
 sync_failed,同步未完成
+sync_disconnected,房间连接已中断
 sync_show_log,展开加载记录
 sync_hide_log,收起加载记录
 sync_batches_received,已收齐 {0}/{1} 批 · {2} KiB

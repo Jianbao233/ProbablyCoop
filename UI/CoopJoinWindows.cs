@@ -25,9 +25,9 @@ internal sealed partial class CoopPanel
     private ScrollRect diagnosticScroll;
     private RoomModManifest shownReview;
     private string previousConnectionState;
-    private bool triedWithDifferences, placeWindowsTogether, followDiagnosticTail;
+    private bool triedWithDifferences, placeWindowsTogether;
 
-    private string JoinWindowLayer => inMenu ? "menu" : "meta";
+    private string JoinWindowLayer => inMenu ? "menu" : "overlay";
     private static string JoinText(string key, params object[] values) => ModHelper.GetLocalized("probably_coop", key, values);
 
     private void OpenConnectionDetails()
@@ -35,7 +35,7 @@ internal sealed partial class CoopPanel
         if (diagnosticsWindow?.IsAlive != true)
         {
             var builder = CustomUIManager.Window("probably_coop_connection", ">_  " + Loc("terminal_details_title"), JoinWindowLayer)
-                .SetSize(780, 440).Center().SetDraggable(true).SetCloseOnEscape().OnClose(() =>
+                .SetSize(inShop ? 1120 : 780, inShop ? 610 : 440).Center().SetDraggable(true).SetCloseOnEscape().OnClose(() =>
                 {
                     pendingMutationRecovery = null;
                     pendingForcedDay = null;
@@ -44,15 +44,15 @@ internal sealed partial class CoopPanel
             builder.AddLabel("", "connection_summary");
             diagnosticSummary = builder.Last;
             diagnosticSummary.text.richText = false;
-            StyleLabel(diagnosticSummary, TextAlignmentOptions.Left, TerminalInk, 21);
+            StyleLabel(diagnosticSummary, TextAlignmentOptions.Left, TerminalInk, inShop ? 25 : 21);
             builder.BeginPanel(padding: 12, spacing: 8);
-            TintPanel(builder, TerminalBackground);
+            TintPanel(builder, TerminalBackground, ensureBackground: true);
             builder.BeginScrollFlexible(125);
             diagnosticScroll = builder.CurrentContainer.GetComponentInParent<ScrollRect>();
             builder.AddLabel("", "connection_log");
             terminalDetails = builder.Last;
             terminalDetails.text.richText = true;
-            StyleLabel(terminalDetails, TextAlignmentOptions.TopLeft, TerminalInk, 19);
+            StyleLabel(terminalDetails, TextAlignmentOptions.TopLeft, TerminalInk, inShop ? 23 : 19);
             builder.End().End();
             builder.BeginPanel(padding: 12, spacing: 8);
             TintPanel(builder, new Color32(58, 44, 49, 255));
@@ -83,15 +83,20 @@ internal sealed partial class CoopPanel
             builder.AddButton(Loc("diag_copy"), CopyConnectionDetails, "copy_issue"); copyIssue = builder.Last;
             builder.End();
             diagnosticsWindow = builder.Show();
+            if (inShop)
+            {
+                var available = JoinViewport(diagnosticsWindow);
+                diagnosticsWindow.SetSize(Mathf.Min(1120, available.x - 56), Mathf.Min(610, available.y - 56));
+            }
         }
         else diagnosticsWindow.Show();
-        followDiagnosticTail = true;
+        diagnosticsWindow.BringToFront();
         nextTerminalRefresh = 0;
-        TickConnectionDetails();
+        TickConnectionDetails(opening: true);
         PlaceConnectionBesideReview();
     }
 
-    private void TickConnectionDetails()
+    private void TickConnectionDetails(bool opening = false)
     {
         string stateKey = room.Transport + "/" + room.Status;
         if (previousConnectionState != stateKey)
@@ -108,17 +113,9 @@ internal sealed partial class CoopPanel
         var issue = CurrentIssue();
         diagnosticSummary.SetText(ConnectionHeading(state.Summary, issue.Code, issue.Advice));
         string body = ConnectionText(state.Details, issue.Code == null ? "" : issue.Context, decorated: true);
-        if (terminalDetails.text.text != body)
-        {
-            bool follow = followDiagnosticTail || diagnosticScroll?.verticalNormalizedPosition <= 0.05f;
-            terminalDetails.SetText(body);
-            if (follow && diagnosticScroll != null)
-            {
-                Canvas.ForceUpdateCanvases();
-                diagnosticScroll.verticalNormalizedPosition = 0;
-            }
-            followDiagnosticTail = false;
-        }
+        bool changed = terminalDetails.text.text != body;
+        bool followTail = changed && diagnosticScroll?.verticalNormalizedPosition <= 0.05f;
+        if (changed) terminalDetails.SetText(body);
         bool confirming = pendingMutationRecovery != null && ReferenceEquals(pendingMutationRecovery, mutationFault);
         mutationRecoveryConfirmation.gameObject.SetActive(confirming);
         bool canForce = !inMenu && dayShop?.CanOfferForcedDay == true;
@@ -132,6 +129,11 @@ internal sealed partial class CoopPanel
             ? "mutation_recovery_resume" : "day_recovery_exit"));
         copyIssue.SetText(Loc(issueCopied ? "diag_copied" : "diag_copy"));
         FitJoinWindow(diagnosticsWindow, 780, 460);
+        if (diagnosticScroll != null && (opening || followTail))
+        {
+            Canvas.ForceUpdateCanvases();
+            diagnosticScroll.verticalNormalizedPosition = opening ? 1 : 0;
+        }
     }
 
     private void SetForcedDayPrompt(bool show)
@@ -352,9 +354,10 @@ internal sealed partial class CoopPanel
         diagnosticsWindow = null;
     }
 
-    private static void TintPanel(CustomUIBuilder builder, Color color)
+    private static void TintPanel(CustomUIBuilder builder, Color color, bool ensureBackground = false)
     {
         var image = builder.CurrentContainer.GetComponent<Image>();
+        if (image == null && ensureBackground) image = builder.CurrentContainer.gameObject.AddComponent<Image>();
         if (image == null) return;
         image.sprite = null;
         image.type = Image.Type.Simple;

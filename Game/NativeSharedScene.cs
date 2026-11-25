@@ -385,7 +385,7 @@ internal sealed partial class NativeWorld
     private void PresentSharedScene(JObject data)
     {
         var store=PlayerStore.Instance;
-        string scene=(string)data["location"];
+        string scene=(string)data["location"] ?? "";
         if(scene!=shownScene)
         {
             var map=MapUIManager.Instance; var e=EmporiumEntry.Instance;
@@ -424,6 +424,15 @@ internal sealed partial class NativeWorld
             }
             else { e.HideAfterhourInv(); StoreUIManager.Instance.ResetClientPosition(); map.ResetCreditDisplayPosition(); }
             shownScene=scene; e.Validate();
+            // The replica already knows its own location. Use the same local
+            // sources as native travel, without running the host's travel rules.
+            if (location == null)
+            {
+                AudioManager.Instance?.Play2("close_door");
+                StoreSoundPlayer.Instance?.PlayStoreAmbient();
+            }
+            else if (!string.IsNullOrEmpty(location.AmbienceId))
+                StoreSoundPlayer.Instance?.PlayAmbient(location.AmbienceId);
         }
         TickTripUi();
     }

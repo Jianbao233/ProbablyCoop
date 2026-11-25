@@ -121,10 +121,12 @@ internal static class NativeActorNightIntegration
     [HarmonyPatch]
     private static class TransitionBoundary
     {
-        private static MethodBase TargetMethod() => typeof(EndOfDayUIManager)
-            .GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
-            .SelectMany(type => type.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
-            .Single(method => method.Name == "<OnEndDayButtonClick>b__0");
+        [HarmonyPrepare]
+        private static bool Prepare() => NativePlatform.SupportsAuthorityContract &&
+            NativePlatform.MatchesActorModule(typeof(EndOfDayUIManager).Module, NativeActorCarryAccess.ExpectedMvid);
+
+        private static MethodBase TargetMethod() => ModReflect.Target(
+            "EndOfDayUIManager+<>c__DisplayClass27_0", "<OnEndDayButtonClick>b__0", Type.EmptyTypes);
         private static void Prefix(out NativeActorSession __state)
         {
             __state = NativeGuest.Active ? null : NativeActorSession.Current;

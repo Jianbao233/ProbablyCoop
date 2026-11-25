@@ -684,14 +684,22 @@ internal sealed class NativeDeferredFields
             }
             else foreach(var row in itemRows) { cancellation.ThrowIfCancellationRequested(); row.Assemble(); }
             var restoredRecords=new HashSet<JObject>();
+            List<ItemRow> restoredRows=null;
             void RestoreRecord(JObject target,uint id)
             {
                 if(!restoredRecords.Add(target)) return;
-                int first=itemRows.Count;
-                borrowedBasis.Restore(id,target,lookup,itemRows,cancellation);
-                for(int i=first;i<itemRows.Count;i++) ConfirmedRecords.Add((uint)itemRows[i].Target["entity"]);
+                restoredRows??=new List<ItemRow>();
+                int first=restoredRows.Count;
+                borrowedBasis.Restore(id,target,lookup,restoredRows,cancellation);
+                for(int i=first;i<restoredRows.Count;i++) ConfirmedRecords.Add((uint)restoredRows[i].Target["entity"]);
             }
-            foreach(var target in borrowedNested) RestoreRecord(target,borrowedRecords[target]);
+            Dictionary<JObject,JObject> inlineBorrowed=null;
+            if(incremental && auditBasis==null && borrowedNested.Count!=0)
+            {
+                inlineBorrowed=new Dictionary<JObject,JObject>(borrowedNested.Count);
+                foreach(var target in borrowedNested) inlineBorrowed.Add(target,borrowedBasis.FrozenRecord(borrowedRecords[target]));
+            }
+            else foreach(var target in borrowedNested) RestoreRecord(target,borrowedRecords[target]);
             foreach(var record in borrowedRecords) ConfirmedRecords.Add(record.Value);
             // Nested records have independent capture stamps. A changed outer
             // machine/container must not force recapturing all its siblings.
@@ -700,7 +708,7 @@ internal sealed class NativeDeferredFields
                 {
                     uint id=(uint)row.Target["entity"];
                     if(ConfirmedRecords.Contains(id) || row.Target.Count==1) continue;
-                    if(basis.MatchesRecord(id,row.Target,lookup)) ConfirmedRecords.Add(id);
+                    if(basis.MatchesRecord(id,row.Target,lookup,inlineBorrowed)) ConfirmedRecords.Add(id);
                     else if(AuditedRecords.Contains(id)) UntrackedRecords.Add(id);
                 }
             foreach(var block in blocks)
@@ -727,13 +735,14 @@ internal sealed class NativeDeferredFields
                     if(auditBasis!=null) RestoreBorrowed();
                 }
                 byte[] expected=auditBasis==null ? null : NativeSnapshotBinary.Pack(root,cancellation,lookup);
-                var reused=basis.ReferenceUnchanged(root,lookup,cancellation,verified);
+                var reused=basis.ReferenceUnchanged(root,lookup,cancellation,verified,inlineBorrowed);
                 if(reused.Count>0)
                 {
                     bool published=false;
                     try
                     {
-                        var delta=NativeSnapshotBinary.Pack(root,cancellation,lookup);
+                        var delta=NativeSnapshotBinary.Pack(root,cancellation,lookup,out _,
+                            borrowed:inlineBorrowed,borrowedFields:inlineBorrowed==null ? null : borrowedBasis.FrozenFields);
                         if(delta.Length<=Core.ReplicaLink.MaxBytes-12)
                         {
                             if(expected!=null && !expected.AsSpan().SequenceEqual(NativeRecordBasis.ExpandForAudit(delta,auditBasis,cancellation)))
@@ -755,6 +764,9 @@ internal sealed class NativeDeferredFields
                     foreach(var row in itemRows) if(verified.Contains(row.Target)) row.Assemble();
             }
             RestoreBorrowed();
+            // The page format requires contained records to precede owners.
+            // A restored subtree is complete and may belong to a captured row.
+            if(restoredRows!=null) itemRows.InsertRange(0,restoredRows);
             Core.NativeSnapshotFrame full=null;
             if(!preferPages || itemRows.Count==0)
             {

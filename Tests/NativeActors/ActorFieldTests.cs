@@ -36,7 +36,9 @@ internal static class ActorFieldTests
     private static void Run()
     {
         Check("default disabled", () => Equal(false, NativeActorFieldAccess.IsInstalled));
+        Check("native IL table matches runtime opcodes and rejects truncated operands", VerifyNativeIl);
         Check("Rev13 native assembly MVID SHA and all 82 method operands", () => Equal(82, NativeActorFieldAccess.VerifyNativeContract()));
+        Check("whole Rev13 assembly matches both scoped actor contracts", VerifyCompleteNativeAudit);
         var field = typeof(PlayerStore).GetField("appraiserLevel");
         var setter = typeof(NativeActorFieldAccess).GetMethod("Set_appraiserLevel", BindingFlags.NonPublic | BindingFlags.Static);
         var getter = typeof(NativeActorFieldAccess).GetMethod("Get_appraiserLevel", BindingFlags.NonPublic | BindingFlags.Static);
@@ -109,5 +111,50 @@ internal static class ActorFieldTests
         finally { resolverField.SetValue(null, null); }
         Check("test routing cleanup", () => { Equal(false, NativeActorFieldAccess.IsInstalled); Equal(3, NativeActorFieldAccess.Get_appraiserLevel(raw)); });
         Check("install rejects missing inputs", () => { Throws<ArgumentNullException>(() => NativeActorFieldAccess.Install(null, _ => null)); Throws<ArgumentNullException>(() => NativeActorFieldAccess.Uninstall(null)); });
+    }
+
+    private static void VerifyNativeIl()
+    {
+        foreach (var field in typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static))
+        {
+            if (field.FieldType != typeof(OpCode)) continue;
+            var opcode = (OpCode)field.GetValue(null);
+            if (opcode == OpCodes.Prefix1) continue; // 0xfe introduces a two-byte instruction.
+            ushort value = unchecked((ushort)opcode.Value);
+            // Eight zero bytes cover the longest fixed operand. They are also
+            // a valid switch with no cases and harmless trailing nop bytes.
+            var code = new byte[opcode.Size + 8];
+            code[0] = opcode.Size == 2 ? (byte)(value >> 8) : (byte)value;
+            if (opcode.Size == 2) code[1] = (byte)value;
+            var instruction = NativeIl.Read(code).First();
+            Equal(opcode, instruction.Opcode);
+            Equal(0, instruction.Offset);
+            Equal(opcode.Size, instruction.OperandOffset);
+        }
+        var switchWithCase = new byte[] { 0x45, 1, 0, 0, 0, 0, 0, 0, 0, 0x2a };
+        Equal(9, NativeIl.Read(switchWithCase).Last().Offset);
+        Throws<InvalidDataException>(() => NativeIl.Read(new byte[] { 0xfe }).ToArray());
+        Throws<InvalidDataException>(() => NativeIl.Read(new byte[] { 0x45, 1, 0, 0, 0 }).ToArray());
+    }
+
+    private static void VerifyCompleteNativeAudit()
+    {
+        const BindingFlags declared = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static |
+            BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        int fieldMethods = 0, carryMethods = 0, fieldOperands = 0, carryOperands = 0;
+        foreach (var type in typeof(PlayerStore).Assembly.GetTypes())
+        foreach (var method in type.GetMethods(declared).Cast<MethodBase>().Concat(type.GetConstructors(declared)))
+        {
+            int fields = NativeActorFieldAccess.ReadNativeSites(method).Length;
+            int carry = NativeActorCarryAccess.ReadNativeSites(method).Length;
+            if (fields != 0) fieldMethods++;
+            if (carry != 0) carryMethods++;
+            fieldOperands += fields;
+            carryOperands += carry;
+        }
+        Equal(82, fieldMethods);
+        Equal(161, fieldOperands);
+        Equal(6, carryMethods);
+        Equal(29, carryOperands);
     }
 }

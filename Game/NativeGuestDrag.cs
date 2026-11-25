@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
 using UnityEngine;
@@ -15,8 +16,8 @@ internal static class NativeLocalDrag
 [HarmonyPatch(typeof(GameItemElement), nameof(GameItemElement.ValidateSelect))]
 internal static class NativeGuestDragVisual
 {
-    private static readonly AccessTools.FieldRef<ItemMouseDragHandler, int> DragCount =
-        AccessTools.FieldRefAccess<ItemMouseDragHandler, int>("currentRemove");
+    private static readonly FieldInfo DragCount =
+        AccessTools.Field(typeof(ItemMouseDragHandler), "currentRemove");
 
     internal static void MakeTransparentToInput(GameItemElement item)
     {
@@ -46,7 +47,7 @@ internal static class NativeGuestDragVisual
         var (x, y) = __instance.GetCenteredPosition();
         __state = new DragPose
         {
-            Count = DragCount(ItemMouseDragHandler.current),
+            Count = (int)DragCount.GetValue(ItemMouseDragHandler.current),
             Center = new Vector2(x, y),
             Pivot = rotator.pivot,
             Rotation = rotator.localRotation,
@@ -73,12 +74,9 @@ internal static class NativeGuestDragVisual
 [HarmonyPatch(typeof(ItemMouseDragHandler), "Drag")]
 internal static class NativeDragTargetHighlight
 {
-    private static readonly AccessTools.FieldRef<ItemMouseDragHandler, HighlightManager> Manager =
-        AccessTools.FieldRefAccess<ItemMouseDragHandler, HighlightManager>("highlightManager");
-    private static readonly AccessTools.FieldRef<HighlightManager, List<TreeNodeRender>> HoverNodes =
-        AccessTools.FieldRefAccess<HighlightManager, List<TreeNodeRender>>("highlightedThisNodes");
-    private static readonly AccessTools.FieldRef<ItemMouseDragHandler, List<TreeNodeRender>> CandidateNodes =
-        AccessTools.FieldRefAccess<ItemMouseDragHandler, List<TreeNodeRender>>("highlightedMayNodes");
+    private static readonly FieldInfo Manager = AccessTools.Field(typeof(ItemMouseDragHandler), "highlightManager");
+    private static readonly FieldInfo HoverNodes = AccessTools.Field(typeof(HighlightManager), "highlightedThisNodes");
+    private static readonly FieldInfo CandidateNodes = AccessTools.Field(typeof(ItemMouseDragHandler), "highlightedMayNodes");
 
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
     {
@@ -95,7 +93,7 @@ internal static class NativeDragTargetHighlight
         }
     }
 
-    private static List<TreeNodeRender> Highlight(GameInventory inventory, SlotMarker slot,
+    internal static List<TreeNodeRender> Highlight(GameInventory inventory, SlotMarker slot,
         RenderHandler.BackgroundColor color, bool replace)
     {
         var drag=ItemMouseDragHandler.current;
@@ -107,7 +105,8 @@ internal static class NativeDragTargetHighlight
         // Register them with the same cleanup as a normal placement preview.
         var nodes=inventory.HighlightSlot(slot,color,replace);
         if(nodes==null) return null;
-        var tracked=color==RenderHandler.BackgroundColor.Blue ? CandidateNodes(drag) : HoverNodes(Manager(drag));
+        var tracked=(List<TreeNodeRender>)(color==RenderHandler.BackgroundColor.Blue
+            ? CandidateNodes.GetValue(drag) : HoverNodes.GetValue(Manager.GetValue(drag)));
         foreach(var node in nodes)
             if(!tracked.Contains(node)) tracked.Add(node);
         return nodes;
@@ -115,26 +114,26 @@ internal static class NativeDragTargetHighlight
 }
 
 [HarmonyPatch(typeof(ItemMouseDragHandler), "OnEventRelease")]
-internal static class NativeGuestDropPointer
+internal static class NativeDropPointer
 {
-    private static readonly AccessTools.FieldRef<InputActionManager, Vector3> PreviousPointer =
-        AccessTools.FieldRefAccess<InputActionManager, Vector3>("lastMousePosition");
-    private static readonly Action<ItemMouseDragHandler, Vector3> UpdateNativeHover =
-        AccessTools.MethodDelegate<Action<ItemMouseDragHandler, Vector3>>(
-            AccessTools.Method(typeof(ItemMouseDragHandler), "Drag"));
+    private static readonly FieldInfo PreviousPointer =
+        AccessTools.Field(typeof(InputActionManager), "lastMousePosition");
 
     private static void Prefix(ItemMouseDragHandler __instance, ISet<KeyCode> keysReleased,
         KeyCode ___lastMouseClickedKey, GameItemElement ___currentItem)
     {
         if (___currentItem == null || ___currentItem.IsDestroyed() || InputActionManager.current == null ||
-            !NativeLocalDrag.IsHolding(___currentItem) ||
             !keysReleased.Contains(___lastMouseClickedKey) ||
             !ReleasedThisFrame(___lastMouseClickedKey)) return;
+
+        bool androidHostDrag = NativePlatform.IsAndroid && NativeWorld.Host != null && __instance.IsDraggingItem;
+        if (!androidHostDrag && !NativeLocalDrag.IsHolding(___currentItem)) return;
 
         // InputActionManager dispatches release before movement in the same
         // frame. Reuse the native raycast and slot rules at the release point
         // before EndDrag can submit the previous frame's inventory target.
-        UpdateNativeHover(__instance, Input.mousePosition - PreviousPointer(InputActionManager.current));
+        var previous=(Vector3)PreviousPointer.GetValue(InputActionManager.current);
+        ModReflect.Call(__instance, "Drag", Input.mousePosition - previous);
     }
 
     private static bool ReleasedThisFrame(KeyCode key) => Input.GetKeyUp(key) ||

@@ -61,10 +61,10 @@ internal static class CoopRun
         private readonly NativeActorCheckpoint.Envelope envelope;
         internal NewGameData Request;
 
-        internal PreparedResume(string filePath, byte[] bytes, NativeActorCheckpoint.Envelope envelope)
+        internal PreparedResume(string filePath, byte[] imageDigest, NativeActorCheckpoint.Envelope envelope)
         {
             path=Path.GetFullPath(filePath);
-            digest=Hash(bytes);
+            digest=(byte[])imageDigest.Clone();
             this.envelope=envelope;
         }
 
@@ -72,13 +72,7 @@ internal static class CoopRun
         {
             if (slot!=envelope.Slot || !registered.Contains(envelope.Run) ||
                 !string.Equals(Path.GetFullPath(filePath),path,StringComparison.OrdinalIgnoreCase)) return null;
-            return digest.AsSpan().SequenceEqual(Hash(bytes)) ? envelope : null;
-        }
-
-        private static byte[] Hash(byte[] bytes)
-        {
-            using var hash=SHA256.Create();
-            return hash.ComputeHash(bytes);
+            return digest.AsSpan().SequenceEqual(Digest(bytes)) ? envelope : null;
         }
     }
 
@@ -354,10 +348,13 @@ internal static class CoopRun
 
     internal static bool CanResume(Checkpoint checkpoint) => ConfirmResume(checkpoint,false,out _);
 
-    internal static bool PrepareResume(Checkpoint checkpoint)
+    internal static bool PrepareResume(Checkpoint checkpoint) => PrepareResume(checkpoint, out _);
+
+    internal static bool PrepareResume(Checkpoint checkpoint, out Checkpoint confirmed)
     {
+        using var timing = NativePerformance.MeasureCheckpoint("prepare");
         pendingResume=null;
-        if (!ConfirmResume(checkpoint,true,out var confirmed)) return false;
+        if (!ConfirmResume(checkpoint,true,out confirmed)) return false;
         try { if(confirmed.NeedsRecovery) confirmed=NativeCoopSaveRecovery.Recover(confirmed); }
         catch(Exception error)
         { Debug.LogError("[probably_coop] cooperative recovery failed: "+error); return false; }
@@ -457,6 +454,21 @@ internal static class CoopRun
             var settings = new ES3Settings(path);
             if (settings.location != ES3.Location.File || settings.format != ES3.Format.JSON) return false;
             var bytes = NativeActorPersistence.ReadFileImage(path);
+            if (prepare && !soloOnly)
+            {
+                var receipt=ReadPreparedReceipt(bytes,settings,result);
+                if(expectedRun!=Guid.Empty && receipt.Run!=expectedRun) return false;
+                result.Run=receipt.Run;
+                result.StoredSlot=receipt.Slot;
+                result.Day=receipt.Day;
+                result.ImageDigest=Digest(bytes);
+                result.HasActors=result.HasCoopData=true;
+                result.UsesEffectReplication=receipt.UsesEffectReplication;
+                var envelope=ValidateReceipt(result,receipt);
+                result.Prepared=new PreparedResume(path,result.ImageDigest,envelope);
+                checkpoint=FinishPreview(result);
+                return true;
+            }
             // The solo menu only lists candidates. Conversion still validates
             // the full player/station graph, raw keys and selected file hash.
             if(!soloOnly) NativeCoopSaveRecovery.ValidateRootNames(bytes,settings);
@@ -477,13 +489,6 @@ internal static class CoopRun
                         {
                             case "saveSlotId": result.StoredSlot = body.Read<int>(); break;
                             case "runID": Guid.TryParse(body.Read<string>(), out result.Run); break;
-                            case "playerCash": result.Cash = body.Read<int>(); break;
-                            case "storeName": result.Name = body.Read<string>(); break;
-                            case "startLocale": result.Locale = body.Read<string>(); break;
-                            case "startType": result.Preview.startType=body.Read<NewGameData.StartType>(); break;
-                            case "startScenarioId": result.Preview.startScenarioId=body.Read<string>(); break;
-                            case "version":
-                            case "saveVersion": result.Preview.version=body.Read<string>(); break;
                             case "modData":
                                 var data = body.Read<Dictionary<string, string>>();
                                 result.HasCoopData = NativeActorCheckpoint.HasCoopData(data);
@@ -493,7 +498,7 @@ internal static class CoopRun
                                     data.TryGetValue(NativeEffectCampaign.SaveKey, out string schema) &&
                                     schema == NativeEffectCampaign.SaveSchema;
                                 break;
-                            default: body.Skip(); break;
+                            default: if(!ReadSelectionField(body,name,result)) body.Skip(); break;
                         }
                     }
                 }
@@ -504,21 +509,12 @@ internal static class CoopRun
                 try
                 {
                     var receipt=NativeActorCheckpoint.ReadReceiptEntries(entries);
-                    var envelope=NativeActorCheckpoint.DecodeReceipt(receipt,result.Run,result.StoredSlot,result.Day);
-                    if(envelope.PartnerSetup!=null && !NativeActorPartnerSetup.IsComplete(envelope.PartnerSetup,result.Run))
-                        throw new InvalidDataException("伙伴角色创建记录未通过校验。");
-                    result.Nonce=envelope.Checkpoint;
-                    SetRecovery(result);
-                    if(prepare) result.Prepared=new PreparedResume(path,bytes,envelope);
+                    ValidateReceipt(result,receipt);
                 }
                 catch(Exception error)
                 { result.HasActors=false; result.UnavailableReason=error.Message; }
             else result.UnavailableReason="旧原型存档没有完整双角色数据，请新建合作局。";
-            if (string.IsNullOrEmpty(result.Name)) result.Name = "Cooperative store";
-            result.Preview.credit=result.Cash; result.Preview.dayCount=result.Day;
-            result.Preview.lastSaveDateTime=result.SavedAt; result.Preview.startName=result.Name;
-            result.Preview.startLocale=result.Locale;
-            checkpoint = result;
+            checkpoint=FinishPreview(result);
             return true;
         }
         catch (Exception ex)
@@ -526,6 +522,82 @@ internal static class CoopRun
             Debug.LogWarning($"[probably_coop] slot {slot} checkpoint could not be read: {ex.Message}");
             return false;
         }
+    }
+
+    // A selected checkpoint needs both the preview fields and actor receipt.
+    // Read both directly from the same ES3 object instead of copying its large
+    // player body into another stream and parsing it again.
+    internal static NativeActorCheckpoint.Receipt ReadPreparedReceipt(byte[] bytes, ES3Settings settings, Checkpoint result)
+    {
+        using var reader=(ES3JSONReader)ES3Reader.Create(bytes,settings);
+        var receipt=new NativeActorCheckpoint.Receipt();
+        var names=new HashSet<string>(StringComparer.Ordinal);
+        foreach(string key in reader.Properties)
+        {
+            if(!names.Add(key)) throw new InvalidDataException("存档包含重复字段："+key);
+            ReadPreviewBrace(reader,'{');
+            string property=reader.ReadPropertyName();
+            string type=null;
+            if(property=="__type")
+            {
+                type=reader.Read<string>();
+                property=reader.ReadPropertyName();
+            }
+            if(property!="value") throw new InvalidDataException("Missing native save value.");
+
+            Type expected=key=="playerStore" ? typeof(PlayerStore) : key=="storeStation" ? typeof(StoreStation) : null;
+            if(expected==null) reader.Skip();
+            else
+            {
+                if(string.IsNullOrEmpty(type) || ES3Reflection.GetType(type)!=expected)
+                    throw new InvalidDataException("Native save type changed: "+key);
+                ReadPreviewBrace(reader,'{');
+                if(key=="playerStore")
+                    NativeActorCheckpoint.ReadPlayerFields(reader,receipt,readPreview:(body,name) => ReadSelectionField(body,name,result));
+                else
+                    NativeActorCheckpoint.ReadStationFields(reader,receipt);
+                ReadPreviewBrace(reader,'}');
+            }
+            ReadPreviewBrace(reader,'}');
+        }
+        if(!names.Contains("playerStore") || !names.Contains("storeStation"))
+            throw new InvalidDataException("Missing native checkpoint entries.");
+        return receipt;
+    }
+
+    private static bool ReadSelectionField(ES3Reader reader, string name, Checkpoint result)
+    {
+        switch(name)
+        {
+            case "playerCash": result.Cash=reader.Read<int>(); break;
+            case "storeName": result.Name=reader.Read<string>(); break;
+            case "startLocale": result.Locale=reader.Read<string>(); break;
+            case "startType": result.Preview.startType=reader.Read<NewGameData.StartType>(); break;
+            case "startScenarioId": result.Preview.startScenarioId=reader.Read<string>(); break;
+            case "version":
+            case "saveVersion": result.Preview.version=reader.Read<string>(); break;
+            default: return false;
+        }
+        return true;
+    }
+
+    private static NativeActorCheckpoint.Envelope ValidateReceipt(Checkpoint result, NativeActorCheckpoint.Receipt receipt)
+    {
+        var envelope=NativeActorCheckpoint.DecodeReceipt(receipt,result.Run,result.StoredSlot,result.Day);
+        if(envelope.PartnerSetup!=null && !NativeActorPartnerSetup.IsComplete(envelope.PartnerSetup,result.Run))
+            throw new InvalidDataException("伙伴角色创建记录未通过校验。");
+        result.Nonce=envelope.Checkpoint;
+        SetRecovery(result);
+        return envelope;
+    }
+
+    private static Checkpoint FinishPreview(Checkpoint result)
+    {
+        if (string.IsNullOrEmpty(result.Name)) result.Name = "Cooperative store";
+        result.Preview.credit=result.Cash; result.Preview.dayCount=result.Day;
+        result.Preview.lastSaveDateTime=result.SavedAt; result.Preview.startName=result.Name;
+        result.Preview.startLocale=result.Locale;
+        return result;
     }
 
     private static void SetRecovery(Checkpoint result)

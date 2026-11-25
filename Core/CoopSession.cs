@@ -13,6 +13,8 @@ internal sealed class CoopSession
     private readonly bool requireApproval;
     private readonly byte[] fingerprint;
     private readonly Func<byte[], bool, bool> send;
+    private readonly Func<double> measurementClock;
+    private readonly bool measureCarrierTraffic;
     private Guid session;
     private Guid epoch;
     // Correlates a Welcome/Reject with the guest's current connection attempt.
@@ -28,31 +30,40 @@ internal sealed class CoopSession
     private string sentPointerNameInput;
     private double nextItemPing, nextIncomingItemPing;
     private double lastReceive;
-    private double nextControl;
+    private double nextControl, nextProbe;
     private double nextRetry;
     private double phaseStart;
     private bool admitted;
+    private bool waitingForWorldReady;
+    private double worldLoadDeadline;
+    private const double WorldLoadGraceSeconds = 60;
 
     internal LinkState State { get; private set; }
     internal bool AcceptingJoins { get; private set; } = true;
     internal bool JoinPending { get; private set; }
     internal ushort Tiles { get; private set; }
     internal ulong Revision { get; private set; }
+    internal ulong WorldGeneration { get; private set; }
+    internal bool WorldReloadPending => waitingForWorldReady;
     internal bool HasPendingChange => pendingRequest != 0;
     internal ShopLink Shop { get; }
     internal ReplicaLink Native { get; }
+    internal ConnectionMeasurements Measurements { get; } = new ConnectionMeasurements();
     internal event Action<Packet> RemoteCursor;
     internal event Action<Kind> Received;
     internal string RemotePointerName { get; private set; }="";
     internal (ulong Serial, ulong Context, uint Entity) RemoteItemPing { get; private set; }
 
-    internal CoopSession(bool host, byte[] fingerprint, Func<byte[], bool, bool> send,bool requireApproval=false)
+    internal CoopSession(bool host, byte[] fingerprint, Func<byte[], bool, bool> send,bool requireApproval=false,
+        Func<double> measurementClock=null, bool measureCarrierTraffic=false)
     {
         if (fingerprint?.Length != Wire.FingerprintSize) throw new ArgumentException("Invalid fingerprint.");
         this.host = host;
         this.requireApproval=host && requireApproval;
         this.fingerprint = fingerprint;
         this.send = send;
+        this.measurementClock = measurementClock;
+        this.measureCarrierTraffic = measureCarrierTraffic;
         Shop = new ShopLink(host, (kind, serial, revision, value, payload) =>
             Send(new Packet(kind, session, epoch, serial, revision, value, payload: payload)));
         Native = new ReplicaLink(host, (kind, serial, revision, value, payload) =>
@@ -60,11 +71,20 @@ internal sealed class CoopSession
         if (host) session = Guid.NewGuid();
     }
 
+    internal void ObserveNetworkPump(double now)
+    {
+        if (State == LinkState.Connected)
+            Measurements.ObserveLocalPump(measurementClock?.Invoke() ?? now);
+    }
+
     internal void Connect(double now)
     {
         State = LinkState.Handshake;
         Shop.Reset();
         Native.Reset();
+        WorldGeneration = 0;
+        waitingForWorldReady = false;
+        worldLoadDeadline = 0;
         epoch = Guid.Empty;
         admitted=!requireApproval;
         JoinPending=false;
@@ -84,6 +104,9 @@ internal sealed class CoopSession
     internal void DropPeer()
     {
         State = LinkState.Waiting;
+        WorldGeneration = 0;
+        waitingForWorldReady = false;
+        worldLoadDeadline = 0;
         JoinPending=false;
         challenge=0;
         pendingRequest = 0;
@@ -91,6 +114,34 @@ internal sealed class CoopSession
         Shop.Reset();
         Native.Reset();
     }
+
+    internal bool BeginWorldReload(double now)
+    {
+        if (!host || State != LinkState.Connected || waitingForWorldReady || WorldGeneration == ulong.MaxValue) return false;
+        waitingForWorldReady = true;
+        ResetWorld(Guid.NewGuid(), WorldGeneration + 1);
+        worldLoadDeadline = now + WorldLoadGraceSeconds;
+        lastReceive = now;
+        nextControl = now;
+        return true;
+    }
+
+    private void ResetWorld(Guid replacement, ulong generation)
+    {
+        Measurements.CancelPendingProbe();
+        epoch = replacement;
+        WorldGeneration = generation;
+        Shop.SetAuthority(null);
+        Shop.Reset();
+        Native.Reset();
+        lastRequest = pendingRequest = cursorSequence = receivedCursorSequence = 0;
+        Tiles = 0;
+        Revision = 0;
+        ResetPointerProfile();
+    }
+
+    private void SendWelcome() => Send(new Packet(Kind.Welcome, session, epoch, challenge, WorldGeneration, build: fingerprint));
+    private void SendReady() => Send(new Packet(Kind.Ready, session, epoch, challenge, WorldGeneration));
 
     private void ResetPointerProfile()
     {
@@ -141,21 +192,42 @@ internal sealed class CoopSession
                 if (epoch == Guid.Empty)
                     Send(new Packet(Kind.Hello, serial: challenge, build: fingerprint));
                 else
-                    Send(new Packet(Kind.Ready, session, epoch, challenge));
+                    SendReady();
             }
             return;
         }
         if (State != LinkState.Connected) return;
-        if (now - lastReceive >= 12)
+        double measuredNow = measurementClock?.Invoke() ?? now;
+        Measurements.Tick(measuredNow);
+        // A slow native load can block the entire Unity thread, including
+        // sends and heartbeats. Extend the silence window only for an
+        // announced generation with no received full checkpoint yet.
+        if (now - lastReceive >= 12 && (now >= worldLoadDeadline || Native.FullRevision != 0))
         {
             State = LinkState.TimedOut;
+            return;
+        }
+        if (waitingForWorldReady)
+        {
+            if (now >= nextControl)
+            {
+                nextControl = now + 1;
+                SendWelcome();
+            }
             return;
         }
         if (now >= nextControl)
         {
             nextControl = now + 2;
             if (host) SendState();
-            Send(new Packet(Kind.Ping, session, epoch));
+        }
+        // A capture callback can take much of a second before this tick starts.
+        // Base the probe cadence and timestamp on the actual send-side clock.
+        if (measuredNow >= nextProbe)
+        {
+            nextProbe = measuredNow + 2;
+            if (!Send(new Packet(Kind.Ping, session, epoch, Measurements.BeginProbe(measuredNow))))
+                Measurements.CancelPendingProbe();
         }
         if (pendingRequest != 0 && now >= nextRetry) SendPending(now);
         Shop.Tick(now, true);
@@ -193,6 +265,13 @@ internal sealed class CoopSession
 
     internal bool Receive(ReadOnlySpan<byte> bytes, bool cursorChannel, double now)
     {
+        if (!ReceiveCore(bytes, cursorChannel, now)) return false;
+        if (!measureCarrierTraffic && State == LinkState.Connected) Measurements.AddReceived(bytes.Length);
+        return true;
+    }
+
+    private bool ReceiveCore(ReadOnlySpan<byte> bytes, bool cursorChannel, double now)
+    {
         if (State is not (LinkState.Handshake or LinkState.Connected or LinkState.JoinDeclined or LinkState.JoinClosed) ||
             !Wire.TryDecode(bytes, cursorChannel, out var packet)) return false;
         if((State is LinkState.JoinDeclined or LinkState.JoinClosed) && (!host || packet.Kind!=Kind.Hello)) return false;
@@ -228,7 +307,7 @@ internal sealed class CoopSession
                 challenge = packet.Serial;
                 epoch = Guid.NewGuid();
             }
-            Send(new Packet(Kind.Welcome, session, epoch, challenge, build: fingerprint));
+            SendWelcome();
             Received?.Invoke(packet.Kind);
             return true;
         }
@@ -249,7 +328,7 @@ internal sealed class CoopSession
                 };
                 return true;
             }
-            if (packet.Kind == Kind.Welcome && packet.Session != Guid.Empty && packet.Epoch != Guid.Empty)
+            if (packet.Kind == Kind.Welcome && packet.Revision == 0 && packet.Session != Guid.Empty && packet.Epoch != Guid.Empty)
             {
                 if (epoch != Guid.Empty && (epoch != packet.Epoch || session != packet.Session)) return false;
                 if (!Compatible(packet.Build))
@@ -261,18 +340,36 @@ internal sealed class CoopSession
                 epoch = packet.Epoch;
                 JoinPending=false;
                 nextControl = now + 1;
-                Send(new Packet(Kind.Ready, session, epoch, challenge));
+                SendReady();
                 Received?.Invoke(packet.Kind);
                 return true;
             }
         }
+        if (!host && State == LinkState.Connected && packet.Kind == Kind.Welcome && packet.Revision != 0)
+        {
+            if (packet.Session != session || packet.Serial != challenge || packet.Epoch == Guid.Empty || !Compatible(packet.Build))
+                return false;
+            if (packet.Epoch != epoch)
+            {
+                if (WorldGeneration == ulong.MaxValue || packet.Revision != WorldGeneration + 1) return false;
+                ResetWorld(packet.Epoch, packet.Revision);
+                worldLoadDeadline = now + WorldLoadGraceSeconds;
+            }
+            else if (packet.Revision != WorldGeneration) return false;
+            lastReceive = now;
+            SendReady();
+            Received?.Invoke(packet.Kind);
+            return true;
+        }
         if (epoch == Guid.Empty || packet.Epoch != epoch || packet.Session != session) return false;
 
-        if (host && packet.Kind == Kind.Ready && packet.Serial == challenge)
+        if (host && packet.Kind == Kind.Ready && packet.Serial == challenge && packet.Revision == WorldGeneration)
         {
+            waitingForWorldReady = false;
             MarkConnected(now);
             SendState();
         }
+        else if (waitingForWorldReady) return false;
         else if (!host && packet.Kind == Kind.State)
         {
             if (packet.Revision < Revision || packet.Serial < lastRequest ||
@@ -305,7 +402,9 @@ internal sealed class CoopSession
             SendState(); // Duplicate, stale and out-of-order requests only receive current state.
         }
         else if (packet.Kind == Kind.Ping)
-            Send(new Packet(Kind.Pong, session, epoch));
+            Send(new Packet(Kind.Pong, session, epoch, packet.Serial));
+        else if (packet.Kind == Kind.Pong)
+            Measurements.AcceptPong(packet.Serial, measurementClock?.Invoke() ?? now);
         else if (packet.Kind == Kind.Cursor)
         {
             if (packet.Serial <= receivedCursorSequence) return false;
@@ -327,7 +426,7 @@ internal sealed class CoopSession
             nextIncomingItemPing=now+0.20;
             RemoteItemPing=(packet.Serial,packet.Revision,BinaryPrimitives.ReadUInt32LittleEndian(packet.Payload));
         }
-        else if (packet.Kind != Kind.Pong) return false;
+        else return false;
 
         lastReceive = now;
         Received?.Invoke(packet.Kind);
@@ -347,7 +446,7 @@ internal sealed class CoopSession
         JoinPending=false;
         admitted=true;
         epoch=Guid.NewGuid();
-        Send(new Packet(Kind.Welcome,session,epoch,challenge,build:fingerprint));
+        SendWelcome();
     }
 
     internal void DeclineJoin(double now)
@@ -369,6 +468,11 @@ internal sealed class CoopSession
 
     private void MarkConnected(double now)
     {
+        if (State != LinkState.Connected)
+        {
+            nextProbe = measurementClock?.Invoke() ?? now;
+            Measurements.Reset(nextProbe);
+        }
         State = LinkState.Connected;
         lastReceive = now;
         nextControl = now;
@@ -389,5 +493,11 @@ internal sealed class CoopSession
         Send(new Packet(Kind.ChangeTile, session, epoch, pendingRequest, pendingRevision, pendingTile));
     }
 
-    private bool Send(Packet packet, bool cursor = false) => send(Wire.Encode(packet), cursor);
+    private bool Send(Packet packet, bool cursor = false)
+    {
+        var bytes = Wire.Encode(packet);
+        if (!send(bytes, cursor)) return false;
+        if (!measureCarrierTraffic && State == LinkState.Connected) Measurements.AddSent(bytes.Length);
+        return true;
+    }
 }

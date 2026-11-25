@@ -12,17 +12,23 @@ namespace ProbablyCoop;
 
 internal static class NativeLogisticsUi
 {
-    private static Type Helper(NativeWorld.FrontendKind kind)=>kind switch {
-        NativeWorld.FrontendKind.Hopper=>typeof(HopperHelper),
-        NativeWorld.FrontendKind.StorageCoordinator=>typeof(MachineStorageCoordinator),
-        NativeWorld.FrontendKind.MindReprogrammer=>typeof(MindReprogrammerHelper),
-        _=>throw new ArgumentOutOfRangeException(nameof(kind)) };
+    private static readonly FieldInfo HopperOpenItem=AccessTools.Field(typeof(HopperHelper),"openItem");
+    private static readonly FieldInfo CoordinatorOpenItem=AccessTools.Field(typeof(MachineStorageCoordinator),"openItem");
+    private static readonly FieldInfo ReprogrammerOpenItem=AccessTools.Field(typeof(MindReprogrammerHelper),"openItem");
     private static string WindowId(NativeWorld.FrontendKind kind)=>kind switch {
         NativeWorld.FrontendKind.Hopper=>"intake_hopper",
         NativeWorld.FrontendKind.StorageCoordinator=>"storage_coordinator",
         NativeWorld.FrontendKind.MindReprogrammer=>"mind_reprogrammer",
         _=>throw new ArgumentOutOfRangeException(nameof(kind)) };
-    internal static GameItem OpenItem(NativeWorld.FrontendKind kind)=>(GameItem)AccessTools.Field(Helper(kind),"openItem").GetValue(null);
+    internal static GameItem OpenItem(NativeWorld.FrontendKind kind)
+    {
+        var field=kind switch {
+            NativeWorld.FrontendKind.Hopper=>HopperOpenItem,
+            NativeWorld.FrontendKind.StorageCoordinator=>CoordinatorOpenItem,
+            NativeWorld.FrontendKind.MindReprogrammer=>ReprogrammerOpenItem,
+            _=>throw new ArgumentOutOfRangeException(nameof(kind)) };
+        return (GameItem)field.GetValue(null);
+    }
     internal static bool Visible(NativeWorld.FrontendKind kind,GameItem target)=>ReferenceEquals(OpenItem(kind),target) &&
         CustomUIManager.Instance?.GetWindow(WindowId(kind))?.IsAlive==true;
     internal static void Close(NativeWorld.FrontendKind kind,GameItem target)
@@ -30,7 +36,6 @@ internal static class NativeLogisticsUi
     internal static void Refresh(NativeWorld.FrontendKind kind,GameItem target,bool resetDraft)
     {
         if(!Visible(kind,target)) return;
-        var type=Helper(kind);
         if(kind==NativeWorld.FrontendKind.Hopper && resetDraft)
         {
             // Refresh existing native controls without re-creating a window,
@@ -44,17 +49,28 @@ internal static class NativeLogisticsUi
             toggles[0].SetIsOnWithoutNotify(HopperHelper.IsOnAdd(target));
             toggles[1].SetIsOnWithoutNotify(HopperHelper.IsOnMove(target));
             for(int i=0;i<3;i++) window.Get("filter_"+i).toggle.SetIsOnWithoutNotify(HopperHelper.GetFilterMode(target)==i);
-            window.Get("order").SetText((string)AccessTools.Method(type,"OrderText").Invoke(null,new object[]{target}));
-            window.Get("keep").SetText((string)AccessTools.Method(type,"KeepText").Invoke(null,new object[]{target}));
+            window.Get("order").SetText((string)ModReflect.CallStatic(typeof(HopperHelper),"OrderText",target));
+            window.Get("keep").SetText((string)ModReflect.CallStatic(typeof(HopperHelper),"KeepText",target));
         }
         if(kind==NativeWorld.FrontendKind.StorageCoordinator && resetDraft)
         {
-            AccessTools.Method(type,"StopPick").Invoke(null,null);
-            AccessTools.Method(type,"StopCapture").Invoke(null,new object[]{true});
-            AccessTools.Field(type,"presets").SetValue(null,MachineStorageCoordinator.LoadPresets(target));
+            ModReflect.CallStatic(typeof(MachineStorageCoordinator),"StopPick");
+            ModReflect.CallStatic(typeof(MachineStorageCoordinator),"StopCapture",true);
+            ModReflect.SetStatic(typeof(MachineStorageCoordinator),"presets",MachineStorageCoordinator.LoadPresets(target));
         }
-        if(kind==NativeWorld.FrontendKind.Hopper) AccessTools.Method(type,"RefreshLink").Invoke(null,null);
-        AccessTools.Method(type,"RebuildList").Invoke(null,null);
+        switch(kind)
+        {
+            case NativeWorld.FrontendKind.Hopper:
+                ModReflect.CallStatic(typeof(HopperHelper),"RefreshLink");
+                ModReflect.CallStatic(typeof(HopperHelper),"RebuildList");
+                break;
+            case NativeWorld.FrontendKind.StorageCoordinator:
+                ModReflect.CallStatic(typeof(MachineStorageCoordinator),"RebuildList");
+                break;
+            case NativeWorld.FrontendKind.MindReprogrammer:
+                ModReflect.CallStatic(typeof(MindReprogrammerHelper),"RebuildList");
+                break;
+        }
     }
     internal static JObject SpriteData(Sprite sprite)
     {

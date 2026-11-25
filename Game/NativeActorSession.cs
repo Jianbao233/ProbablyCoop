@@ -49,10 +49,15 @@ internal sealed class NativeActorSession : IDisposable
             PersonalUi = new NativeActorPersonalUi(run);
             Night = new NativeActorNight(run.Run.ToString("N") + "/" + Guid.NewGuid().ToString("N"));
             Current = this;
-            fieldsInstalled = true; NativeActorFieldAccess.Install(harmony, run.Resolve);
-            carryInstalled = true;
-            NativeActorCarryAccess.Install(harmony, source => ReferenceEquals(source, Carry.Source) ? Carry : null);
-            nightInstalled = true; NativeActorNight.Install(harmony);
+            if (!NativePlatform.AndroidActorRoutingReady)
+            {
+                if (NativePlatform.IsAndroid)
+                    throw new InvalidOperationException("Android actor routing is not ready.");
+                fieldsInstalled = true; NativeActorFieldAccess.Install(harmony, run.Resolve);
+                carryInstalled = true;
+                NativeActorCarryAccess.Install(harmony, source => ReferenceEquals(source, Carry.Source) ? Carry : null);
+                nightInstalled = true; NativeActorNight.Install(harmony);
+            }
         }
         catch (Exception error)
         {

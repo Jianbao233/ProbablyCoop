@@ -13,8 +13,8 @@ internal sealed partial class NativeWorld
 {
     internal const string AppraisalWindowId="appraisal_items";
     private static readonly MethodInfo AppraisalSetAllowed=AccessTools.Method(typeof(AppraisalItemsWindow),"SetAllowed");
-    private static readonly Action<bool> BuildAppraisalWindow=AccessTools.MethodDelegate<Action<bool>>(
-        AccessTools.Method(typeof(AppraisalItemsWindow),nameof(AppraisalItemsWindow.Open),new[]{typeof(bool)}));
+    private static readonly Action<bool> BuildAppraisalWindow=
+        ModReflect.StaticMethod<Action<bool>>(typeof(AppraisalItemsWindow),nameof(AppraisalItemsWindow.Open));
     [ThreadStatic] private static NativeActorState appraisalRenderSettings;
     private GameItem appraisalFrontendTarget;
     private string appraisalRenderedProof;

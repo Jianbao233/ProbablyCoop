@@ -71,7 +71,7 @@ internal sealed class LocalRoom : ICoopRoom
     {
         if (HasLobby) return;
         try { link = new LoopbackLink(fingerprint, Time.realtimeSinceStartupAsDouble, code, address, listenPort,
-            mappedEndpoint,requireApproval:!NativeBackgroundQa.Enabled); }
+            mappedEndpoint,requireApproval:!NativeBackgroundQa.Enabled,measurementClock:()=>Time.realtimeSinceStartupAsDouble); }
         catch (FormatException)
         {
             Detail = "";

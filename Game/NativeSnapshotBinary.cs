@@ -34,7 +34,8 @@ internal static class NativeSnapshotBinary
 
     internal static byte[] Pack(JObject data,CancellationToken cancellation,
         IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields,out (int Nodes,int Bytes) cost,
-        IReadOnlyDictionary<JToken,int> references=null)
+        IReadOnlyDictionary<JToken,int> references=null,Dictionary<JObject,JObject> borrowed=null,
+        IReadOnlyDictionary<JToken,NativeDeferredFields.Block> borrowedFields=null)
     {
         cancellation.ThrowIfCancellationRequested();
         using var output=new MemoryStream();
@@ -45,8 +46,8 @@ internal static class NativeSnapshotBinary
             using var plain=new NativeSnapshotCodec.LimitedStream(gzip,NativeSnapshotCodec.MaxPlainBytes,cancellation);
             using var buffered=new BufferedStream(plain,8192);
             using var writer=new BinaryWriter(buffered,Utf8,true);
-            var encoder=new Encoder(writer,cancellation,fields,references);
-            encoder.Write(data,0);
+            var encoder=new Encoder(writer,cancellation,references,borrowedFields);
+            encoder.Write(data,0,fields,borrowed);
             cost=encoder.Cost;
         }
         cancellation.ThrowIfCancellationRequested();
@@ -105,12 +106,12 @@ internal static class NativeSnapshotBinary
     private sealed class Encoder : Budget
     {
         private readonly BinaryWriter writer;
-        private readonly IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields;
         private readonly IReadOnlyDictionary<JToken,int> references;
+        private readonly IReadOnlyDictionary<JToken,NativeDeferredFields.Block> borrowedFields;
         private readonly Dictionary<string,(int Id,int Bytes)> strings=new Dictionary<string,(int,int)>(StringComparer.Ordinal);
-        internal Encoder(BinaryWriter writer,CancellationToken cancellation,IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields,
-            IReadOnlyDictionary<JToken,int> references):base(cancellation)
-        { this.writer=writer; this.fields=fields; this.references=references; }
+        internal Encoder(BinaryWriter writer,CancellationToken cancellation,IReadOnlyDictionary<JToken,int> references,
+            IReadOnlyDictionary<JToken,NativeDeferredFields.Block> borrowedFields):base(cancellation)
+        { this.writer=writer; this.references=references; this.borrowedFields=borrowedFields; }
         private void Text(string value)
         {
             if(strings.TryGetValue(value,out var old)) { Charge(4+old.Bytes); writer.Write(~old.Id); return; }
@@ -118,8 +119,16 @@ internal static class NativeSnapshotBinary
             strings.Add(value,(strings.Count,length));
             writer.Write(length); writer.Write(Utf8.GetBytes(value));
         }
-        internal void Write(JToken value,int depth)
+        internal void Write(JToken value,int depth,IReadOnlyDictionary<JToken,NativeDeferredFields.Block> fields,
+            Dictionary<JObject,JObject> borrowed)
         {
+            // Use the immutable record as input to the same encoder. It still
+            // consumes the regular packet budget and shares packet-local strings.
+            if(borrowed!=null && value is JObject marker && borrowed.TryGetValue(marker,out var record))
+            {
+                Write(record,depth,borrowedFields,null);
+                return;
+            }
             Node(depth);
             if(references!=null && value is JObject && references.TryGetValue(value,out int index))
             {
@@ -133,7 +142,7 @@ internal static class NativeSnapshotBinary
                 case JTokenType.Object:
                     if(fields!=null && fields.TryGetValue((JObject)value,out var block)) { Frozen(block,depth); break; }
                     var obj=(JObject)value; Count(obj.Count,2); writer.Write((byte)Kind.Object); writer.Write(obj.Count);
-                    foreach(var p in obj.Properties()) { Node(depth+1); Text(p.Name); Write(p.Value,depth+1); }
+                    foreach(var p in obj.Properties()) { Node(depth+1); Text(p.Name); Write(p.Value,depth+1,fields,borrowed); }
                     break;
                 case JTokenType.Array:
                     if(fields!=null && fields.TryGetValue(value,out var arrayBlock))
@@ -144,7 +153,7 @@ internal static class NativeSnapshotBinary
                         break;
                     }
                     var array=(JArray)value; Count(array.Count); writer.Write((byte)Kind.Array); writer.Write(array.Count);
-                    foreach(var item in array) Write(item,depth+1);
+                    foreach(var item in array) Write(item,depth+1,fields,borrowed);
                     break;
                 case JTokenType.Null: writer.Write((byte)Kind.Null); break;
                 case JTokenType.String:
