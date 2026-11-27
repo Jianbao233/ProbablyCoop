@@ -50,6 +50,13 @@ internal static class Wire
     internal const int MaxSize = 20 * 1024;
     private const uint Magic = 0x504f4350; // PCOP
 
+    internal static int NativeChunkIndex(ReadOnlySpan<byte> encoded)
+    {
+        if (encoded.Length <= HeaderSize + sizeof(int) || encoded[4] != Version || encoded[5] != (byte)Kind.NativeChunk ||
+            BinaryPrimitives.ReadUInt32LittleEndian(encoded) != Magic) return -1;
+        return BinaryPrimitives.ReadUInt16LittleEndian(encoded.Slice(56));
+    }
+
     internal static byte[] Encode(Packet packet)
     {
         bool handshake = packet.Kind is Kind.Hello or Kind.Welcome;

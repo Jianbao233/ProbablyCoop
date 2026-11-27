@@ -29,6 +29,8 @@ internal sealed partial class ReplicaLink
     private double nextProgress;
     private bool progressed;
     private int gap=-1,sentThrough;
+    private int receivedPrefix;
+    private bool retryPage, lastRetrySkippedPrefix;
     private ulong wantProjection,appliedCommand;
     internal int RepairsSent {get;private set;}
     internal int GapsRequested {get;private set;}
@@ -57,6 +59,9 @@ internal sealed partial class ReplicaLink
         pages == null ? (0, 0, 0, 0, 0) :
         (pages.Length, receivingPage, assembly?.Length ?? 0, receivedBytes, completeBytes + receivedBytes);
     internal ulong FullRevision { get; private set; }
+    internal bool HasFullCheckpointTraffic => FullRevision != 0 || (host
+        ? outgoing?.Full == true && (sendingPage > 0 || sentThrough > 0)
+        : pages != null && (receivingPage > 0 || receivedBytes > 0));
     internal bool NeedsFull { get; private set; }
     private bool forcePublish;
     private ulong requestedFull;
@@ -99,10 +104,11 @@ internal sealed partial class ReplicaLink
         FullRevision=0; NeedsFull=forcePublish=false;
         requestedFull=0; retryFull=0;
         chunkRetryAt=chunkRetryDelay=0;
-        received = nextChunk = 0;
+        received = 0;
         sequence = outgoingRevision = assemblingRevision = lastRequest = pending = pendingRevision = Revision = presenceSerial = 0;
-        retry = commandRetry = 0; lastResult = Result = 0;
-        nextProgress=0; progressed=false; gap=-1; sentThrough=0; wantProjection=appliedCommand=0;
+        commandRetry = 0; lastResult = Result = 0;
+        nextProgress=0; progressed=false; wantProjection=appliedCommand=0;
+        StartPage();
         ResultFromProjection=false;
         RepairsSent=GapsRequested=0;
         SynchronizationFailed=false; FailureReason=NativeSyncFailure.None; nextFailureNotice=0; sendingPage=0;
@@ -167,12 +173,21 @@ internal sealed partial class ReplicaLink
                 }
             }
             if(now<retry) return;
+            if (retryPage)
+            {
+                // The reported gap is the first missing chunk. Skip the
+                // confirmed prefix once, then keep a full fallback if the
+                // guest's partial page has since been discarded.
+                nextChunk = lastRetrySkippedPrefix ? 0 : receivedPrefix;
+                lastRetrySkippedPrefix = nextChunk != 0;
+                retryPage = false;
+            }
             for (int n=0;n<budget && nextChunk<count;n++,nextChunk++)
             {
                 if(!TrySendChunk(nextChunk, now)) break;
                 sentThrough=Math.Max(sentThrough,nextChunk+1);
             }
-            if (nextChunk >= count) { nextChunk = 0; retry = now + 1; }
+            if (nextChunk >= count) { nextChunk = 0; retry = now + 1; retryPage = true; }
         }
         else
         {
@@ -211,7 +226,13 @@ internal sealed partial class ReplicaLink
         return send(Kind.NativeChunk,serial,outgoingRevision,(ushort)index,payload);
     }
     private static int ChunkCount(byte[] page) => (page.Length+ChunkSize-1)/ChunkSize;
-    private void StartPage() { nextChunk=sentThrough=0; gap=-1; retry=0; }
+    private void StartPage()
+    {
+        nextChunk=sentThrough=receivedPrefix=0;
+        gap=-1;
+        retry=0;
+        retryPage=lastRetrySkippedPrefix=false;
+    }
     internal void FailSynchronization(NativeSyncFailure reason)
     {
         if(!host || SynchronizationFailed) return;
@@ -332,7 +353,11 @@ internal sealed partial class ReplicaLink
             if(outgoing!=null && packet.Serial==outgoingRevision && sendingPage==outgoing.Count-1 &&
                 sentThrough==ChunkCount(outgoing[sendingPage])) CommitOutgoing();
             int page=packet.Value>>ChunkIndexBits, chunk=packet.Value & ChunkIndexMask;
-            if(outgoing!=null && packet.Revision==outgoingRevision && page==sendingPage && chunk<sentThrough) gap=chunk;
+            if(outgoing!=null && packet.Revision==outgoingRevision && page==sendingPage && chunk<sentThrough)
+            {
+                gap=chunk;
+                receivedPrefix=Math.Max(receivedPrefix,chunk);
+            }
             return true;
         }
         if (host && packet.Kind == Kind.NativeCommand)

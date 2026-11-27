@@ -36,6 +36,18 @@ internal static class PartnerSetupTests
         Reject<InvalidDataException>(() => NativeActorPartnerSetup.ValidateSelection(new[] { "other_mod" }), "unknown mod perk unsupported");
         Reject<InvalidDataException>(() => NativeActorPartnerSetup.ValidateSelection(new[] { "lucky", "lucky" }), "duplicate ID");
         Reject<InvalidDataException>(() => NativeActorPartnerSetup.ValidateSelection(new[] { "lucky", "unlucky" }), "native mutual exclusion");
+        var openingPerks = NativeActorPartnerSetup.Catalog(fullOpening: true);
+        void CheckConflict(string first, string second, bool expected)
+        {
+            Check(NativeActorPartnerSetup.ConflictsAcrossActors(openingPerks[first], openingPerks[second]) == expected &&
+                NativeActorPartnerSetup.ConflictsAcrossActors(openingPerks[second], openingPerks[first]) == expected,
+                first + " and " + second + " cross-player conflict");
+        }
+        CheckConflict("convict", "model_citizen", true);
+        CheckConflict("side_street", "prime_real_estate", true);
+        CheckConflict("lucky", "unlucky", false);
+        CheckConflict("maimed", "careful_scavenger", false);
+        CheckConflict("convict", "convict", false);
         Reject<InvalidDataException>(() => NativeActorPartnerSetup.ValidateSelection(new[] { "lucky", "careful_scavenger", "tinkerer", "diplomatic" }), "native point budget");
         Reject<InvalidDataException>(() => NativeActorPartnerSetup.ValidateSelection(new[] { "nicotine_addiction", "alcohol_addiction", "narcotic_addiction", "maimed", "illiterate" }), "native slot budget");
         var registry = (List<StartingPerk>)typeof(StartingPerkList).GetField("modPerks", BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
@@ -43,6 +55,15 @@ internal static class PartnerSetupTests
         registry.Add(replacement);
         try { Reject<InvalidDataException>(() => NativeActorPartnerSetup.ValidateSelection(new[] { "lucky" }), "registered mod override is not native definition"); }
         finally { registry.Remove(replacement); }
+        var undeclared = new StartingPerk { id = "fixture_no_provider", incompatiblePerks = null };
+        registry.Add(undeclared);
+        try
+        {
+            Check(!NativeActorPartnerSetup.Catalog(fullOpening: true).ContainsKey(undeclared.id),
+                "a registered perk without a provider does not affect the cooperative picker");
+        }
+        finally { registry.Remove(undeclared); }
+        CheckSavedModPerkReceipt();
 
         var store = Store(); using var run = new NativeActorRun(store, NativeActorState.CreateDefault());
         var originalHost = NativeActorState.Capture(store).Serialize();
@@ -94,25 +115,69 @@ internal static class PartnerSetupTests
         Check(typeof(NewGamePerksUI).GetMethod("OnContinueClicked", BindingFlags.NonPublic | BindingFlags.Static) != null && typeof(NewGamePerksUI).GetMethod("OnWindowClosed", BindingFlags.NonPublic | BindingFlags.Static) != null, "native picker interception metadata exists");
         var session = new NativeActorSession(run) { Store = store }; NativeActorSession.Current = session;
         var shared = StartingPerkList.WorkingPipes(); store.startingPerks.Add(shared);
+        var saved = new Dictionary<string, StartingPerk> { ["bad_lease"] = StartingPerkList.BadLease(), [shared.id] = shared };
+        NativeOpening.SavedShopPerks = saved;
+        store.startingPerks.Add(StartingPerkList.Unlucky());
+        Check(NativeActorPerkQueries.MissingStatusPerks(store).Select(perk => perk.id).SequenceEqual(new[] { "bad_lease" }),
+            "host status only adds the other player's missing shop perks");
         using (run.Enter(NativeActorRun.Slot.Partner))
         {
             Check(NativeActorPerkQueries.TryShared("working_pipes", out var found) && ReferenceEquals(found, shared), "partner operation reads host shared perk configuration");
             Check(!NativeActorPerkQueries.TryShared("lucky", out _), "personal luck keeps native actor query");
             Check(!NativeActorPerkQueries.TryShared("short_sleeper", out _), "mixed short sleeper keeps actor-specific night query");
             Check(NativeActorPerkQueries.TryShared("saving", out found) && found == null, "absent shared perk never falls back to partner list");
+            Check(NativeActorPerkQueries.MissingStatusPerks(store).Select(perk => perk.id).SequenceEqual(new[] { "bad_lease", "working_pipes" }),
+                "partner status includes each shared perk once and leaves host-only personal traits out");
         }
         NativeActorSession.Current = null;
-        NativeWorld.Guest = new NativeWorld { HasActorProjection = true, RemoteHostActor = NativeActorState.Capture(store) };
+        NativeOpening.SavedShopPerks = null;
+        NativeWorld.Guest = new NativeWorld
+        {
+            HasActorProjection = true, RemoteHostActor = NativeActorState.Capture(store),
+            OpeningSharedPerks = saved.ToDictionary(pair => pair.Key, pair => NativeActorState.ClonePerk(pair.Value))
+        };
         Check(NativeActorPerkQueries.TryShared("working_pipes", out var replica) && replica.id == "working_pipes" && !ReferenceEquals(replica, shared), "guest reads host shared configuration replica");
+        var guestStore = Store();
+        var localPerks = guestStore.startingPerks;
+        localPerks.Add(StartingPerkList.Lucky());
+        Check(NativeActorPerkQueries.MissingStatusPerks(guestStore).Select(perk => perk.id).SequenceEqual(new[] { "bad_lease", "working_pipes" }) &&
+            ReferenceEquals(guestStore.startingPerks, localPerks) && localPerks.Single().id == "lucky",
+            "guest status reads both shared sources without changing saved actor state");
         NativeWorld.Guest = null;
         NativeInventoryPilot.RemoteHostActor = NativeActorState.Capture(store);
         Check(NativeActorPerkQueries.TryShared("working_pipes", out replica) && replica.id == "working_pipes" &&
             !NativeActorPerkQueries.TryShared("gambling_addiction", out _), "effect guest reads shared host perks and keeps personal addiction queries");
         NativeInventoryPilot.RemoteHostActor = null;
         Check(!NativeActorPerkQueries.TryShared("working_pipes", out _), "single player shared query remains original");
+        Check(!NativeActorPerkQueries.MissingStatusPerks(store).Any(), "solo status needs no additional shared rows");
         session.Activities.Dispose(); session.PersonalUi.Dispose();
         Console.WriteLine($"PASS {checks} partner perk classification, budget, typed initialization and receipt checks; native menu rendering and click flow NOT_RUN.");
         return 0;
+    }
+
+    private static void CheckSavedModPerkReceipt()
+    {
+        using var run = new NativeActorRun(Store(), NativeActorState.CreateDefault());
+        const string id = "fixture_personal_perk";
+        const string provider = "fixture_author";
+        var definition = NativeActorState.ClonePerk(new StartingPerk { id = id, source = provider, incompatiblePerks = null });
+        Check(definition.incompatiblePerks.Count == 0, "optional native incompatibility list normalized");
+        // The fixture reads the receipt after selection admission, with no
+        // loader or installed third-party Mod available.
+        var prepare = typeof(NativeActorPartnerSetup).GetMethod("PreparePersonal", BindingFlags.Static | BindingFlags.NonPublic);
+        var admitted = (NativeActorPartnerSetup.Prepared)prepare.Invoke(null, new object[] { run, new[] { definition } });
+        var receipt = JObject.Parse(admitted.Commit());
+        Check((string)receipt["externalPerks"][id] == provider &&
+            NativeActorPartnerSetup.IsComplete(receipt.ToString(), run.Run),
+            "recorded personal mod perk can be validated while provider is unavailable");
+        var differentOwner = (JObject)receipt.DeepClone();
+        differentOwner["externalPerks"][id] = "other_provider";
+        Reject<InvalidDataException>(() => NativeActorPartnerSetup.IsComplete(differentOwner.ToString(), run.Run),
+            "mod perk provider is bound to its selection receipt");
+        var strippedOwner = (JObject)receipt.DeepClone();
+        strippedOwner.Remove("externalPerks");
+        Reject<InvalidDataException>(() => NativeActorPartnerSetup.IsComplete(strippedOwner.ToString(), run.Run),
+            "unknown saved perk requires provider provenance");
     }
 
     private static void CheckDraftOwnership()

@@ -35,7 +35,9 @@ internal sealed class CoopSession
     private double phaseStart;
     private bool admitted;
     private bool waitingForWorldReady;
+    private bool nativeProjectionReady;
     private double worldLoadDeadline;
+    private const double PlaySilenceSeconds = 12;
     private const double WorldLoadGraceSeconds = 60;
 
     internal LinkState State { get; private set; }
@@ -84,6 +86,7 @@ internal sealed class CoopSession
         Native.Reset();
         WorldGeneration = 0;
         waitingForWorldReady = false;
+        nativeProjectionReady = false;
         worldLoadDeadline = 0;
         epoch = Guid.Empty;
         admitted=!requireApproval;
@@ -106,6 +109,7 @@ internal sealed class CoopSession
         State = LinkState.Waiting;
         WorldGeneration = 0;
         waitingForWorldReady = false;
+        nativeProjectionReady = false;
         worldLoadDeadline = 0;
         JoinPending=false;
         challenge=0;
@@ -134,6 +138,7 @@ internal sealed class CoopSession
         Shop.SetAuthority(null);
         Shop.Reset();
         Native.Reset();
+        nativeProjectionReady = false;
         lastRequest = pendingRequest = cursorSequence = receivedCursorSequence = 0;
         Tiles = 0;
         Revision = 0;
@@ -199,10 +204,12 @@ internal sealed class CoopSession
         if (State != LinkState.Connected) return;
         double measuredNow = measurementClock?.Invoke() ?? now;
         Measurements.Tick(measuredNow);
-        // A slow native load can block the entire Unity thread, including
-        // sends and heartbeats. Extend the silence window only for an
-        // announced generation with no received full checkpoint yet.
-        if (now - lastReceive >= 12 && (now >= worldLoadDeadline || Native.FullRevision != 0))
+        // Receiving the last page leaves the guest with native scene loading
+        // and inventory projection still to do. Unity can block heartbeats
+        // during either operation. Return to the play timeout once it is ready.
+        bool loadingProjection = !nativeProjectionReady && Native.HasFullCheckpointTraffic;
+        double silenceLimit = loadingProjection ? WorldLoadGraceSeconds : PlaySilenceSeconds;
+        if (now - lastReceive >= silenceLimit && (nativeProjectionReady || now >= worldLoadDeadline))
         {
             State = LinkState.TimedOut;
             return;
@@ -247,6 +254,12 @@ internal sealed class CoopSession
         pendingTile = (ushort)tile;
         pendingRevision = Revision;
         SendPending(now);
+    }
+
+    internal void MarkNativeProjectionReady()
+    {
+        if (!host && State == LinkState.Connected && Native.FullRevision != 0)
+            nativeProjectionReady = true;
     }
 
     internal void MoveCursor(ushort x, ushort y, bool visible, bool click, ulong surface = 0,
@@ -391,6 +404,10 @@ internal sealed class CoopSession
         else if (packet.Kind is Kind.NativeChunk or Kind.NativeAck or Kind.NativeCommand or Kind.NativeReply or Kind.NativePresence or Kind.NativeTooltip or Kind.NativeProgress or Kind.NativeNeedFull or Kind.NativeSyncFailed)
         {
             if (!Native.Receive(packet)) return false;
+            // The guest already publishes native presence only after local
+            // projection succeeds. The packet is scoped to the current epoch.
+            if (host && packet.Kind == Kind.NativePresence && packet.Revision != 0 && Native.HasFullCheckpointTraffic)
+                nativeProjectionReady = true;
         }
         else if (host && packet.Kind == Kind.ChangeTile)
         {

@@ -21,6 +21,80 @@ internal static class Probe
     { if (!value) throw new Exception(name); checks++; }
     private static void Reject<T>(Action action, string name) where T : Exception
     { try { action(); } catch (T) { checks++; return; } throw new Exception("Expected rejection: " + name); }
+    private sealed class RestoreSite : IDisposable
+    {
+        private readonly Action restore;
+        internal RestoreSite(Action restore) => this.restore = restore;
+        public void Dispose() => restore();
+    }
+
+    private static void VerifyJointTravel(NativeActorRun run)
+    {
+        var session = new NativeActorSession(run);
+        NativeActorSession.Current = session;
+        using var activities = session.Activities;
+        using var lease = activities.Begin(new object(), NativeActorActivities.JointTravel,
+            NativeActorRun.Slot.Partner, () => !session.Faulted);
+        var prefix = typeof(NativeActorBlackscreenActions).GetMethod("Prefix", BindingFlags.Static | BindingFlags.NonPublic);
+        int successful = 0, attempted = 0, after = 0;
+        var success = new object[] { true, (Action)(() =>
+        {
+            Check(run.CurrentActor == NativeActorRun.Slot.Partner, "joint travel callback retains the initiating actor");
+            successful++;
+        }), (Action)(() => after++) };
+        var failure = new object[] { true, (Action)(() =>
+        {
+            attempted++;
+            throw new InvalidOperationException("native map transition stopped with inTransit still true");
+        }), (Action)(() => after++) };
+        using (lease.EnterNative())
+        {
+            prefix.Invoke(null, success);
+            prefix.Invoke(null, failure);
+        }
+        ((Action)success[1])();
+        ((Action)success[2])();
+        Check(successful == 1 && after == 1 && !session.Faulted, "successful outing preserves both native callbacks");
+        // The original blackscreen catches this exception and continues its fade.
+        Reject<InvalidOperationException>((Action)failure[1], "failed joint-travel callback reaches the native exception handler");
+        Check(attempted == 1 && session.Faulted && session.TravelTransitionFailed &&
+            !activities.HasExecuting && run.CurrentActor == NativeActorRun.Slot.Host,
+            "failed joint travel leaves a recoverable fault after unwinding the actor scope");
+        ((Action)failure[2])();
+        ((Action)failure[1])();
+        Check(attempted == 1 && after == 1, "the failed outing cannot resume callbacks or run again");
+        NativeActorSession.Current = null;
+    }
+
+    private static void VerifyActivitySites(NativeActorRun run)
+    {
+        string site = "host-view";
+        using var activities = new NativeActorActivities(run, actor =>
+        {
+            string previous = site;
+            site = actor == NativeActorRun.Slot.Partner ? "partner-site" : "host-site";
+            return new RestoreSite(() => site = previous);
+        });
+        var host = activities.Begin(new object(), "host-machine", NativeActorRun.Slot.Host, () => site == "host-site");
+        var partner = activities.Begin(new object(), "guest-machine", NativeActorRun.Slot.Partner, () => site == "partner-site");
+        Check(partner.IsAlive && site == "host-view", "activity lifetime runs in its own site and restores local presentation");
+        var previousAction = partner.Wrap(() =>
+        {
+            Check(site == "partner-site" && run.CurrentActor == NativeActorRun.Slot.Partner, "deferred action sees actor and site");
+            host.Wrap(() => Check(site == "host-site", "nested deferred action enters the other site"))();
+            Check(site == "partner-site", "nested site scope restores the first operation");
+        });
+        previousAction();
+        Reject<InvalidOperationException>(partner.Wrap(() => throw new InvalidOperationException("native action failed")),
+            "exception from a scoped site callback");
+        Check(site == "host-view" && !activities.HasExecuting, "failed callback restores native site scope");
+        using (partner.EnterNative()) Check(site == "partner-site", "direct native invocation sees its site");
+        Check(site == "host-view", "native method restores scoped scene");
+        activities.RetireActorScene(NativeActorRun.Slot.Partner);
+        Check(!partner.IsAlive && host.IsAlive && !partner.Capture(() => throw new Exception("retired site executed"))(),
+            "one departure cancels its own callbacks without retiring the other actor");
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static int Run()
     {
@@ -30,6 +104,8 @@ internal static class Probe
         foreach (var field in typeof(NativeActorState).GetFields(BindingFlags.Instance | BindingFlags.NonPublic))
             typeof(PlayerStore).GetField(field.Name)?.SetValue(store, field.GetValue(raw));
         using var run = new NativeActorRun(store, NativeActorState.CreateDefault());
+        VerifyActivitySites(run);
+        VerifyJointTravel(run);
         var session = new NativeActorSession(run) { Store = store };
         NativeActorSession.Current = session;
         var activities = session.Activities;

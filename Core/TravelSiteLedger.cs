@@ -20,14 +20,27 @@ internal sealed class TravelSiteLedger<TSite> where TSite : class
         internal readonly Position From;
         internal readonly bool LastVisitor;
         internal readonly TSite State;
-        internal Leave(Position from, bool lastVisitor, TSite state)
-        { From = from; LastVisitor = lastVisitor; State = state; }
+        internal readonly ulong OccupancyVersion;
+        internal Leave(Position from, bool lastVisitor, TSite state, ulong occupancyVersion)
+        { From = from; LastVisitor = lastVisitor; State = state; OccupancyVersion = occupancyVersion; }
     }
     private sealed class Site
     {
         internal readonly TSite State;
-        internal byte Occupants;
+        private byte occupants;
+        internal byte Occupants => occupants;
+        internal ulong OccupancyVersion { get; private set; }
+
         internal Site(TSite state) => State = state;
+
+        internal void SetOccupant(int actor, bool present)
+        {
+            int mask = 1 << actor;
+            byte updated = (byte)(present ? occupants | mask : occupants & ~mask);
+            if (occupants == updated) return;
+            occupants = updated;
+            OccupancyVersion++;
+        }
     }
 
     private readonly Dictionary<string, Site> sites = new Dictionary<string, Site>(StringComparer.Ordinal);
@@ -37,13 +50,19 @@ internal sealed class TravelSiteLedger<TSite> where TSite : class
     private ulong nextGeneration = 1;
     internal bool EveryoneHome => positions[0].Site.Length == 0 && positions[1].Site.Length == 0;
 
-    internal bool BeginNight(int day)
+    internal bool BeginNight(int day, bool hostAlreadyVisited = false, bool partnerAlreadyVisited = false)
     {
         if (day < night || day < 0) return false;
-        if (day == night) return true;
+        if (day == night)
+        {
+            spent[0] |= hostAlreadyVisited;
+            spent[1] |= partnerAlreadyVisited;
+            return true;
+        }
         if (!EveryoneHome || sites.Count != 0) return false;
         night = day;
-        Array.Clear(spent, 0, spent.Length);
+        spent[0] = hostAlreadyVisited;
+        spent[1] = partnerAlreadyVisited;
         for (int i = 0; i < positions.Length; i++) Move(i, "");
         return true;
     }
@@ -51,6 +70,7 @@ internal sealed class TravelSiteLedger<TSite> where TSite : class
     internal Position Where(int actor) => positions[actor];
     internal int VisitsLeft(int actor) => spent[actor] ? 0 : 1;
     internal TSite At(string destination) => sites.TryGetValue(destination, out var site) ? site.State : null;
+    internal ulong OccupancyVersion(string destination) => sites.TryGetValue(destination, out var site) ? site.OccupancyVersion : 0;
 
     internal bool TryEnter(int actor, Position expected, string destination, Func<TSite> create, out TSite state)
     {
@@ -58,7 +78,7 @@ internal sealed class TravelSiteLedger<TSite> where TSite : class
         if (night < 0 || string.IsNullOrEmpty(destination) || !expected.Matches(positions[actor]) ||
             expected.Site.Length != 0 || spent[actor]) return false;
         var site = GetOrCreate(destination, create);
-        site.Occupants |= (byte)(1 << actor);
+        site.SetOccupant(actor, true);
         Move(actor, destination);
         spent[actor] = true;
         state = site.State;
@@ -69,14 +89,14 @@ internal sealed class TravelSiteLedger<TSite> where TSite : class
     {
         leave = default;
         if (!expected.Matches(positions[actor]) || !sites.TryGetValue(expected.Site, out var site)) return false;
-        leave = new Leave(expected, site.Occupants == (1 << actor), site.State);
+        leave = new Leave(expected, site.Occupants == (1 << actor), site.State, site.OccupancyVersion);
         return true;
     }
 
     internal bool TryLeave(int actor, Leave leave, bool confirmed)
     {
         if (!TryPrepareLeave(actor, leave.From, out var current) ||
-            current.LastVisitor != leave.LastVisitor || !ReferenceEquals(current.State, leave.State) ||
+            current.OccupancyVersion != leave.OccupancyVersion || !ReferenceEquals(current.State, leave.State) ||
             current.LastVisitor && !confirmed) return false;
         LeaveSite(actor);
         return true;
@@ -103,7 +123,7 @@ internal sealed class TravelSiteLedger<TSite> where TSite : class
                 if (positions[i].Site.Length != 0) LeaveSite(i);
                 Move(i, destination);
             }
-            result.Occupants |= (byte)(1 << i);
+            result.SetOccupant(i, true);
             spent[i] = true;
         }
         return result.State;
@@ -123,7 +143,7 @@ internal sealed class TravelSiteLedger<TSite> where TSite : class
     {
         string location = positions[actor].Site;
         var site = sites[location];
-        site.Occupants &= (byte)~(1 << actor);
+        site.SetOccupant(actor, false);
         if (site.Occupants == 0) sites.Remove(location);
         Move(actor, "");
     }

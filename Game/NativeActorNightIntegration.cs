@@ -37,7 +37,11 @@ internal static class NativeActorNightIntegration
             var scope = new NightScope { Session = session, PreviousConverter = CurrentConverterHelper.isNightCycle };
             __state = scope;
             session.NightActive = true;
-            try { scope.Actor = session.Enter(NativeActorRun.Slot.Host); }
+            try
+            {
+                scope.Actor = session.Enter(NativeActorRun.Slot.Host);
+                NativeWorld.Host?.ExpeditionCounters?.CloseParkedMerchant();
+            }
             catch (Exception error) { session.MarkFault(error); session.NightActive = false; throw; }
         }
         private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> source)

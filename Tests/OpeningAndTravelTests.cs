@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 using ProbablyCoop;
+using ProbablyCoop.Api;
 using ProbablyCoop.Core;
 
 internal static class OpeningAndTravelTests
@@ -9,9 +10,30 @@ internal static class OpeningAndTravelTests
     internal static void Run()
     {
         VerifyOpeningQuotes();
+        VerifyDeclaredCareers();
         VerifyDraftStream();
         VerifyIndependentSites();
+        VerifyLeaveAfterOccupancyChanges();
         Console.WriteLine("PASS paired opening debt, draft replacement, independent visits, shared site lifetime and stale leave");
+    }
+
+    private static void VerifyLeaveAfterOccupancyChanges()
+    {
+        var travel = new TravelSiteLedger<object>();
+        Check(travel.BeginNight(5), "start the return-confirmation night");
+        Check(travel.TryEnter(0, travel.Where(0), "dump", () => new object(), out var ground),
+            "first player creates the destination");
+        Check(travel.TryPrepareLeave(0, travel.Where(0), out var oldPrompt) && oldPrompt.LastVisitor,
+            "first player opens the final-visitor prompt");
+        Check(travel.TryEnter(1, travel.Where(1), "dump", () => new object(), out var joined) && ReferenceEquals(ground, joined),
+            "a late visitor shares the existing ground");
+        Check(travel.TryPrepareLeave(1, travel.Where(1), out var leaving) && travel.TryLeave(1, leaving, false),
+            "the late visitor leaves without clearing the ground");
+        Check(!travel.TryLeave(0, oldPrompt, true) && ReferenceEquals(ground, travel.At("dump")),
+            "the first prompt cannot authorize cleanup after another visit");
+        Check(travel.TryPrepareLeave(0, travel.Where(0), out var newPrompt) && newPrompt.LastVisitor &&
+            travel.TryLeave(0, newPrompt, true) && travel.At("dump") == null,
+            "the fresh final-visitor prompt commits exactly once");
     }
 
     private static void VerifyOpeningQuotes()
@@ -43,6 +65,33 @@ internal static class OpeningAndTravelTests
             try { _ = OpeningRentPlan.Restore(bad, 0); }
             catch (ArgumentException) { continue; }
             throw new InvalidOperationException("Noncanonical rent schedule was accepted.");
+        }
+    }
+
+    private static void VerifyDeclaredCareers()
+    {
+        var conflicts = new[] { "chemist" };
+        var career = new CoopOpeningCareer("example_brewer", 375, conflicts);
+        conflicts[0] = "water_merchant";
+        var chemist = new CoopOpeningCareer("chemist", 300);
+        var water = new CoopOpeningCareer("water_merchant", 200);
+        Check(career.ConflictsWith(chemist) && chemist.ConflictsWith(career) && !career.ConflictsWith(water),
+            "either catalog can declare an exclusion and the declaration is immutable");
+        Check(!OpeningRentPlan.CanCombineIds("rock_bottom", career.Id) &&
+            OpeningRentPlan.CanCombineIds(career.Id, water.Id), "native exclusive opening keeps its rules");
+        Check(OpeningRentPlan.QuotedShortfall(career.CashCost, chemist.CashCost, false) == 75 &&
+            OpeningRentPlan.QuotedShortfall(career.CashCost, 0, false) == 0,
+            "declared costs participate in the existing rent formula");
+        foreach (Action invalid in new Action[]
+        {
+            () => _ = new CoopOpeningCareer("invalid career", 0),
+            () => _ = new CoopOpeningCareer("career", 1_000_001),
+            () => _ = new CoopOpeningCareer("career", 0, new[] { "career" })
+        })
+        {
+            try { invalid(); }
+            catch (ArgumentException) { continue; }
+            throw new InvalidOperationException("Accepted an invalid opening career declaration.");
         }
     }
 
@@ -99,6 +148,17 @@ internal static class OpeningAndTravelTests
         ulong generation = travel.Where(0).Generation;
         travel.ObservePaired(7, "", NewSite);
         Check(travel.EveryoneHome && travel.Where(0).Generation != generation, "paired return retires location requests");
+
+        var reloaded = new TravelSiteLedger<object>();
+        Check(reloaded.BeginNight(7, partnerAlreadyVisited: true) && reloaded.EveryoneHome &&
+            reloaded.VisitsLeft(0) == 1 && reloaded.VisitsLeft(1) == 0 &&
+            !reloaded.TryEnter(1, reloaded.Where(1), "dump", NewSite, out _),
+            "a same-day reload restores only the recorded partner visit");
+        Check(reloaded.BeginNight(7, hostAlreadyVisited: true) && reloaded.BeginNight(7) &&
+            reloaded.VisitsLeft(0) == 0 && reloaded.VisitsLeft(1) == 0,
+            "reinitializing the same night never refunds a recorded visit");
+        Check(reloaded.BeginNight(8) && reloaded.VisitsLeft(0) == 1 && reloaded.VisitsLeft(1) == 1,
+            "the next night restores both independent allowances");
     }
 
     private static void Check(bool condition, string message)

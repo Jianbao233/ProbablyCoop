@@ -4,6 +4,7 @@ using ProbablyCoop.Core;
 
 internal static class CaptureChangeTests
 {
+    private static readonly System.Reflection.FieldInfo[] FactFields=typeof(Facts).GetFields();
     private static void Check(bool ok,string message) { if(!ok) throw new Exception(message); }
     internal static void Run()
     {
@@ -71,6 +72,7 @@ internal static class CaptureChangeTests
             Check(repeated.Delta,"copy mutated previous acknowledged basis");
         }
         NestedSiblingCapture();
+        ComparedRootReferences();
         Console.WriteLine("PASS change-driven capture: mutation stamps, shared/cyclic dependencies, cleanup, reconnect, nested sibling borrowing, differential audit, paged fallback and full checkpoint rotation");
     }
     private static JObject World(NativeDeferredFields fields,bool plain,uint id)=>new JObject {
@@ -78,13 +80,53 @@ internal static class CaptureChangeTests
     private static JObject Item(NativeDeferredFields fields,uint id,bool plain=true,Func<JObject> child=null,int amount=17)
     {
         var row=new NativeDeferredFields.ItemRow {
-            Fields=fields.Capture(new Facts {Amount=amount},typeof(Facts).GetFields()),State=new JObject(),Modified=new JObject(),
+            Fields=fields.Capture(new Facts {Amount=amount},FactFields),State=new JObject(),Modified=new JObject(),
             Shape=new JObject(),ModifiedShape=new JObject(),Types=new JArray(),Features=new JArray(),
             Content=plain ? null : new JObject { ["entity"]=100u,["element"]=new JObject { ["entity"]=101u,["items"]=new JArray(child==null ? Item(fields,102) : child()) } }
         };
         var target=fields.StageItem(row); target["entity"]=id; return target;
     }
     private sealed class Facts { public int Amount=17; public string Name="嵌套容器"; }
+
+    private static void ComparedRootReferences()
+    {
+        var originalFields=new NativeDeferredFields(workerItems:true);
+        var original=World(originalFields,false,1);
+        originalFields.Seal();
+        var full=originalFields.PackFrame(original,default,true,null,0,out var basis,out _);
+        byte[] audited=null;
+        foreach (bool audit in new[] { true, false })
+        {
+            var fields=new NativeDeferredFields(workerItems:true);
+            var current=World(fields,false,1);
+            fields.Seal();
+            var delta=fields.PackFrame(current,default,true,basis,23,out _,out int referenced,audit ? full.Single : null);
+            Check(delta.Delta && referenced==1 && fields.ConfirmedRecords.SetEquals(new uint[] { 1, 102 }),
+                "the assembled parent and its child must be confirmed without changing the root reference");
+            if (audit) audited=delta.Single;
+            else Check(delta.Single.AsSpan().SequenceEqual(audited),"the assembled-root reference changed the wire bytes");
+        }
+
+        var promotedFields=new NativeDeferredFields(workerItems:true);
+        var promoted=World(promotedFields,true,102);
+        promotedFields.Seal();
+        var promotion=promotedFields.PackFrame(promoted,default,true,basis,23,out _,out int borrowedChildren);
+        Check(promotion.Full && borrowedChildren==0 && promotedFields.ConfirmedRecords.Contains(102) &&
+            JToken.DeepEquals(NativeSnapshotPages.Unpack(promotion,default)["roots"][0]["items"][0]["data"],
+                NativeSnapshotPages.Unpack(full,default)["roots"][0]["items"][0]["data"]["content"]["element"]["items"][0]),
+            "a matching nested item promoted to a root needs its full record");
+
+        var duplicateFields=new NativeDeferredFields(workerItems:true);
+        var duplicate=World(duplicateFields,false,1);
+        var roots=(JArray)duplicate["roots"][0]["items"];
+        roots.Add(new JObject { ["legacyId"]=1, ["data"]=Item(duplicateFields,1,false,amount:28) });
+        duplicateFields.Seal();
+        var fallback=duplicateFields.PackFrame(duplicate,default,true,basis,23,out _,out int duplicateReferences);
+        Check(fallback.Full && duplicateReferences==0 &&
+            (int)NativeSnapshotPages.Unpack(fallback,default)["roots"][0]["items"][1]["data"]["fields"]["Amount"]==28,
+            "an ambiguous top-level ID must keep both already assembled records inline");
+    }
+
     private static void NestedSiblingCapture()
     {
         var baseline=new NativeDeferredFields(workerItems:true);

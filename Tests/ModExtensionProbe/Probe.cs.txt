@@ -11,6 +11,12 @@ public sealed class ProbeMod : IMod
 {
     private const string ModId = "probably_coop_extension_probe";
     private const string StorageProbeName = "Co-op declared storage probe";
+    private const string CareerId = "cooperative_brewer_fixture";
+    private const string CareerItem = "Co-op brewer fixture";
+    private const int CareerCost = 430;
+    private const string PersonalPerkId = "coop_probe_personal_perk";
+    private const string SharedPerkId = "coop_probe_shared_perk";
+    private bool careerRegistered;
     private CoopExtensionSession session;
     private GameObject runner;
     private int count;
@@ -20,6 +26,8 @@ public sealed class ProbeMod : IMod
     private bool sawHostSession;
     private ulong firstRevision;
     private bool forceReconnect;
+    private bool expeditionProbe, projectedAtExchange;
+    private ulong exchangeRevision;
 
     public void Init(ModManifest manifest) { }
 
@@ -28,9 +36,29 @@ public sealed class ProbeMod : IMod
         ModHelper.OnMessage(ModId,CoopExtensionApi.DiscoveryChannel,Discover);
         ModHelper.Expose(ModId, CoopExtensionApi.LocalItemActivationService, (Func<GameItem, bool>)OpenStorageView);
         var arguments = Environment.GetCommandLineArgs();
-        if(!arguments.Contains("--probably-coop-qa-extension-probe") ||
-            !Application.productName.StartsWith("Probably Stolen Coop RegressionRev12Water ",StringComparison.Ordinal))
+        if (!Application.productName.StartsWith("Probably Stolen Coop RegressionRev12Water ", StringComparison.Ordinal))
             return;
+        if (arguments.Contains("--probably-coop-qa-mod-opening"))
+        {
+            ModHelper.AddStartingScenario(ModId, CareerId, () => "QA brewer",
+                () => "Supplies and a cooperative utility grant.",
+                new Func<string>[] { () => "Juice and a utility unlock" }, ApplyOpeningCareer, skipIntro: true);
+            ModHelper.Expose(ModId, CoopExtensionApi.OpeningCareersService,
+                new[] { new CoopOpeningCareer(CareerId, CareerCost) });
+            ModHelper.AddStartingPerk(ModId, PersonalPerkId, 0, StartingPerk.StartingPerkType.NEUTRAL,
+                () => "QA personal trait", () => "Only active for the player that picked it.");
+            ModHelper.AddStartingPerk(ModId, SharedPerkId, 0, StartingPerk.StartingPerkType.NEUTRAL,
+                () => "QA shop trait", () => "Active for both players in this shop.");
+            ModHelper.Expose(ModId, CoopExtensionApi.OpeningPerksService, new Dictionary<string, CoopOpeningPerkScope>
+            {
+                [PersonalPerkId] = CoopOpeningPerkScope.Personal,
+                [SharedPerkId] = CoopOpeningPerkScope.SharedShop
+            });
+            ModHook.OnGameLoadedEarly += VerifyLoadedOpening;
+            careerRegistered = true;
+        }
+        expeditionProbe = arguments.Contains("--probably-coop-qa-extension-expedition");
+        if (!expeditionProbe && !arguments.Contains("--probably-coop-qa-extension-probe")) return;
         forceReconnect = arguments.Contains("--probably-coop-qa-extension-rejoin");
         runner = new GameObject("ProbablyCoopExtensionProbe");
         UnityEngine.Object.DontDestroyOnLoad(runner);
@@ -41,9 +69,43 @@ public sealed class ProbeMod : IMod
     {
         ModHelper.OffMessage(ModId,CoopExtensionApi.DiscoveryChannel,Discover);
         ModHelper.Expose(ModId, CoopExtensionApi.LocalItemActivationService, null);
+        if (careerRegistered)
+        {
+            ModHook.OnGameLoadedEarly -= VerifyLoadedOpening;
+            ModHelper.Expose(ModId, CoopExtensionApi.OpeningCareersService, null);
+            ModHelper.RemoveStartingScenarios(ModId);
+            ModHelper.Expose(ModId, CoopExtensionApi.OpeningPerksService, null);
+            ModHelper.RemoveStartingPerks(ModId);
+            careerRegistered = false;
+        }
         if(runner!=null) UnityEngine.Object.Destroy(runner);
         runner=null;
         session=null;
+    }
+
+    private static void ApplyOpeningCareer()
+    {
+        if (ModHelper.GetStartingScenarioId() != CareerId || !ModHelper.IsStartingScenario(CareerId))
+            throw new InvalidOperationException("The native callback has the wrong current career.");
+        if (!ModHelper.IsStartingScenario("water_merchant") || !PlayerStore.Instance.IsWaterMerchantStart())
+            throw new InvalidOperationException("The native callback lost the other player's water merchant career.");
+        Debug.Log("[coop-extension-probe] PASS opening callback sees both careers");
+        var item = DirectoryMaster.Item("processed_juice");
+        GeneralHelper.SetCustomName(item, CareerItem);
+        GraphUtils.EmporiumTryAdd(EmporiumEntry.Instance.invElement, item);
+        PlayerStore.Instance.playerCash -= CareerCost;
+        NetworkUpgrade.GetUpgradeById("GUTTERFLOW_TAP").Unlock();
+    }
+
+    private static void VerifyLoadedOpening()
+    {
+        string primary = ModHelper.GetStartingScenarioId();
+        if (primary != "water_merchant" && primary != CareerId) return;
+        if (!ModHelper.IsStartingScenario(CareerId) || !ModHelper.IsStartingScenario("water_merchant") ||
+            !PlayerStore.Instance.IsWaterMerchantStart() || !ModHelper.IsStartingPerkActive(SharedPerkId) ||
+            ModHelper.IsStartingPerkActive(PersonalPerkId))
+            throw new InvalidOperationException("The early load callback lost the saved partner career or shared perk.");
+        Debug.Log("[coop-extension-probe] PASS early load sees both careers and the shared perk");
     }
 
     private void Discover(string sender,object payload)
@@ -58,6 +120,8 @@ public sealed class ProbeMod : IMod
     {
         if(session?.IsReady==true)
             throw new InvalidOperationException("An extension session must stay unavailable inside ReadState.");
+        if (expeditionProbe && MapUIManager.Instance?.Current?.Id == AfterhourLocation.COMMISSARY)
+            throw new InvalidOperationException("Shared state read followed the guest into the exchange.");
         return count.ToString(CultureInfo.InvariantCulture);
     }
 
@@ -68,6 +132,8 @@ public sealed class ProbeMod : IMod
         localActivations=0;
         displayed=-1;
         firstRevision=0;
+        projectedAtExchange=false;
+        exchangeRevision=0;
         sawHostSession=false;
         Debug.Log("[coop-extension-probe] attached role="+next.LocalActor);
     }
@@ -75,6 +141,9 @@ public sealed class ProbeMod : IMod
     private CoopActionResult Execute(CoopExtensionAction action)
     {
         if(action.Id!="increment" || action.Payload!="1" || count>=1000) return CoopActionResult.Rejected;
+        if (expeditionProbe && (action.Actor != CoopExtensionActor.Partner ||
+            MapUIManager.Instance?.Current?.Id != AfterhourLocation.COMMISSARY))
+            throw new InvalidOperationException("The expedition action lost its native guest location.");
         count++;
         Debug.Log("[coop-extension-probe] authoritative increment actor="+action.Actor+" count="+count);
         return CoopActionResult.Applied;
@@ -84,12 +153,37 @@ public sealed class ProbeMod : IMod
     {
         displayed=int.Parse(state.Payload,CultureInfo.InvariantCulture);
         Debug.Log("[coop-extension-probe] guest state count="+displayed+" revision="+state.Revision);
+        if (!expeditionProbe) return;
+        string site = MapUIManager.Instance.Current?.Id;
+        if (site == AfterhourLocation.COMMISSARY)
+        {
+            if (!projectedAtExchange && (state.Revision != firstRevision || displayed != 0))
+                throw new InvalidOperationException("The exchange view did not get the unchanged entry state.");
+            if (!projectedAtExchange)
+                Debug.Log("[coop-extension-probe] PASS unchanged state reached the new guest scene");
+            projectedAtExchange = true;
+            exchangeRevision = state.Revision;
+        }
+        else if (site == null && projectedAtExchange)
+        {
+            if (state.Revision != exchangeRevision || displayed != 1)
+                throw new InvalidOperationException("The shop did not recover the confirmed expedition state.");
+            Debug.Log("[coop-extension-probe] PASS unchanged state rebound after guest return");
+            projectedAtExchange = false;
+        }
+        else if (site == null && firstRevision == 0)
+            firstRevision = state.Revision;
     }
 
     private void Update()
     {
         if(session?.IsClosed==true) session=null;
         if(session?.IsReady!=true) return;
+        if (expeditionProbe)
+        {
+            TickExpeditionProbe();
+            return;
+        }
         if(session.LocalActor==CoopExtensionActor.Host)
         {
             if(!sawHostSession)
@@ -117,6 +211,22 @@ public sealed class ProbeMod : IMod
         firstRevision=state.Revision;
         if(session.Request("increment","1",firstRevision,ConfirmIncrement)!=CoopActionSubmission.Queued) return;
         phase=1;
+    }
+
+    private void TickExpeditionProbe()
+    {
+        if (session.LocalActor != CoopExtensionActor.Partner || !projectedAtExchange || phase != 0) return;
+        var state = session.CurrentState;
+        if (state == null || state.Payload != "0") return;
+        var submission = session.Request("increment", "1", state.Revision, result =>
+        {
+            if (result == CoopActionResult.Busy) { phase = 0; return; }
+            if (result != CoopActionResult.Applied || displayed != 1)
+                Debug.LogError("[coop-extension-probe] FAIL expedition action returned " + result);
+            else Debug.Log("[coop-extension-probe] PASS guest-location action and projected receipt");
+            phase = 2;
+        });
+        if (submission == CoopActionSubmission.Queued) phase = 1;
     }
 
     private static bool InstallStorageFixture()

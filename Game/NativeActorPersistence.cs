@@ -36,10 +36,13 @@ internal static class NativeActorPersistence
     {
         internal PlayerStore Store;
         internal NativeActorCheckpoint.Envelope Envelope;
+        internal bool OpeningReady;
         internal bool Hydrated;
         internal NativePerformance.CheckpointScope Timing;
     }
     private sealed class DecodeAttempt { internal GameItem Root; }
+
+    internal static PlayerStore LoadedOpeningStore => loading is { OpeningReady: true } attempt ? attempt.Store : null;
 
     [HarmonyPatch(typeof(PlayerStore), nameof(PlayerStore.SaveGame))]
     private static class SaveBoundary
@@ -70,6 +73,31 @@ internal static class NativeActorPersistence
             __state.Dispose();
             return __exception;
         }
+    }
+
+    [HarmonyPatch(typeof(SaveFiles), nameof(SaveFiles.RotateIntoHistory))]
+    private static class PreserveVerifiedHistory
+    {
+        private static bool Prepare() => NativePlatform.SupportsAuthorityContract &&
+            NativePlatform.MatchesActorModule(typeof(SaveFiles).Module, NativeActorCarryAccess.ExpectedMvid);
+
+        private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> source)
+        {
+            var code = source.ToList();
+            var limit = AccessTools.PropertyGetter(typeof(EmporiumOption), nameof(EmporiumOption.SaveHistoryDays));
+            int getter = Enumerable.Range(0, code.Count).Single(index => code[index].Calls(limit));
+            code.InsertRange(getter + 1, new[] {
+                new CodeInstruction(OpCodes.Ldarg_0),
+                new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(PreserveVerifiedHistory), nameof(IncludePrevious)))
+            });
+            return code;
+        }
+
+        // Native rotation trims to limit minus one before the new write begins.
+        // Keep the last verified image even when the player's limit is one.
+        private static int IncludePrevious(int limit, int slot) => limit < 2 &&
+            saving?.Session is { VerifiedCheckpoint: { } checkpoint } session &&
+            checkpoint.Slot == slot && session.NativeSaveSlot == slot && session.Store.saveSlotId == slot ? 2 : limit;
     }
 
     internal static IEnumerable<CodeInstruction> InsertCapture(IEnumerable<CodeInstruction> source)
@@ -119,7 +147,8 @@ internal static class NativeActorPersistence
         var partnerSetup = NativeActorCheckpoint.ReadPartnerSetup(store.modData);
         ValidatePartnerSetup(partnerSetup, session.Run.Run);
         var value = NativeActorCheckpoint.Create(session.Run.Run, store.saveSlotId, StoreStation.Instance.dayCounter,
-            session.Run.CapturePersonalCheckpoint(), roots, selected, shared, partnerSetup);
+            session.Run.CapturePersonalCheckpoint(), roots, selected, shared, partnerSetup,
+            NativeActorCheckpoint.ReadOpeningMods(store.modData));
         attempt.Pending = new NativeActorCheckpoint.Pending(store, value.Day, value, () =>
             ReferenceEquals(NativeActorSession.Current, session) && session.CanCommit &&
             (CoopRun.IsCreating(store) || CoopRun.IsRegistered(store)) && StoreStation.Instance.dayCounter == value.Day);
@@ -171,7 +200,10 @@ internal static class NativeActorPersistence
         private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> source) => ReplaceLoadEnumeration(source);
         private static void Postfix(LoadAttempt __state)
         {
-            if (__state != null && !__state.Hydrated) throw new InvalidOperationException("Native load missed actor hydration.");
+            if (__state == null) return;
+            if (!__state.Hydrated || NativeActorSession.Current is not { } session)
+                throw new InvalidOperationException("Native load missed actor hydration.");
+            NativeSharedPerkEvents.RestoreMissedCommissaryIntroduction(session);
         }
         private static Exception Finalizer(LoadAttempt __state, Exception __exception)
         {
@@ -183,19 +215,48 @@ internal static class NativeActorPersistence
         }
     }
 
-    internal static IEnumerable<CodeInstruction> ReplaceLoadEnumeration(IEnumerable<CodeInstruction> source) => ReplaceOne(source,
-        AccessTools.Method(typeof(EmporiumEntry), nameof(EmporiumEntry.GetAllItems)),
-        AccessTools.Method(typeof(NativeActorPersistence), nameof(HydrateAndGetItems)), "native feature restoration");
+    internal static IEnumerable<CodeInstruction> ReplaceLoadEnumeration(IEnumerable<CodeInstruction> source)
+    {
+        var code = ReplaceOne(source, AccessTools.Method(typeof(EmporiumEntry), nameof(EmporiumEntry.GetAllItems)),
+            AccessTools.Method(typeof(NativeActorPersistence), nameof(HydrateAndGetItems)), "native feature restoration").ToList();
+        var firstAfterLoad = AccessTools.Method(typeof(StoreService), nameof(StoreService.HealIntroducedAfterLoad));
+        int index = Enumerable.Range(0, code.Count).Single(i => code[i].Calls(firstAfterLoad));
+        var native = code[index];
+        var loadStore = new CodeInstruction(native) { opcode = OpCodes.Ldarg_0, operand = null };
+        code[index] = new CodeInstruction(native.opcode, native.operand);
+        code.InsertRange(index, new[] { loadStore,
+            new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(NativeActorPersistence), nameof(ExposeLoadedOpening))) });
+        return code;
+    }
+
+    private static void ExposeLoadedOpening(PlayerStore store)
+    {
+        var attempt = loading;
+        if (attempt == null) return;
+        if (attempt.OpeningReady || !ReferenceEquals(store, attempt.Store))
+            throw new InvalidOperationException("Native opening checks reached a different cooperative load.");
+        VerifyLoadedCheckpoint(attempt);
+        NativeOpening.RestorePartnerCareerReputation(store);
+        attempt.OpeningReady = true;
+    }
+
+    private static void VerifyLoadedCheckpoint(LoadAttempt attempt)
+    {
+        if (attempt.Envelope.Day != StoreStation.Instance.dayCounter ||
+            !attempt.Store.modData.TryGetValue(NativeActorCheckpoint.ModDataKey, out var encoded) || encoded != attempt.Envelope.Encoded ||
+            !string.Equals(NativeActorCheckpoint.ReadPartnerSetup(attempt.Store.modData), attempt.Envelope.PartnerSetup, StringComparison.Ordinal) ||
+            !string.Equals(NativeActorCheckpoint.ReadOpeningMods(attempt.Store.modData), attempt.Envelope.OpeningMods, StringComparison.Ordinal))
+            throw new InvalidOperationException("Native world and actor checkpoint changed during load.");
+    }
 
     private static List<GameItem> HydrateAndGetItems(EmporiumEntry entry)
     {
         var attempt = loading;
         if (attempt == null) return entry.GetAllItems();
         using var timing = NativePerformance.MeasureCheckpoint("actor_hydration");
-        if (attempt.Hydrated || attempt.Envelope.Day != StoreStation.Instance.dayCounter ||
-            !attempt.Store.modData.TryGetValue(NativeActorCheckpoint.ModDataKey, out var encoded) || encoded != attempt.Envelope.Encoded ||
-            !string.Equals(NativeActorCheckpoint.ReadPartnerSetup(attempt.Store.modData), attempt.Envelope.PartnerSetup, StringComparison.Ordinal))
-            throw new InvalidOperationException("Native world and actor checkpoint changed during hydration.");
+        if (!attempt.OpeningReady || attempt.Hydrated)
+            throw new InvalidOperationException("Native actor hydration must follow the verified opening boundary once.");
+        VerifyLoadedCheckpoint(attempt);
         var session = NativeActorSession.Restore(attempt.Store, attempt.Envelope);
         try
         {

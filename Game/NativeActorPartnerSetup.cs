@@ -8,6 +8,7 @@ using System.Text;
 using HarmonyLib;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using ProbablyCoop.Api;
 using UnityEngine.SceneManagement;
 
 namespace ProbablyCoop;
@@ -39,30 +40,86 @@ internal static class NativeActorPartnerSetup
         Add(PerkScope.RetiredDefinition, "loan debt unsubscribed speedy expedition_organizer");
         return result;
     }
-    internal static PerkScope Classify(string id) => id != null && Scope.TryGetValue(id, out var scope) ? scope : PerkScope.Unknown;
+    internal static PerkScope Classify(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return PerkScope.Unknown;
+        return Scope.TryGetValue(id, out var scope) ? scope : DeclaredScope(StartingPerkList.GetModPerk(id));
+    }
+
+    private static PerkScope DeclaredScope(StartingPerk definition)
+    {
+        if (definition == null || !CoopOpeningCareer.ValidId(definition.source) || !CoopOpeningCareer.ValidId(definition.id) ||
+            definition.cost is < -1000 or > 1000 || definition.maxSlot is < -16 or > 16 ||
+            (int)definition.type is < 0 or > 2 ||
+            definition.incompatiblePerks?.Any(id => !CoopOpeningCareer.ValidId(id)) == true ||
+            definition.incompatiblePerks?.Count > NativeActorState.MaximumPerks)
+            return PerkScope.Unknown;
+
+        var declared = ModHelper.Lookup<IReadOnlyDictionary<string, CoopOpeningPerkScope>>(definition.source,
+            CoopExtensionApi.OpeningPerksService);
+        if (declared == null || declared.Count > 32 || !declared.TryGetValue(definition.id, out var scope))
+            return PerkScope.Unknown;
+        return scope switch
+        {
+            CoopOpeningPerkScope.Personal => PerkScope.Personal,
+            CoopOpeningPerkScope.SharedShop => PerkScope.SharedShop,
+            _ => PerkScope.Unknown
+        };
+    }
+
+    internal static StartingPerk FindDeclaredSharedPerk(string id)
+    {
+        if (Scope.ContainsKey(id)) return null;
+        var definition = StartingPerkList.GetModPerk(id);
+        return DeclaredScope(definition) == PerkScope.SharedShop ? NativeActorState.ClonePerk(definition) : null;
+    }
     internal static bool IsPersonalChoice(string id) => Classify(id) is PerkScope.Personal or PerkScope.Mixed;
 
-    // Native factories here construct definition records only. No item/world
-    // factory, mod provider, global Perks list or persisted data is modified.
-    internal static Dictionary<string, StartingPerk> Catalog(bool fullOpening = false)
+    internal static bool ConflictsAcrossActors(StartingPerk host, StartingPerk partner)
+    {
+        if (host.incompatiblePerks?.Contains(partner.id) != true &&
+            partner.incompatiblePerks?.Contains(host.id) != true) return false;
+        if (!IsPersonalChoice(host.id) || !IsPersonalChoice(partner.id)) return true;
+
+        // These mixed perks apply opposite starting security reputation to
+        // the same shop. The scavenging and luck exclusions stay personal.
+        return host.id is "convict" or "model_citizen" &&
+            partner.id is "convict" or "model_citizen";
+    }
+
+    // Enumerate definitions only. Menu validation never calls gameplay effects.
+    internal static Dictionary<string, StartingPerk> Catalog(bool fullOpening = false, ISet<string> eligibleMods = null)
     {
         var result = new Dictionary<string, StartingPerk>(StringComparer.Ordinal);
-        foreach (var definition in StartingPerkList.AllPerkDefinitions())
+        var definitions = fullOpening ? StartingPerkList.AllPerkDefinitionsWithMods() : StartingPerkList.AllPerkDefinitions();
+        foreach (var definition in definitions)
         {
-            if (Classify(definition.id) is PerkScope.Unknown or PerkScope.RetiredDefinition)
+            if (!string.IsNullOrEmpty(definition.source) ||
+                ReferenceEquals(StartingPerkList.GetModPerk(definition.id), definition))
+            {
+                if (fullOpening && !Scope.ContainsKey(definition.id) &&
+                    (eligibleMods == null || eligibleMods.Contains(definition.source)) &&
+                    DeclaredScope(definition) != PerkScope.Unknown)
+                    result.Add(definition.id, NativeActorState.ClonePerk(definition));
+                continue;
+            }
+            if (!Scope.TryGetValue(definition.id, out var scope) || scope == PerkScope.RetiredDefinition)
                 throw new InvalidDataException("Unreviewed native perk definition: " + definition.id);
-            if ((!fullOpening && !IsPersonalChoice(definition.id)) || StartingPerkList.GetModPerk(definition.id) != null || !string.IsNullOrEmpty(definition.source)) continue;
+            if ((!fullOpening && scope is not (PerkScope.Personal or PerkScope.Mixed)) ||
+                StartingPerkList.GetModPerk(definition.id) != null) continue;
             result.Add(definition.id, definition);
         }
         return result;
     }
-    internal static StartingPerk[] ValidateSelection(IEnumerable<string> ids, bool fullOpening = false)
+
+    internal static StartingPerk[] ValidateSelection(IEnumerable<string> ids, bool fullOpening = false,
+        ISet<string> eligibleMods = null)
     {
         if (ids == null) throw new InvalidDataException("Missing partner perk draft.");
         var selected = ids.Take(17).ToArray();
         if (selected.Length > 16 || selected.Any(id => string.IsNullOrEmpty(id) || id.Length > 256) || selected.Distinct(StringComparer.Ordinal).Count() != selected.Length)
             throw new InvalidDataException("Invalid or duplicate partner perks.");
-        var catalog = Catalog(fullOpening);
+        var catalog = Catalog(fullOpening, eligibleMods);
         var perks = selected.Select(id => catalog.TryGetValue(id, out var perk) ? perk : throw new InvalidDataException("Partner perk is not a supported personal definition: " + id)).ToArray();
         int points = 0, slots = NewGamePerksUI.BASE_PERK_COUNT;
         foreach (var perk in perks) { points = checked(points + perk.cost); slots = checked(slots + perk.maxSlot); }
@@ -89,10 +146,18 @@ internal static class NativeActorPartnerSetup
             value["slot"]?.Type != JTokenType.Integer || (string)value["slot"] != "1" || value["run"]?.Type != JTokenType.String ||
             !Guid.TryParse((string)value["run"], out var found) || found != run) throw new InvalidDataException("Invalid partner setup identity.");
     }
-    private static string SelectionProof(IEnumerable<string> ids)
+    private static string SelectionProof(IEnumerable<string> ids, JObject owners = null)
     {
+        JToken selection = new JArray(ids.OrderBy(id => id, StringComparer.Ordinal));
+        if (owners != null)
+        {
+            var orderedOwners = new JObject();
+            foreach (var property in owners.Properties().OrderBy(property => property.Name, StringComparer.Ordinal))
+                orderedOwners.Add(property.Name, property.Value.DeepClone());
+            selection = new JObject { ["ids"] = selection, ["externalPerks"] = orderedOwners };
+        }
         using var hash = SHA256.Create();
-        return BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(new JArray(ids.OrderBy(id => id, StringComparer.Ordinal)).ToString(Formatting.None)))).Replace("-", "");
+        return BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(selection.ToString(Formatting.None)))).Replace("-", "");
     }
     internal static bool IsComplete(string receipt, Guid run)
     {
@@ -102,13 +167,35 @@ internal static class NativeActorPartnerSetup
     private static JObject ReadReceipt(string receipt, Guid run)
     {
         if (receipt == null || receipt.Length > 8192) throw new InvalidDataException("Invalid partner setup receipt.");
-        var data = JObject.Parse(receipt); CheckEnvelope(data, run, 6);
+        var data = JObject.Parse(receipt);
+        var external = data["externalPerks"];
+        CheckEnvelope(data, run, external == null ? 6 : 7);
         var ids = ReadIds(data["ids"]);
-        if (ids.Any(id => string.IsNullOrEmpty(id) || id.Length > 256 || !IsPersonalChoice(id)) || ids.Distinct(StringComparer.Ordinal).Count() != ids.Length ||
+        // Checkpoint validation can run off the game thread. Read saved
+        // provenance without consulting the enabled Mod registry.
+        var modIds = ReadPersonalModIds(external);
+        if (ids.Any(id => string.IsNullOrEmpty(id) || id.Length > 256 ||
+                (Scope.TryGetValue(id, out var scope) ? scope is not (PerkScope.Personal or PerkScope.Mixed) :
+                    !modIds.Remove(id))) ||
+            modIds.Count != 0 || ids.Distinct(StringComparer.Ordinal).Count() != ids.Length ||
             data["completed"]?.Type != JTokenType.Boolean || !(bool)data["completed"] || data["selection"]?.Type != JTokenType.String ||
-            (string)data["selection"] != SelectionProof(ids)) throw new InvalidDataException("Invalid partner setup completion.");
+            (string)data["selection"] != SelectionProof(ids, (JObject)external)) throw new InvalidDataException("Invalid partner setup completion.");
         return data;
     }
+    private static HashSet<string> ReadPersonalModIds(JToken value)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        if (value == null) return ids;
+        if (value is not JObject owners || owners.Count is < 1 or > 16)
+            throw new InvalidDataException("Invalid modded perks in partner receipt.");
+        foreach (var owner in owners.Properties())
+            if (!CoopOpeningCareer.ValidId(owner.Name) || Scope.ContainsKey(owner.Name) ||
+                owner.Value.Type != JTokenType.String || !CoopOpeningCareer.ValidId((string)owner.Value) ||
+                !ids.Add(owner.Name))
+                throw new InvalidDataException("Invalid modded perk ownership in partner receipt.");
+        return ids;
+    }
+
     internal static Prepared Prepare(NativeActorRun run, JToken draft, string persistedReceipt)
     {
         if (run == null) throw new ArgumentNullException(nameof(run));
@@ -118,11 +205,12 @@ internal static class NativeActorPartnerSetup
         if (!string.IsNullOrEmpty(persistedReceipt))
         {
             var old = ReadReceipt(persistedReceipt, run.Run);
-            if ((string)old["selection"] != proof) throw new InvalidDataException("Partner setup was already completed with another selection.");
+            if (SelectionProof(ReadIds(old["ids"])) != proof)
+                throw new InvalidDataException("Partner setup was already completed with another selection.");
             return new Prepared(run.Partner, null, persistedReceipt);
         }
         var perks = ValidateSelection(ids);
-        return PreparePersonal(run, perks, proof);
+        return PreparePersonal(run, perks);
     }
 
     internal static Prepared PrepareOpening(NativeActorRun run, IEnumerable<string> fullSelection)
@@ -131,14 +219,19 @@ internal static class NativeActorPartnerSetup
         // personal subset stored per actor does not buy those perks a second time.
         var personal = ValidateSelection(fullSelection, fullOpening: true)
             .Where(perk => IsPersonalChoice(perk.id)).ToArray();
-        return PreparePersonal(run, personal, SelectionProof(personal.Select(perk => perk.id)));
+        return PreparePersonal(run, personal);
     }
 
-    private static Prepared PreparePersonal(NativeActorRun run, StartingPerk[] perks, string proof)
+    private static Prepared PreparePersonal(NativeActorRun run, StartingPerk[] perks)
     {
         if (run.Partner.startingPerks.Count != 0) throw new InvalidDataException("Unmarked partner already has perks; explicit migration required.");
+        var ids = perks.Select(perk => perk.id).OrderBy(id => id, StringComparer.Ordinal).ToArray();
+        var owners = new JObject();
+        foreach (var perk in perks.Where(perk => !string.IsNullOrEmpty(perk.source)))
+            owners.Add(perk.id, perk.source);
         var receipt = new JObject { ["schema"] = 1, ["run"] = run.Run.ToString("D"), ["slot"] = 1,
-            ["ids"] = new JArray(perks.Select(perk => perk.id).OrderBy(id => id, StringComparer.Ordinal)), ["selection"] = proof, ["completed"] = true };
+            ["ids"] = new JArray(ids), ["selection"] = SelectionProof(ids, owners.Count > 0 ? owners : null), ["completed"] = true };
+        if (owners.Count > 0) receipt["externalPerks"] = owners;
         return new Prepared(run.Partner, perks, receipt.ToString(Formatting.None));
     }
     internal sealed class Prepared
@@ -213,10 +306,12 @@ internal static class NativeActorPartnerSetup
         internal Action<string[]> Accept;
         internal Action Cancel;
         internal bool Ready, Submitted, FullOpening;
+        internal ISet<string> EligibleMods;
     }
     internal static bool TryOpenDraft(Action<string[]> accept, Action cancel, out string reason)
         => TryOpenDraft(accept, cancel, out reason, out _);
-    internal static bool TryOpenDraft(Action<string[]> accept, Action cancel, out string reason, out DraftHandle owner, bool fullOpening = false)
+    internal static bool TryOpenDraft(Action<string[]> accept, Action cancel, out string reason, out DraftHandle owner,
+        bool fullOpening = false, ISet<string> eligibleMods = null)
     {
         reason = null; owner = null;
         if (accept == null) throw new ArgumentNullException(nameof(accept));
@@ -227,7 +322,8 @@ internal static class NativeActorPartnerSetup
         { reason = "原版主菜单尚未就绪。"; return false; }
         if (data == null || ui == null || ui.newGamePerksPrefab == null)
         { reason = $"原版天赋窗口尚未就绪（开局数据={data != null}，界面管理器={ui != null}，窗口资源={ui != null && ui.newGamePerksPrefab != null}）。"; return false; }
-        var setup = new Pending { Handle = new DraftHandle(data), Accept = accept, Cancel = cancel, FullOpening = fullOpening };
+        var setup = new Pending { Handle = new DraftHandle(data), Accept = accept, Cancel = cancel,
+            FullOpening = fullOpening, EligibleMods = eligibleMods };
         owner = setup.Handle;
         pending = setup; data.startingPerks = setup.Draft;
         var previousWindow = Window.GetValue(null);
@@ -236,7 +332,7 @@ internal static class NativeActorPartnerSetup
             NewGamePerksUI.Open();
             setup.Handle.Window = Window.GetValue(null) as CustomUIWindow;
             if (!NewGamePerksUI.IsOpen || Frame.GetValue(null) is not NewGamePerksFrame frame) { reason = "原版天赋窗口未能打开。"; Restore(setup); return false; }
-            ConfigurePicker(frame, partner: true, fullOpening);
+            ConfigurePicker(frame, partner: true, fullOpening, eligibleMods);
             setup.Ready = true;
             return true;
         }
@@ -253,11 +349,11 @@ internal static class NativeActorPartnerSetup
             ConfigurePicker(frame, partner: false, fullOpening: true);
     }
 
-    private static void ConfigurePicker(NewGamePerksFrame frame, bool partner, bool fullOpening)
+    private static void ConfigurePicker(NewGamePerksFrame frame, bool partner, bool fullOpening, ISet<string> eligibleMods = null)
     {
         var sorted = (List<StartingPerk>)Sorted.GetValue(null);
         sorted.Clear();
-        sorted.AddRange(Catalog(fullOpening).Values.OrderByDescending(perk => perk.cost).ThenBy(perk => perk.id, StringComparer.Ordinal));
+        sorted.AddRange(Catalog(fullOpening, eligibleMods).Values.OrderByDescending(perk => perk.cost).ThenBy(perk => perk.id, StringComparer.Ordinal));
         // The native first-run gate reads the solo save index. A paired
         // opening can allow selection on both seats without writing that index.
         FirstRun.SetValue(null, false);
@@ -301,7 +397,7 @@ internal static class NativeActorPartnerSetup
         if (!ReferenceEquals(NewGameData.Instance, setup.Handle.Data) || !ReferenceEquals(NewGameData.Instance.startingPerks, setup.Draft))
         { CancelDraft(setup.Handle); setup.Cancel?.Invoke(); return false; }
         string[] ids;
-        try { ids = ValidateSelection(setup.Draft.Select(perk => perk.id), setup.FullOpening).Select(perk => perk.id).ToArray(); }
+        try { ids = ValidateSelection(setup.Draft.Select(perk => perk.id), setup.FullOpening, setup.EligibleMods).Select(perk => perk.id).ToArray(); }
         catch (InvalidDataException error)
         {
             if (Frame.GetValue(null) is NewGamePerksFrame frame) frame.instruction.text = "天赋组合无效：" + error.Message;

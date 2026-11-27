@@ -12,8 +12,8 @@ namespace ProbablyCoop;
 /// <summary>Opt-in Unity runtime acceptance runner for disposable QA profiles only.</summary>
 internal sealed partial class NativeBackgroundQa
 {
-    internal static bool IsHostProduct => IsProduct("Host");
-    internal static bool IsGuestProduct => IsProduct("Guest");
+    internal static bool IsHostProduct => NativeQaDisplay.IsProduct("Host");
+    internal static bool IsGuestProduct => NativeQaDisplay.IsProduct("Guest");
     // Legacy low-level probes still submit directly to ReplicaLink. Original
     // gameplay UI now owns independent ids/results in NativeWorld instead.
     private static bool QaWaiting(ReplicaLink link)=>link.Waiting || NativeWorld.Guest?.HasUiRequests==true;
@@ -30,13 +30,6 @@ internal sealed partial class NativeBackgroundQa
     private static ushort QaLatestResult(ReplicaLink link) => NativeWorld.Guest?.LastGestureCompletion > QaCompleted(link)
         ? NativeWorld.Guest.LastGestureResult : QaResult(link);
 
-    private static bool IsProduct(string role)
-    {
-        string product = Application.productName;
-        return product == "Probably Stolen Coop QA " + role ||
-            System.Text.RegularExpressions.Regex.IsMatch(product,
-                "^Probably Stolen Coop Regression[A-Za-z0-9-]* " + role + "$");
-    }
     private readonly bool host;
     private int profileCheckpointSlot = -1;
     internal static bool SynchronizationProfile { get; private set; }
@@ -120,6 +113,12 @@ internal sealed partial class NativeBackgroundQa
         var runner = new NativeBackgroundQa(host,seconds);
         SynchronizationProfile=Array.IndexOf(args,"--probably-coop-qa-join-sync")>=0;
 #if PROBABLY_COOP_GRID_QA
+        int recovery = Array.IndexOf(args, "--probably-coop-qa-settlement-recovery");
+        if (recovery >= 0 && (recovery + 1 >= args.Length || !int.TryParse(args[recovery + 1], out runner.settlementRecoverySlot) ||
+            runner.settlementRecoverySlot < 0 || !runner.saveRoundTrip))
+            throw new ArgumentException("Settlement recovery requires a specific isolated QA checkpoint and save verification");
+        if (runner.travelRecovery && (runner.settlementRecoverySlot < 0 || runner.settlementAfterRotation))
+            throw new ArgumentException("Travel recovery requires the isolated checkpoint workflow with its own fault");
         if(host && SynchronizationProfile && Array.IndexOf(args,"--probably-coop-qa-fail-first-sync")>=0)
             failFirstSynchronization=1;
         if (runner.localTraitsQa) AudioListener.volume = 0f;
@@ -238,6 +237,7 @@ internal sealed partial class NativeBackgroundQa
             if (localTraitsQa) { TickLocalTraits(room, shop, inMenu, now); return; }
             if (soloImportQa) { TickSoloImport(room, panel, inMenu); return; }
             if (pairedOpeningQa) { TickPairedOpening(room, panel, shop, inMenu, now); return; }
+            if (TickSettlementRecovery(room, panel, shop, inMenu, now)) return;
 #endif
             if(VerifyGuestRoomExit(room,inMenu,now)) return;
             if(waterMerchantQa) { TickWaterMerchant(room,shop,inMenu,now); return; }
@@ -247,7 +247,11 @@ internal sealed partial class NativeBackgroundQa
                 if (!loaded && inMenu && room.IsHost)
                 {
                     bool profile=profileCheckpointSlot>=0;
-                    var checkpoints = CoopRun.ListCheckpoints(onlySlot:profile ? profileCheckpointSlot : (int?)null);
+                    int? requestedSlot = profile ? profileCheckpointSlot : (int?)null;
+#if PROBABLY_COOP_GRID_QA
+                    if (settlementRecoverySlot >= 0) requestedSlot = settlementRecoverySlot;
+#endif
+                    var checkpoints = CoopRun.ListCheckpoints(onlySlot:requestedSlot);
                     if(!freshRun && !profile) checkpoints=checkpoints.Where(CoopRun.CanResume).ToList();
                     if(actorRestoreOnly) checkpoints=new List<CoopRun.Checkpoint> { SelectActorReloadCheckpoint(checkpoints) };
                     if(!freshRun)
@@ -751,8 +755,14 @@ internal sealed partial class NativeBackgroundQa
         ModHelper.WriteModDataFileText("probably_coop", "qa-results.txt", string.Join("\n", evidence));
     }
 
+    private bool profileRoomWritten;
     private void CheckSynchronizationStock(RoomSelector room,bool authority)
     {
+        if(authority && !profileRoomWritten && room.IsHost)
+        {
+            ModHelper.WriteModDataFileText("probably_coop","qa-room.txt",room.Code);
+            profileRoomWritten=true;
+        }
         if(room.Session?.State!=LinkState.Connected || room.Session.Native.FullRevision==0)
         { profileReadyAt=0; return; }
         if(profileReadyAt!=0) return;

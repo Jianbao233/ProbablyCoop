@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using Newtonsoft.Json.Linq;
 using ProbablyCoop.Core;
@@ -12,6 +14,8 @@ namespace ProbablyCoop;
 internal sealed class NativeActorRun : IDisposable
 {
     internal enum Slot : byte { Host, Partner }
+
+    private const string PartnerOutingDayKey = "probably_coop.partner_outing_day";
     private sealed class Invocation
     {
         internal readonly Slot Actor;
@@ -57,6 +61,7 @@ internal sealed class NativeActorRun : IDisposable
         nativeRunIdentity = existingStore.runID;
         Run = run;
         Partner = (partner ?? throw new ArgumentNullException(nameof(partner))).Clone();
+        ReadPartnerOutingDay(); // Reject an invalid history before activating the run.
         activities = new ActivityScope<Invocation>(invocation => Enter(invocation.Actor));
     }
 
@@ -78,6 +83,57 @@ internal sealed class NativeActorRun : IDisposable
         var binding = new Binding(this, actor, current);
         current = binding;
         return binding;
+    }
+
+    internal int OutingDay(Slot actor)
+    {
+        CheckActive();
+        return actor switch
+        {
+            Slot.Host => store.lastAfterhourOutingDay,
+            Slot.Partner => ReadPartnerOutingDay(),
+            _ => throw new ArgumentOutOfRangeException(nameof(actor))
+        };
+    }
+
+    internal void RecordOuting(Slot actor, int day)
+    {
+        CheckActive();
+        if (day < 0 || day > int.MaxValue - 3) throw new ArgumentOutOfRangeException(nameof(day));
+        if (actor is not (Slot.Host or Slot.Partner)) throw new ArgumentOutOfRangeException(nameof(actor));
+        var data = store.modData ??= new Dictionary<string, string>();
+        // Legacy saves derived both histories from the one native outing day.
+        // Save that baseline before a departure can advance only the Host.
+        if (actor == Slot.Partner || !data.ContainsKey(PartnerOutingDayKey))
+            data[PartnerOutingDayKey] = (actor == Slot.Partner ? day : store.lastAfterhourOutingDay)
+                .ToString(CultureInfo.InvariantCulture);
+        if (actor == Slot.Host) store.lastAfterhourOutingDay = day;
+        (actor == Slot.Host ? store.healthData : Partner.healthData).wentToAfterhoursLastNight = true;
+    }
+
+    internal bool HasLateOpeningPenalty()
+    {
+        CheckActive();
+        return CausesLateOpening(store.healthData, store.startingPerks) ||
+            CausesLateOpening(Partner.healthData, Partner.startingPerks);
+    }
+
+    internal static bool CausesLateOpening(HealthData health, List<StartingPerk> perks)
+    {
+        if (!health.wentToAfterhoursLastNight) return false;
+        foreach (var perk in perks)
+            if (perk.id == "short_sleeper") return false;
+        return true;
+    }
+
+    private int ReadPartnerOutingDay()
+    {
+        if (store.modData == null || !store.modData.TryGetValue(PartnerOutingDayKey, out string value))
+            return store.lastAfterhourOutingDay;
+        if (!int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int day) ||
+            day < -1 || day > int.MaxValue - 3)
+            throw new InvalidDataException("Invalid cooperative partner outing day.");
+        return day;
     }
 
     internal void Execute(Slot actor, Action action)

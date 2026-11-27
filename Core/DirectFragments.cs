@@ -9,6 +9,8 @@ internal sealed class DirectFragments
     internal const byte Marker = 3;
     internal const int BodyOffset = 28;
     internal const int ChunkSize = 1000;
+    internal const double AssemblyLifetime = 2;
+    private const double ReplayInterval = 0.1;
     private readonly Assembly[] pending = new Assembly[8];
 
     internal static int Count(int length) => (length + ChunkSize - 1) / ChunkSize;
@@ -62,14 +64,27 @@ internal sealed class DirectFragments
         }
         if (entry == null)
         {
-            entry = new Assembly(sequence, length, now + 2);
+            entry = new Assembly(sequence, length, now + AssemblyLifetime);
             pending[available >= 0 ? available : completed >= 0 ? completed : oldest] = entry;
         }
         int bit = 1 << index;
-        if (entry.Data.Length != length || (entry.Mask & bit) != 0) return null;
-        datagram.Slice(BodyOffset).CopyTo(entry.Data.AsSpan(index * ChunkSize));
+        if (entry.Data.Length != length) return null;
+        var fragment = datagram.Slice(BodyOffset);
+        if ((entry.Mask & bit) != 0)
+        {
+            // The snapshot layer can repeat an ACK for an already received
+            // chunk. Do not wait for the assembly to expire if the ACK was lost.
+            if (index != 0 || !entry.Replayable || now < entry.NextReplay ||
+                !fragment.SequenceEqual(entry.Data.AsSpan(0, fragment.Length))) return null;
+            entry.NextReplay = now + ReplayInterval;
+            return entry.Data;
+        }
+        fragment.CopyTo(entry.Data.AsSpan(index * ChunkSize));
         entry.Mask |= bit;
-        return entry.Complete ? entry.Data : null;
+        if (!entry.Complete) return null;
+        entry.Replayable = Wire.NativeChunkIndex(entry.Data) >= 0;
+        entry.NextReplay = now + ReplayInterval;
+        return entry.Data;
     }
 
     internal void Reset() => Array.Clear(pending, 0, pending.Length);
@@ -80,6 +95,8 @@ internal sealed class DirectFragments
         internal readonly byte[] Data;
         internal readonly double Expires;
         internal int Mask;
+        internal bool Replayable;
+        internal double NextReplay;
         internal bool Complete => Mask == (1 << Count(Data.Length)) - 1;
 
         internal Assembly(ulong sequence, int length, double expires)

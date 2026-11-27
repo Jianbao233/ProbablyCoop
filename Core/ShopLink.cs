@@ -9,6 +9,7 @@ internal sealed class ShopLink
     private readonly Func<Kind, ulong, ulong, ushort, byte[], bool> send;
     private IShopAuthority authority;
     private byte[] lastCapture;
+    private byte[] outboundView;
     private ulong lastCommand;
     private ShopResult lastCommandResult;
     private ulong pendingCommand;
@@ -42,7 +43,7 @@ internal sealed class ShopLink
     internal void Reset()
     {
         Revision = lastCommand = pendingCommand = 0;
-        pendingEntity = lastCapture = null;
+        pendingEntity = lastCapture = outboundView = null;
         Result = ShopResult.None;
         lastCommandResult = ShopResult.None;
         ready = 0;
@@ -151,6 +152,7 @@ internal sealed class ShopLink
             if (View.Phase != ShopDay.Ready || entity != 0) return ShopResult.Unavailable;
             ready ^= (byte)(local ? 1 : 2);
             View.ReadyMask = ready;
+            outboundView = null;
             Revision++;
             return ShopResult.Applied;
         }
@@ -163,7 +165,11 @@ internal sealed class ShopLink
         if (result == ShopResult.Applied)
         {
             ready = 0;
-            View.ReadyMask = 0;
+            if (View.ReadyMask != 0)
+            {
+                View.ReadyMask = 0;
+                outboundView = null;
+            }
             Revision++;
         }
         Refresh();
@@ -187,6 +193,9 @@ internal sealed class ShopLink
     {
         if (lastCapture != null && lastCapture.AsSpan().SequenceEqual(bytes)) return false;
         lastCapture = bytes;
+        // Capture and retransmission use the same immutable bytes. A local
+        // readiness change invalidates only the pending outbound payload.
+        outboundView = bytes;
         acknowledged = false;
         nextPublish = 0;
         ready = 0;
@@ -204,6 +213,7 @@ internal sealed class ShopLink
     private bool SendView()
     {
         acknowledged = false;
-        return send(Kind.ShopState, lastCommand, Revision, (ushort)lastCommandResult, ShopProtocol.Encode(View));
+        return send(Kind.ShopState, lastCommand, Revision, (ushort)lastCommandResult,
+            outboundView ??= ShopProtocol.Encode(View));
     }
 }

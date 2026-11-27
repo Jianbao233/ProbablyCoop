@@ -42,11 +42,12 @@ internal sealed partial class NativeWorld
     private JObject CaptureTargetQueries()
     {
         var queries=new JObject();
-        if(UnityEngine.Time.realtimeSinceStartupAsDouble>=viewsExpiry) return queries;
-        var targets=model.Objects.Where(p=>p.Value is GameItem i && i.parentInventory!=null).ToArray();
+        if(remoteTools.Count==0 || UnityEngine.Time.realtimeSinceStartupAsDouble>=viewsExpiry) return queries;
+        KeyValuePair<uint, object>[] targets=null;
         foreach(uint id in remoteTools.Take(4))
         {
             if(!model.Objects.TryGetValue(id,out var obj) || obj is not GameItem source || source.parentInventory==null) continue;
+            targets ??= model.Objects.Where(p=>p.Value is GameItem i && i.parentInventory!=null).ToArray();
             var pairs=new JObject();
             foreach(var target in targets)
             {

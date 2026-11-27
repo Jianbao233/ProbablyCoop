@@ -62,6 +62,7 @@ internal static class ReplicaLinkTests
         CheckImmediateRetry();
         CheckTooltipOrdering();
         CheckLostChunkAndAck();
+        CheckFallbackSkipsReceivedPrefix();
         CheckSnapshotReceipt();
         CheckPinnedCheckpoint();
         Console.WriteLine("PASS replica transfer: bounded chunks, loss/reorder/duplicates, atomic apply, command dedup, epoch reset");
@@ -164,6 +165,43 @@ internal static class ReplicaLinkTests
         if(gate.Renew(.5,false) || gate.Renew(.7,true) || !gate.Renew(.71,false) ||
             gate.Accepts(back,10) || !gate.Accepts(gate.Interest,10) || gate.Renew(.75,false))
             throw new Exception("unanswered hover did not renew once at the next eligible interval");
+    }
+
+    private static void CheckFallbackSkipsReceivedPrefix()
+    {
+        var outgoing = new List<Packet>();
+        var replies = new List<Packet>();
+        var host = new ReplicaLink(true, (k,s,r,v,p) => { outgoing.Add(new Packet(k, serial:s, revision:r, value:v, payload:p)); return true; });
+        var guest = new ReplicaLink(false, (k,s,r,v,p) => { replies.Add(new Packet(k, serial:s, revision:r, value:v, payload:p)); return true; });
+        var snapshot = new byte[ReplicaLink.ChunkSize * 5 + 21];
+        new Random(193).NextBytes(snapshot);
+        host.Publish(snapshot);
+        host.Tick(0,true);
+        host.Tick(0.025,true);
+        if (!outgoing.Select(packet => packet.Value).SequenceEqual(new ushort[] { 0,1,2,3,4,5 }))
+            throw new Exception("unexpected baseline send order");
+        foreach (var packet in outgoing.Take(3)) guest.Receive(packet);
+        guest.Tick(0.05,true);
+        guest.Tick(0.18,true);
+        host.Receive(replies.Single());
+        outgoing.Clear();
+        host.Tick(0.2,true);
+        if (outgoing.Count != 1 || outgoing[0].Value != 3)
+            throw new Exception("the fast retry did not target the original gap");
+        outgoing.Clear();
+        host.Tick(1.05,true);
+        if (!outgoing.Select(packet => packet.Value).SequenceEqual(new ushort[] { 3,4,5 }))
+            throw new Exception("the first fallback replayed the guest's confirmed prefix");
+        guest.Reset();
+        outgoing.Clear();
+        host.Tick(2.06,true);
+        host.Tick(2.09,true);
+        if (!outgoing.Select(packet => packet.Value).SequenceEqual(new ushort[] { 0,1,2,3,4,5 }))
+            throw new Exception("the second fallback did not restore a full page after progress was lost");
+        foreach (var packet in outgoing) guest.Receive(packet);
+        if (guest.State?.SequenceEqual(snapshot) != true)
+            throw new Exception("the bounded full fallback did not recover an exact snapshot");
+        Console.WriteLine("PASS bounded snapshot fallback: retry skips the three confirmed chunks once, full retry still recovers discarded data");
     }
     private static void CheckImmediateRetry()
     {

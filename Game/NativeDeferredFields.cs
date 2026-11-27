@@ -708,7 +708,11 @@ internal sealed class NativeDeferredFields
                 {
                     uint id=(uint)row.Target["entity"];
                     if(ConfirmedRecords.Contains(id) || row.Target.Count==1) continue;
-                    if(basis.MatchesRecord(id,row.Target,lookup,inlineBorrowed)) ConfirmedRecords.Add(id);
+                    if(basis.MatchesRecord(id,row.Target,lookup,inlineBorrowed,out bool matchesTopLevel))
+                    {
+                        ConfirmedRecords.Add(id);
+                        if(incremental && matchesTopLevel) (verified??=new HashSet<JToken>(lookup.Comparer)).Add(row.Target);
+                    }
                     else if(AuditedRecords.Contains(id)) UntrackedRecords.Add(id);
                 }
             foreach(var block in blocks)
@@ -761,7 +765,7 @@ internal sealed class NativeDeferredFields
                     finally { if(!published) foreach(var entry in reused) entry.Row["data"]=entry.Data; }
                 }
                 if(verified!=null && auditBasis==null)
-                    foreach(var row in itemRows) if(verified.Contains(row.Target)) row.Assemble();
+                    foreach(var row in itemRows) if(row.Target.Count==1 && verified.Contains(row.Target)) row.Assemble();
             }
             RestoreBorrowed();
             // The page format requires contained records to precede owners.

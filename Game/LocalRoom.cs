@@ -21,6 +21,7 @@ internal sealed class LocalRoom : ICoopRoom
     public bool CanApprove => IsHost && Session.JoinPending;
     public bool AcceptingJoins => IsHost && Session.AcceptingJoins;
     public string Code => link?.Code ?? "";
+    internal string GuestMappedAddress { get; private set; }
     internal bool IsLoopback => link != null && !lan;
     internal IPEndPoint Ipv4HostEndpoint => IsHost && lan ? link.LocalEndpoint : null;
     public string Status { get; private set; } = "local_idle";
@@ -95,6 +96,7 @@ internal sealed class LocalRoom : ICoopRoom
         }
         guest = code != null;
         lan = link.Code.StartsWith("PSI-", StringComparison.Ordinal);
+        GuestMappedAddress = guest && lan ? mappedEndpoint?.ToString() : null;
         Session.RemoteCursor += ForwardCursor;
         Detail = "";
         Status = guest ? "handshake" : lan ? "lan_waiting" : "local_waiting";
@@ -147,6 +149,7 @@ internal sealed class LocalRoom : ICoopRoom
             link.Dispose();
             link = null;
         }
+        GuestMappedAddress = null;
         Status = status == "idle" ? "local_idle" : status;
         Detail = "";
     }

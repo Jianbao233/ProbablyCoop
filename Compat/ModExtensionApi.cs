@@ -12,9 +12,45 @@ public static class CoopExtensionApi
     public const string CustomerAppearanceChannel = "probably_coop:customer-appearance-v1";
     /// <summary>Optional game-local Func&lt;GameItem, bool&gt; service for an owned mod item's Activate action.</summary>
     public const string LocalItemActivationService = "probably-coop-local-item-activation-v1";
+    /// <summary>Game-local IReadOnlyCollection&lt;CoopOpeningCareer&gt; service for a mod's native starting scenarios.</summary>
+    public const string OpeningCareersService = "probably-coop-opening-careers-v1";
+    /// <summary>Game-local IReadOnlyDictionary&lt;string, CoopOpeningPerkScope&gt; for native mod perks.</summary>
+    public const string OpeningPerksService = "probably-coop-opening-perks-v1";
     public const int MaximumActionBytes = 1024;
     public const int MaximumStateBytes = 4096;
 }
+
+/// <summary>Declares that a native mod scenario can share ProbablyCoop's opening with another career.</summary>
+public sealed class CoopOpeningCareer
+{
+    public string Id { get; }
+    /// <summary>Exact net cash charged by this scenario's synchronous native onStart callback.</summary>
+    public int CashCost { get; }
+    /// <summary>Career IDs that cannot share the shop with this career.</summary>
+    public IReadOnlyList<string> Conflicts { get; }
+
+    public CoopOpeningCareer(string id, int cashCost, IEnumerable<string> conflicts = null)
+    {
+        if (!ValidId(id)) throw new ArgumentException("Invalid career ID.", nameof(id));
+        if (cashCost is < -1_000_000 or > 1_000_000) throw new ArgumentOutOfRangeException(nameof(cashCost));
+        var ids = (conflicts ?? Array.Empty<string>()).Take(33).ToArray();
+        if (ids.Length > 32 || ids.Any(value => !ValidId(value) || value == id) ||
+            ids.Distinct(StringComparer.Ordinal).Count() != ids.Length)
+            throw new ArgumentException("Invalid or duplicate incompatible career IDs.", nameof(conflicts));
+        Id = id;
+        CashCost = cashCost;
+        Conflicts = Array.AsReadOnly(ids);
+    }
+
+    internal bool ConflictsWith(CoopOpeningCareer other) =>
+        Conflicts.Contains(other.Id, StringComparer.Ordinal) || other.Conflicts.Contains(Id, StringComparer.Ordinal);
+
+    internal static bool ValidId(string value) => value?.Length is >= 1 and <= 128 &&
+        value.All(c => c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_' or '.');
+}
+
+/// <summary>Choose whether the game's active-perk query follows one character or the shop.</summary>
+public enum CoopOpeningPerkScope { Personal, SharedShop }
 
 /// <summary>A guest-local display event. It does not submit an action or alter the host.</summary>
 public sealed class CoopCustomerAppearance

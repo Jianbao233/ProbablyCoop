@@ -13,7 +13,10 @@ namespace ProbablyCoop;
 // scope spanning a yield. The native owner supplies its actual lifetime guard.
 internal sealed class NativeActorActivities : IDisposable
 {
+    internal const string JointTravel = "joint-travel";
+
     private readonly NativeActorRun run;
+    private readonly Func<NativeActorRun.Slot, IDisposable> enterSite;
     private readonly int thread = Environment.CurrentManagedThreadId;
     private readonly Dictionary<Key, Lease> active = new Dictionary<Key, Lease>();
     private uint nextId;
@@ -35,7 +38,11 @@ internal sealed class NativeActorActivities : IDisposable
     }
     internal Lease Current => current;
 
-    internal NativeActorActivities(NativeActorRun run) => this.run = run ?? throw new ArgumentNullException(nameof(run));
+    internal NativeActorActivities(NativeActorRun run, Func<NativeActorRun.Slot, IDisposable> enterSite = null)
+    {
+        this.run = run ?? throw new ArgumentNullException(nameof(run));
+        this.enterSite = enterSite;
+    }
 
     internal Lease Begin(object source, string channel, Func<bool> alive, bool blocksCommit = false) =>
         Begin(source, channel, run.CurrentActor, alive, blocksCommit);
@@ -70,6 +77,12 @@ internal sealed class NativeActorActivities : IDisposable
         CheckThread();
         foreach (var lease in active.Values.Where(value => ReferenceEquals(value.Source, source)).ToArray()) lease.Dispose();
     }
+    internal void RetireActorScene(NativeActorRun.Slot actor)
+    {
+        CheckThread();
+        foreach (var lease in active.Values.Where(value => value.Actor == actor).ToArray()) lease.Dispose();
+    }
+
     internal void RetireScene()
     {
         CheckThread();
@@ -108,6 +121,7 @@ internal sealed class NativeActorActivities : IDisposable
         internal readonly NativeActorRun.Slot Actor;
         internal readonly bool BlocksCommit;
         internal object Source => key.Source;
+        internal bool IsJointTravel => key.Channel == JointTravel;
         internal bool IsDialogueConsequence => key.Channel == "dialogue-end";
         internal bool IsConsequenceContinuation => key.Channel == "consequence-continuation";
         internal bool HasScheduledContinuation { get; private set; }
@@ -126,7 +140,8 @@ internal sealed class NativeActorActivities : IDisposable
                     // Lifetimes can query personal carry/permissions. A Host
                     // checkpoint or another actor's Begin must not evaluate a
                     // Partner choice against Host inventory permissions.
-                    using (owner.run.Enter(Actor)) valid = alive();
+                    using (owner.run.Enter(Actor))
+                    using (owner.enterSite?.Invoke(Actor)) valid = alive();
                 }
                 finally { checkingAlive = false; }
                 if (valid && !retired && !owner.disposed) return true;
@@ -165,6 +180,22 @@ internal sealed class NativeActorActivities : IDisposable
                 finally { child.Dispose(); }
             });
         }
+        internal Action WrapTravelTransition(Action callback)
+        {
+            if (callback == null) return null;
+            var invoke = Capture(callback);
+            return () =>
+            {
+                try { invoke(); }
+                catch (Exception error)
+                {
+                    var session = NativeActorSession.Current;
+                    if (session != null && ReferenceEquals(session.Run, owner.run)) session.MarkTravelTransitionFault(error);
+                    throw;
+                }
+            };
+        }
+
         internal Action<T> Wrap<T>(Action<T> callback)
         {
             if (callback == null) return null;
@@ -185,7 +216,11 @@ internal sealed class NativeActorActivities : IDisposable
             owner.CheckThread();
             if (callback == null) throw new ArgumentNullException(nameof(callback));
             if (retired || owner.disposed) return () => { owner.CheckThread(); return false; };
-            var call = owner.run.Capture(token, callback);
+            var call = owner.run.Capture(token, () =>
+            {
+                using var site = owner.enterSite?.Invoke(Actor);
+                callback();
+            });
             return () =>
             {
                 if (!IsAlive) return false;
@@ -206,24 +241,32 @@ internal sealed class NativeActorActivities : IDisposable
         {
             if (!IsAlive) return null;
             var scope = owner.run.Enter(Actor);
+            IDisposable site;
+            try { site = owner.enterSite?.Invoke(Actor); }
+            catch { scope.Dispose(); throw; }
             var previous = owner.current;
             owner.current = this; owner.executing++; depth++;
-            return new NativeBinding(this, scope, previous);
+            return new NativeBinding(this, scope, site, previous);
         }
         private sealed class NativeBinding : IDisposable
         {
             private Lease lease;
-            private readonly IDisposable scope;
+            private readonly IDisposable scope, site;
             private readonly Lease previous;
-            internal NativeBinding(Lease lease, IDisposable scope, Lease previous) { this.lease = lease; this.scope = scope; this.previous = previous; }
+            internal NativeBinding(Lease lease, IDisposable scope, IDisposable site, Lease previous)
+            { this.lease = lease; this.scope = scope; this.site = site; this.previous = previous; }
             public void Dispose()
             {
                 if (lease == null) return;
                 var value = lease;
-                scope.Dispose();
-                lease = null;
-                value.depth--; value.owner.executing--; value.owner.current = previous;
-                if (value.retired && value.depth == 0) value.Release();
+                try { site?.Dispose(); }
+                finally
+                {
+                    scope.Dispose();
+                    lease = null;
+                    value.depth--; value.owner.executing--; value.owner.current = previous;
+                    if (value.retired && value.depth == 0) value.Release();
+                }
             }
         }
         public void Dispose()
@@ -451,7 +494,10 @@ internal static class NativeActorBlackscreenActions
         var lease = NativeActorSession.Current?.Activities.Current;
         if (lease == null) return;
         bool fork = lease.IsConsequenceContinuation || lease.IsDialogueConsequence && lease.Source is Dialogue line && line.isEndActionExecuted;
-        actionDuringBlack = fork ? lease.ForkOnce(actionDuringBlack) : lease.Wrap(actionDuringBlack);
+        if (lease.IsJointTravel)
+            actionDuringBlack = lease.WrapTravelTransition(actionDuringBlack);
+        else
+            actionDuringBlack = fork ? lease.ForkOnce(actionDuringBlack) : lease.Wrap(actionDuringBlack);
         // Native BlackScreenSequence exits before this callback in the partial
         // sequence, so do not create an unfinishable pending child for it.
         if (playFullSequence) actionAfterBlack = fork ? lease.ForkOnce(actionAfterBlack) : lease.Wrap(actionAfterBlack);

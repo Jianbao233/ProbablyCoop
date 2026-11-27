@@ -14,6 +14,10 @@ internal static class OperationContextTests
         ulong nextDay=context.Observe(7,1,"shop",false);
         if(new[]{first,departed,arrived,returned,closed,nextDay}.Distinct().Count()!=6)
             throw new Exception("day/phase/location ABA reused an old command generation");
-        Console.WriteLine("PASS operation context: stable pending proofs, departure/arrival, return-location ABA, store phase and next day");
+        ulong visit = context.Observe(7,1,"shop",false,currentVisit: 4);
+        if (context.Observe(7,1,"shop",false,currentVisit: 4) != visit ||
+            context.Observe(7,1,"shop",false,currentVisit: 6) == visit)
+            throw new Exception("an unobserved change of visit reused the previous command generation");
+        Console.WriteLine("PASS operation context: stable proofs, unobserved visit changes, return-location ABA, store phase and next day");
     }
 }

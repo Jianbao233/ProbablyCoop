@@ -13,6 +13,12 @@ namespace ProbablyCoop;
 internal sealed partial class NativeBackgroundQa
 {
     private readonly bool pairedOpeningQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-paired-opening") >= 0;
+    private readonly bool modOpeningQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-mod-opening") >= 0;
+    private readonly bool mentoredOpeningQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-mentored-opening") >= 0;
+    private const string ModCareerId = "cooperative_brewer_fixture";
+    private const string ModCareerItem = "Co-op brewer fixture";
+    private const string ModPersonalPerk = "coop_probe_personal_perk";
+    private const string ModSharedPerk = "coop_probe_shared_perk";
     private readonly bool survivorShotQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-survivor-shot") >= 0;
     private readonly bool fatalAugShotQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-fatal-aug-shot") >= 0;
     private static readonly bool WithholdOfficerDepartureCue =
@@ -21,14 +27,27 @@ internal sealed partial class NativeBackgroundQa
     private static readonly bool SharedFieldAudioQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-field-audio") >= 0;
     private static int guestDoorSounds;
     private readonly bool openingRentQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-opening-rent") >= 0;
+    private readonly bool openingSentinelQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-opening-sentinel") >= 0;
+    private readonly bool openingCommissaryQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-opening-commissary-ban") >= 0;
     private readonly bool labelLocaleQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-label-locale") >= 0;
     private readonly bool reverseOpeningQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-reverse-opening") >= 0;
     private readonly bool fenceOpeningQa = Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-fence-opening") >= 0;
-    private NewGameData.StartType PairedHostCareer => openingRentQa ? NewGameData.StartType.GUNSMITH :
+    private NewGameData.StartType PairedHostCareer => mentoredOpeningQa
+        ? reverseOpeningQa ? NewGameData.StartType.WATER_MERCHANT : NewGameData.StartType.APPRENTICE
+        : openingRentQa ? NewGameData.StartType.GUNSMITH :
         fenceOpeningQa ? NewGameData.StartType.FENCE : reverseOpeningQa ? NewGameData.StartType.DRUG_DEALER : NewGameData.StartType.WATER_MERCHANT;
-    private NewGameData.StartType PairedPartnerCareer => openingRentQa ? NewGameData.StartType.AQUAFARMER :
+    private NewGameData.StartType PairedPartnerCareer => mentoredOpeningQa
+        ? reverseOpeningQa ? NewGameData.StartType.APPRENTICE : NewGameData.StartType.WATER_MERCHANT
+        : openingRentQa ? NewGameData.StartType.AQUAFARMER :
         fenceOpeningQa ? NewGameData.StartType.GUNSMITH : reverseOpeningQa ? NewGameData.StartType.WATER_MERCHANT : NewGameData.StartType.DRUG_DEALER;
+    private string PairedHostCareerId => modOpeningQa
+        ? reverseOpeningQa ? ModCareerId : "water_merchant" : StartingScenario.GetByStartType(PairedHostCareer).id;
+    private string PairedPartnerCareerId => modOpeningQa
+        ? reverseOpeningQa ? "water_merchant" : ModCareerId : StartingScenario.GetByStartType(PairedPartnerCareer).id;
     private int pairedStep, pairedTravelStep, securityFrames;
+    private Guid firstOpeningDraft;
+    private string openingJoinCopy;
+    private double openingRejoinAt;
     private int rentStep;
     private bool labelLocaleChecked, labelLocaleOpened;
     private GameItem labelLocaleWater, labelLocaleTool;
@@ -48,7 +67,13 @@ internal sealed partial class NativeBackgroundQa
 
     private void TickPairedOpening(RoomSelector room, CoopPanel panel, NativeShop shop, bool inMenu, double now)
     {
-        Require(!Application.isBatchMode && now - started < 130, "paired opening or security movement timed out");
+        Require(!Application.isBatchMode && now - started < (independentReconnectQa ? 180 : 130),
+            "paired opening or security movement timed out");
+        if (verifyOpeningRestartQa)
+        {
+            TickRestoredOpening(room, panel, shop, inMenu);
+            return;
+        }
         var lobby = panel.QaOpeningLobby;
         if (host && pairedStep == 0 && inMenu && room.IsHost)
         {
@@ -75,19 +100,36 @@ internal sealed partial class NativeBackgroundQa
                 return;
             }
         }
-        if (room.Session?.State != LinkState.Connected) return;
+        if (!host && NativeJoinWizardQa.OpeningHandoff && inMenu && pairedStep == 5)
+        {
+            if (now < openingRejoinAt) return;
+            panel.QaRejoinOpening(openingJoinCopy);
+            pairedStep = 6;
+            return;
+        }
+        if (room.Session?.State != LinkState.Connected)
+        {
+            ObserveIndependentMerchantDisconnect(room, panel, shop);
+            return;
+        }
+        if (!host && independentMerchantResumeQa && NativeWorld.Guest?.Ready == true) pairedStep = 3;
         if (host && pairedStep == 1 && inMenu)
         {
             panel.QaStartPairedOpening();
             var menu = MainMenuUIController.Instance;
             Require(NewGameSpecializationUI.IsOpen, "co-op start did not open the original career window");
-            menu.OnScenarioContinue(StartingScenario.GetByStartType(PairedHostCareer));
+            var career = StartingScenario.Get(PairedHostCareerId);
+            Require(career != null, "missing native career: " + PairedHostCareerId);
+            menu.OnScenarioContinue(career);
             if (menu.confirmPanelUIManager.panel.activeSelf && menu.confirmPanelUIManager.yesAction != null)
                 menu.confirmPanelUIManager.OnYesClick();
             Require(NewGamePerksUI.IsOpen, "co-op start did not open the original host perk window");
             ChooseNativePerk("lucky");
+            if (openingCommissaryQa) ChooseNativePerk("banned_commissary");
             AccessTools.Method(typeof(NewGamePerksUI), "OnContinueClicked").Invoke(null, null);
             Require(NewGameDifficultyUI.IsOpen, "co-op start did not open the original difficulty window");
+            if (mentoredOpeningQa && NewGameData.Instance.skipIntro)
+                AccessTools.Method(typeof(NewGameDifficultyUI), "OnSkipIntroClicked").Invoke(null, null);
             AccessTools.Method(typeof(NewGameDifficultyUI), "OnStartClicked").Invoke(null, null);
             pairedStep = 2;
         }
@@ -96,12 +138,36 @@ internal sealed partial class NativeBackgroundQa
             lobby.QaLaunch();
             pairedStep = 3;
         }
-        if (!host && pairedStep == 0 && lobby.HasGuestDraft)
+        if (!host && lobby.HasGuestDraft && NativeJoinWizardQa.OpeningHandoff && pairedStep == 0)
         {
-            lobby.QaChoosePerks(StartingScenario.GetByStartType(PairedPartnerCareer).id);
+            firstOpeningDraft = lobby.QaDraftId;
+            openingJoinCopy = panel.QaOpenNativeModificationsFromOpening();
+            openingRejoinAt = now + 1;
+            pairedStep = 5;
+            return;
+        }
+        if (!host && lobby.HasGuestDraft && (pairedStep == 0 || pairedStep == 6))
+        {
+            if (pairedStep == 6)
+            {
+                Require(lobby.QaDraftId != firstOpeningDraft && room.Code == openingJoinCopy &&
+                    NewGamePerksUI.IsOpen == false && !PlayerStore.HasInstance,
+                    "the resumed opening reused the old draft or started play before the new choice");
+                Record("PASS opening Mod handoff rejoined the original room",
+                    "native Modifications opened, copied room was retained, host opening issued a fresh guest draft");
+                NativeOffscreenCapture.Capture("qa-opening-mod-rejoined");
+            }
+            lobby.QaChoosePerks(PairedPartnerCareerId);
             Require(NewGamePerksUI.IsOpen, "paired guest perk view did not open");
             var visible = (List<StartingPerk>)AccessTools.Field(typeof(NewGamePerksUI), "sorted").GetValue(null);
             ChooseNativePerk("working_pipes");
+            if (independentShortSleeperQa) ChooseNativePerk("short_sleeper");
+            if (openingSentinelQa) ChooseNativePerk("sentinel");
+            if (modOpeningQa)
+            {
+                ChooseNativePerk(ModPersonalPerk);
+                ChooseNativePerk(ModSharedPerk);
+            }
             if (labelLocaleQa) ChooseNativePerk("maimed");
             AccessTools.Method(typeof(NewGamePerksUI), "OnContinueClicked").Invoke(null, null);
             Record("PASS guest-full-opening-picker", $"native menu contained {visible.Count} perks and submitted starting plumbing");
@@ -109,9 +175,31 @@ internal sealed partial class NativeBackgroundQa
         }
         if (pairedStep < 3 || (host ? shop == null || NativeWorld.Host?.PartnerSetupRequiredForQa != false : NativeWorld.Guest?.Ready != true))
             return;
+        if (openingRestartQa)
+        {
+            CaptureOpeningBeforeRestart();
+            return;
+        }
+        if (independentTravelQa)
+        {
+            if (independentMerchantQa) TickIndependentMerchant(room.Session, shop, now);
+            else if (independentDumpQa) TickIndependentDump(shop, now);
+            else TickIndependentJourney(shop, now);
+            return;
+        }
+        if (modOpeningQa)
+        {
+            CheckRegisteredOpening();
+            return;
+        }
         if (openingRentQa)
         {
             TickOpeningRentQa(now);
+            return;
+        }
+        if (mentoredOpeningQa)
+        {
+            TickMentoredOpening(now);
             return;
         }
         if (pairedStep == 3)
@@ -141,6 +229,7 @@ internal sealed partial class NativeBackgroundQa
                 "two-player start did not isolate saves and create a host checkpoint");
             Require(StartingPerk.IsPerkActive("lucky") == host,
                 "the host's personal starting perk leaked across roles or was not applied");
+            if (openingSentinelQa || openingCommissaryQa) CheckSharedPerkStory();
             if (labelLocaleQa)
             {
                 Require(AfterhourLocation.Get(AfterhourLocation.DUMPING_GROUND).IsDiscovered() == host,
@@ -217,6 +306,33 @@ internal sealed partial class NativeBackgroundQa
             Record("PASS local-security-motion", $"{securityFrames} moving frames on local native path; both officers hidden");
             Finish("PASS guest paired opening and security");
         }
+    }
+
+    private void TickMentoredOpening(double now)
+    {
+        var store = PlayerStore.Instance;
+        var entry = EmporiumEntry.Instance;
+        Require(!store.skipIntro && store.startType == PairedHostCareer && NativeOpening.UsesCareer(store, PairedPartnerCareer) &&
+            store.networkUpgrade["WATER_TRADER"].state == 2 && store.playerCash == 350,
+            "apprentice and water merchant did not keep the normal tutorial, both starting roles, cash and water tech");
+        string[] signs = { "sign_water", "sign_food", "sign_household" };
+        int Count(string id) => entry.GetAllOwnedItems().Where(item => item.identifier == id).Sum(item => item.unitCount);
+        if (host && pairedStep == 3)
+        {
+            Require(!store.isDisplayCaseIntroduced && signs.All(id => Count(id) == 0) && CoopRun.VerifyCheckpoint(store, 1),
+                "the co-op tutorial must start from a clean verified opening without early sign grants");
+            var lesson = StoreClientListStory.CreateMentorDisplayCase().mainDialogue.nextDialogue.nextDialogue;
+            lesson.ExecuteEndAction();
+            lesson.ExecuteEndAction();
+            pairedStep = 4;
+            securityAt = now + 3;
+        }
+        if (!store.isDisplayCaseIntroduced || !host && NativeWorld.Guest.HasPendingWork) return;
+        Require(signs.All(id => Count(id) == 1) && (host || store.saveSlotId == -1),
+            "the native showcase lesson did not give exactly one of each career's signs");
+        if (host && now < securityAt) return;
+        NativeOffscreenCapture.Capture("qa-paired-opening-showcase-lesson");
+        Finish(host ? "PASS mentored paired opening host" : "PASS mentored paired opening guest");
     }
 
     private void TickButcherSurvivor()
@@ -414,6 +530,51 @@ internal sealed partial class NativeBackgroundQa
         }
     }
 
+    private void CheckSharedPerkStory()
+    {
+        var store = PlayerStore.Instance;
+        if (openingCommissaryQa)
+        {
+            Require(store.isStampIntroduced && StartingPerk.IsBannedCommissary() == host &&
+                AfterhourLocation.Get(AfterhourLocation.COMMISSARY).IsDiscovered() == !host,
+                "a personal commissary ban altered the other role's access or removed the shared introduction");
+            if (host)
+            {
+                Require(!StoreClientManager.IsClientBlockedByBannedCommissary(new StoreClient { identifier = "scavStamp" }),
+                    "the host's personal commissary ban still suppressed the shared stamp seller");
+                // Simulate the missing shared flag left by an earlier build
+                // after the original introduction date has already passed.
+                store.isStampIntroduced = false;
+                NativeSharedPerkEvents.RestoreMissedCommissaryIntroduction(NativeActorSession.Current);
+                Require(store.isStampIntroduced, "the cooperative load repair did not restore the missing introduction");
+            }
+            Record("PASS mixed commissary ban", "one shared introduction; only the banned role has no access");
+        }
+        if (!openingSentinelQa) return;
+        Require(HealthData.IsSentinel() == !host && store.isInjectorIntroduced &&
+            EmporiumEntry.Instance.GetAllOwnedItems().Count(item =>
+                item.FindItemFeatureByID("CATEGORY_GENUINE_INJECTOR")?.realCondition?.identifier == "genuineInjector") == 1,
+            "the sentinel effect was copied to the other role or the opening injector was omitted/duplicated");
+        if (host)
+        {
+            var station = StoreStation.Instance;
+            int originalDay = station.dayCounter;
+            try
+            {
+                foreach (int day in new[] { 5, 6, 7, 13 })
+                {
+                    station.dayCounter = day;
+                    var schedule = new StoreClientManager();
+                    schedule.HandleScalperClient();
+                    Require(schedule.clientStack.Count(client => client.identifier == "scalper") == (day % 7 == 6 ? 1 : 0),
+                        "the partner sentinel did not retain the original weekly supplier schedule");
+                }
+            }
+            finally { station.dayCounter = originalDay; }
+        }
+        Record("PASS partner sentinel supply", "one shared injector, original weekly supplier, personal health effect");
+    }
+
     private void CheckPairedCareerSchedule()
     {
         var station = StoreStation.Instance;
@@ -593,6 +754,56 @@ internal sealed partial class NativeBackgroundQa
         Record("PASS opening-rent-grace-payment-buyout", "native grace, duplicate callback, next payment, and buyout all matched the ledger");
         Record("PASS host paired opening and security", "opening rent branch");
         rentStep = 2;
+    }
+
+    private void CheckRegisteredOpening()
+    {
+        var store = PlayerStore.Instance;
+        var stock = EmporiumEntry.Instance.invElement.childItems.Concat(EmporiumEntry.Instance.backInvinvElement.childItems).ToArray();
+        Require(ModHelper.GetStartingScenarioId() == PairedHostCareerId &&
+            ModHelper.IsStartingScenario("water_merchant") && ModHelper.IsStartingScenario(ModCareerId),
+            "the native membership query did not retain both selected careers");
+        Require(stock.Count(item => GeneralHelper.GetCustomName(item) == ModCareerItem) == 1 &&
+            stock.Any(item => item.identifier == "water_jug"), "one custom and one native starting package must be present");
+        Require(EmporiumEntry.IsWaterTapUnlocked() && store.networkUpgrade["WATER_TRADER"].state == 2 &&
+            store.playerCash == 0 && OpeningRent.Describe(store) == (3, 30),
+            "the shared utility, native technology, cash and career installments do not match");
+        Require(host ? CoopRun.VerifyCheckpoint(store, 1) : store.saveSlotId == -1,
+            "the opening did not save exactly one host checkpoint");
+        Require(ModHelper.IsStartingPerkActive(ModPersonalPerk) == !host &&
+            ModHelper.IsStartingPerkActive(ModSharedPerk),
+            "custom perk queries did not distinguish personal and shared choices");
+        var calendar = AdvCalendarUIManager.Instance;
+        NativeWorld.RefreshingCalendar = true;
+        try
+        {
+            calendar.OpenUI();
+            calendar.OnStatusButtonClicked();
+            var shown = calendar.activePerksContainer.GetComponentsInChildren<StartingPerkElement>();
+            Require(shown.Count(row => row.id == ModSharedPerk) == 1 &&
+                shown.Count(row => row.id == "working_pipes") == 1 &&
+                shown.Count(row => row.id == ModPersonalPerk) == (host ? 0 : 1),
+                "the original status panel omitted a shared perk or showed another player's personal perk");
+            NativeOffscreenCapture.Capture("qa-paired-opening-active-perks");
+            Record("PASS paired-opening status perks", "built-in and Mod shop perks each visible once; personal Mod perk stayed with the guest");
+        }
+        finally
+        {
+            calendar.CloseUI();
+            NativeWorld.RefreshingCalendar = false;
+        }
+        if (host)
+        {
+            var session = NativeActorSession.Current;
+            var providers = NativeRoomModManifest.ReadSavedOpeningMods(session.VerifiedCheckpoint.OpeningMods);
+            Require(providers?.ContainsKey("probably_coop_extension_probe") == true,
+                "the opening provider is not present in its verified checkpoint");
+            Require(session.Run.Partner.startingPerks.Any(perk => perk.id == ModPersonalPerk) &&
+                !session.Run.Partner.startingPerks.Any(perk => perk.id == ModSharedPerk) &&
+                NativeActorPartnerSetup.IsComplete(store.modData[NativeActorPartnerSetup.SaveKey], session.Run.Run),
+                "the saved companion selection does not distinguish personal and shared perks");
+        }
+        Finish("PASS registered career and perk paired opening");
     }
 
     private static void ChooseNativePerk(string id)

@@ -46,12 +46,13 @@ internal sealed partial class NativeWorld
     }
     private void TickPartnerHand()
     {
-        using var actorScope=EnterPartnerOperation();
         if(!PartnerHasHand) return;
         double now=HandClock;
         if(partnerLease.Tick(now)) { ClearPartnerRecords(); return; }
         if(now<nextHandCheck) return;
         nextHandCheck=now+0.15;
+        using var actorScope=EnterPartnerOperation();
+        using var site=EnterExpeditionSite(NativeActorRun.Slot.Partner);
         if(partnerLease.Items.All(CanStillHold)) return;
         partnerLease.Release(partnerLease.ActiveSerial,now); ClearPartnerRecords();
     }

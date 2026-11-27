@@ -12,6 +12,7 @@ internal sealed class Ipv4RoomControls
     internal string Address => address.GetString();
     internal string Port => port.GetString();
     internal string Mapping => mapping.GetString();
+    internal void RestoreMapping(string value) => mapping.SetString(value);
     internal bool InputFocused => Focused(address) || Focused(port) || Focused(mapping);
 
     private static bool Focused(CustomUIElement element) => element?.input != null && element.input.isFocused;

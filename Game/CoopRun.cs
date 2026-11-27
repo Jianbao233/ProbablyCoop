@@ -44,6 +44,7 @@ internal static class CoopRun
         internal bool NeedsRecovery;
         internal string RecoveryReason;
         internal bool UsesEffectReplication;
+        internal Dictionary<string, RoomModManifest.Entry> OpeningMods;
         internal Guid Nonce;
         internal string File;
         internal string UnavailableReason;
@@ -52,6 +53,10 @@ internal static class CoopRun
         internal SavePreviewData Preview;
         internal bool PreviewOnly;
         internal bool Historical => File != SaveFiles.Slot(Slot);
+
+        internal bool MatchesVerified(NativeActorCheckpoint.Envelope verified) => verified != null && HasActors &&
+            !PreviewOnly && Slot == verified.Slot && StoredSlot == verified.Slot &&
+            Run == verified.Run && Day == verified.Day && Nonce == verified.Checkpoint;
     }
 
     internal sealed class PreparedResume
@@ -346,6 +351,22 @@ internal static class CoopRun
         return IsRegistered(store) && NativeActorPersistence.VerifyObservedSave(store, day);
     }
 
+    internal static Checkpoint FindVerifiedCheckpoint(NativeActorCheckpoint.Envelope verified)
+    {
+        if (verified == null) return null;
+        if (TryRead(verified.Slot, verified.Run, out var target) && target.MatchesVerified(verified)) return target;
+        try
+        {
+            foreach (var checkpoint in ScanCheckpoints(includeHistory: true, onlySlot: verified.Slot))
+                if (checkpoint?.MatchesVerified(verified) == true) return checkpoint;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            Debug.LogWarning($"[probably_coop] verified cooperative checkpoint could not be located: {error.GetType().Name}");
+        }
+        return null;
+    }
+
     internal static bool CanResume(Checkpoint checkpoint) => ConfirmResume(checkpoint,false,out _);
 
     internal static bool PrepareResume(Checkpoint checkpoint) => PrepareResume(checkpoint, out _);
@@ -355,6 +376,11 @@ internal static class CoopRun
         using var timing = NativePerformance.MeasureCheckpoint("prepare");
         pendingResume=null;
         if (!ConfirmResume(checkpoint,true,out confirmed)) return false;
+        if (NativeRoomModManifest.MissingOpeningMessage(confirmed.OpeningMods) is string missing)
+        {
+            confirmed.UnavailableReason = missing;
+            return false;
+        }
         try { if(confirmed.NeedsRecovery) confirmed=NativeCoopSaveRecovery.Recover(confirmed); }
         catch(Exception error)
         { Debug.LogError("[probably_coop] cooperative recovery failed: "+error); return false; }
@@ -586,6 +612,7 @@ internal static class CoopRun
         var envelope=NativeActorCheckpoint.DecodeReceipt(receipt,result.Run,result.StoredSlot,result.Day);
         if(envelope.PartnerSetup!=null && !NativeActorPartnerSetup.IsComplete(envelope.PartnerSetup,result.Run))
             throw new InvalidDataException("伙伴角色创建记录未通过校验。");
+        result.OpeningMods=NativeRoomModManifest.ReadSavedOpeningMods(receipt.OpeningMods);
         result.Nonce=envelope.Checkpoint;
         SetRecovery(result);
         return envelope;

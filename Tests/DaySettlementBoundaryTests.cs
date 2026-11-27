@@ -43,10 +43,11 @@ internal static class DaySettlementBoundaryTests
             object shop = RuntimeHelpers.GetUninitializedObject(shopType);
             FieldInfo phase = shopType.GetField("phase", Instance);
             FieldInfo settlement = shopType.GetField("settlement", Instance);
-            FieldInfo failed = shopType.GetField("failedMutation", Instance);
+            PropertyInfo failed = shopType.GetProperty("FailedMutation", Instance);
+            PropertyInfo recovery = shopType.GetProperty("RecoveryCandidate", Instance);
             PropertyInfo blocked = shopType.GetProperty("BlocksWorldCommands", Instance);
             PropertyInfo pending = shopType.GetProperty("PendingSettlement", Instance);
-            Require(phase != null && settlement != null && failed != null && blocked != null && pending != null,
+            Require(phase != null && settlement != null && failed != null && recovery != null && blocked != null && pending != null,
                 "compiled NativeShop boundary members exist");
             bool IsBlocked() => (bool)blocked.GetValue(shop);
             void Phase(string value) => phase.SetValue(shop, Enum.Parse(phaseType, value));
@@ -59,9 +60,12 @@ internal static class DaySettlementBoundaryTests
             { Phase(value); Require(!IsBlocked(), value + " without an attempt stays admitted"); }
             foreach (string value in new[] { "Settling", "SaveUnverified", "Ended" })
             { Phase(value); Require(IsBlocked(), value + " freezes world commands"); }
-            Phase("Playing"); failed.SetValue(shop, true);
+            Phase("Playing");
+            object preparationFault = Activator.CreateInstance(failed.PropertyType, Instance, null,
+                new object[] { "DAY-210", "prepare_day", "FixtureException" }, null);
+            failed.SetValue(shop, preparationFault);
             Require(IsBlocked(), "failed native mutation freezes commands independently of phase");
-            failed.SetValue(shop, false);
+            failed.SetValue(shop, null);
 
             object attempt = Attempt(); settlement.SetValue(shop, attempt);
             Require((bool)pending.GetValue(shop) && IsBlocked(), "pending attempt blocks even before presentation catches up");
@@ -75,12 +79,49 @@ internal static class DaySettlementBoundaryTests
             Require((bool)Call(attempt, "TryComplete"), "late matching receipts finish the original attempt");
             Phase("Saved");
             Require(!(bool)pending.GetValue(shop) && !IsBlocked(), "completed attempt and Saved phase unlock together");
+            failed.SetValue(shop, preparationFault);
+            Require(IsBlocked() && !(bool)pending.GetValue(shop) && recovery.GetValue(shop) == null,
+                "preparation failure can expose the verified checkpoint without retrying an earlier successful day");
+            failed.SetValue(shop, null);
 
             attempt = Attempt(); settlement.SetValue(shop, attempt); Phase("SaveUnverified");
             Call(attempt, "ConfirmSave", false);
             Call(attempt, "ConfirmSave", true); Call(attempt, "ConfirmMorning", true);
             Require(!(bool)pending.GetValue(shop) && !(bool)Call(attempt, "TryComplete") && IsBlocked(),
                 "failed attempt cannot revive or reopen world admission");
+
+            var recoveryRequest = Read(shopType.GetMethod("RequestSettlementRecovery", Instance));
+            var ownsSettlement = shopType.GetMethod("OwnsSettlement", Instance);
+            var validSettlement = shopType.GetMethod("HasSettlementContext", Instance);
+            var exactCheckpoint = mod.GetType("ProbablyCoop.CoopRun", true).GetMethod("FindVerifiedCheckpoint", Static);
+            Require(IndexOfCall(recoveryRequest, ownsSettlement) >= 0 &&
+                IndexOfCall(recoveryRequest, validSettlement) < 0 && IndexOfCall(recoveryRequest, exactCheckpoint) >= 0,
+                "recovery checks the original run and attempt even when the current day drifted");
+            Require(IndexOfCall(Read(validSettlement), ownsSettlement) >= 0 &&
+                IndexOfCall(Read(validSettlement), attemptType.GetMethod("AcceptsDay", Instance)) >= 0,
+                "the relaxed recovery boundary cannot admit receipts from another day");
+            var checkpointType = mod.GetType("ProbablyCoop.CoopRun+Checkpoint", true);
+            var envelopeType = mod.GetType("ProbablyCoop.NativeActorCheckpoint+Envelope", true);
+            var verified = RuntimeHelpers.GetUninitializedObject(envelopeType);
+            var checkpoint = RuntimeHelpers.GetUninitializedObject(checkpointType);
+            Guid run = Guid.NewGuid(), nonce = Guid.NewGuid();
+            foreach (var (field, value) in new (string, object)[] { ("Run", run), ("Slot", 5), ("Day", 125), ("Checkpoint", nonce) })
+                envelopeType.GetField(field, Instance).SetValue(verified, value);
+            var matching = new (string Field, object Value, object Mismatch)[] {
+                ("Run", run, Guid.NewGuid()), ("Slot", 5, 6), ("Day", 125, 126), ("Nonce", nonce, Guid.NewGuid()),
+                ("StoredSlot", 5, 6), ("HasActors", true, false), ("PreviewOnly", false, true)
+            };
+            void SetCheckpoint(string field, object value) => checkpointType.GetField(field, Instance).SetValue(checkpoint, value);
+            foreach (var (field, value, _) in matching) SetCheckpoint(field, value);
+            bool MatchCheckpoint(object receipt) => (bool)checkpointType.GetMethod("MatchesVerified", Instance)
+                .Invoke(checkpoint, new[] { receipt });
+            Require(MatchCheckpoint(verified) && !MatchCheckpoint(null), "only a confirmed receipt can select a recovery target");
+            foreach (var (field, value, mismatch) in matching)
+            {
+                SetCheckpoint(field, mismatch);
+                Require(!MatchCheckpoint(verified), "recovery rejects a different " + field);
+                SetCheckpoint(field, value);
+            }
 
             MethodInfo execute = worldType.GetMethod("Execute", Instance, null, new[] { typeof(byte[]) }, null);
             Require(execute != null, "compiled NativeWorld Execute(byte[]) exists");
@@ -121,8 +162,17 @@ internal static class DaySettlementBoundaryTests
                 foreach (MethodBase guardedCall in guardedCalls)
                     Require(IndexOfCall(instructions, guardedCall) > boundary, entry.Name + " gate precedes " + guardedCall.Name);
             }
-            GateBeforeCalls(WorldMethod("TravelRequest"), WorldMethod("ResetActorTrip"), WorldMethod("TravelProof"));
-            GateBeforeCalls(WorldMethod("ActorTravelRequest"), WorldMethod("ResetActorTrip"), WorldMethod("TravelProof"));
+            var travelProof = worldType.GetMethod("TravelProof", Instance, null, Type.EmptyTypes, null);
+            GateBeforeCalls(WorldMethod("TravelRequest"), WorldMethod("ResetActorTrip"), travelProof);
+            GateBeforeCalls(WorldMethod("ActorTravelRequest"), WorldMethod("ResetActorTrip"), travelProof);
+            GateBeforeCalls(WorldMethod("IndependentTravelRequest"), WorldMethod("ObserveTravelPosition"),
+                WorldMethod("DepartIndependent"), WorldMethod("ReturnIndependent"));
+            var start = shopType.GetMethods(Instance).Single(method => method.Name == "StartDay" && method.GetParameters().Length == 2);
+            var startBody = Read(start);
+            Require(startBody.Any(row => Equals(row.Operand, "DAY-210")) &&
+                IndexOfCall(startBody, shopType.GetMethod("FreezeMutation", Instance)) >= 0 &&
+                IndexOfCall(startBody, shopType.GetMethod("FailSettlement", Instance)) >= 0,
+                "native day start records preparation and admitted-settlement failures through their recovery paths");
             GateBeforeCalls(WorldMethod("RunShootingAction"), WorldMethod("CaptureHostHand"), WorldMethod("ChangeShooting"));
             GateBeforeCalls(WorldMethod("CanPickupShooting"), WorldMethod("get_ShootingOwnsCustomer"), WorldMethod("CanUseShootingInput"));
             GateBeforeCalls(worldType.GetProperty("HandBusinessOpen", Instance).GetGetMethod(true), WorldMethod("get_EndingActive"));

@@ -52,10 +52,13 @@ internal sealed partial class NativeWorld
     private long captureReadCount,captureReuseCount;
     private double nextCaptureChangeStats;
 
-    internal bool TracksCaptureSource(object source)=>host && !closed && !capturingChanges && captureChanges.Tracks(source);
+    internal bool TracksCaptureSource(object source)=>host && !closed &&
+        ((!capturingChanges && captureChanges.Tracks(source)) || checkpointPreparation?.Changes.Tracks(source)==true);
     internal void NoticeCaptureChange(object source,bool wake=true)
     {
-        if(!host || closed || capturingChanges) return;
+        if(!host || closed) return;
+        checkpointPreparation?.Changes.Changed(source);
+        if(capturingChanges) return;
         bool observed=captureChanges.Changed(source);
         bool inventory=source is GameInventory && model.IsCaptured(source);
         if(wake && (observed || inventory) && (!InNativeItemTick || inventory)) captureWake=true;
@@ -66,6 +69,9 @@ internal sealed partial class NativeWorld
     private void VerifyStockSlice(double now)
     {
         if(now<nextStockAudit || !denseTooltips || authorityBasis==null) return;
+#if PROBABLY_COOP_GRID_QA
+        using var auditTiming = NativeFrameAttribution.Measure(NativeFrameAttribution.Stage.StockAudit);
+#endif
         nextStockAudit=now+0.04;
         long deadline=System.Diagnostics.Stopwatch.GetTimestamp()+System.Diagnostics.Stopwatch.Frequency/2500;
         int count=Math.Min(24,auditQueue.Count);
@@ -93,6 +99,7 @@ internal sealed partial class NativeWorld
         captureQueryValues=null; captureQueryActors=captureQueryClient=null; captureQueryScene=null;
         capturedItemNames.Clear(); refreshItemNames=true; captureWake=true;
         auditQueue.Clear(); queuedForAudit.Clear(); nextStockAudit=0; externalCaptureWriters=null; capturedViewInterest=null;
+        checkpointPreparation=null; checkpointPreparationDone=false;
     }
     private void BeginChangedCapture(JObject actors,JObject client)
     {

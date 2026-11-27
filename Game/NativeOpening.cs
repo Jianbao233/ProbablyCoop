@@ -22,7 +22,8 @@ internal static class NativeOpening
     }
     private static readonly Lazy<Dictionary<string, StartingPerk>> SharedDefinitions = new(() =>
         NativeActorPartnerSetup.Catalog(fullOpening: true).Values
-            .Where(perk => NativeActorPartnerSetup.Classify(perk.id) == NativeActorPartnerSetup.PerkScope.SharedShop)
+            .Where(perk => string.IsNullOrEmpty(perk.source) &&
+                NativeActorPartnerSetup.Classify(perk.id) == NativeActorPartnerSetup.PerkScope.SharedShop)
             .ToDictionary(perk => perk.id, StringComparer.Ordinal));
     private static CoopOpening pending;
     private static bool careerOnly, mixedBenefits;
@@ -53,9 +54,11 @@ internal static class NativeOpening
     internal static bool UsesCareer(PlayerStore store, NewGameData.StartType career)
     {
         if (store.startType == career) return true;
-        if (Current is { } opening && store.startType == opening.HostScenario.startType && !NativeGuest.Active)
-            return opening.PartnerScenario.startType == career;
-        if (NativeActorSession.Current?.Store != store && !NativeGuest.Active) return false;
+        // A registered onStart temporarily gives the native shop that career's type.
+        if (!NativeGuest.Active && Current is { } opening && PlayerStore.HasInstance && ReferenceEquals(store, PlayerStore.Instance))
+            return opening.HostScenario.startType == career || opening.PartnerScenario.startType == career;
+        if (!NativeGuest.Active && NativeActorSession.Current?.Store != store && NativeActorPersistence.LoadedOpeningStore != store)
+            return false;
         string partnerId;
         if (NativeGuest.Active) partnerId = NativeWorld.Guest?.OpeningCareer;
         else store.modData.TryGetValue(PartnerCareerKey, out partnerId);
@@ -88,9 +91,13 @@ internal static class NativeOpening
         var perks = new Dictionary<string, StartingPerk>(StringComparer.Ordinal);
         foreach (var row in ids)
         {
-            if (row.Type != JTokenType.String || !SharedDefinitions.Value.TryGetValue((string)row, out var perk) ||
-                !perks.TryAdd(perk.id, perk))
-                throw new InvalidDataException("Unknown or duplicate cooperative shop perk.");
+            if (row.Type != JTokenType.String || string.IsNullOrEmpty((string)row))
+                throw new InvalidDataException("Invalid cooperative shop perk ID.");
+            string id = (string)row;
+            if (!SharedDefinitions.Value.TryGetValue(id, out var perk))
+                perk = NativeActorPartnerSetup.FindDeclaredSharedPerk(id);
+            if (perk == null || !perks.TryAdd(id, perk))
+                throw new InvalidDataException("Unknown or duplicate cooperative shop perk: " + id);
         }
         return perks;
     }
@@ -129,7 +136,7 @@ internal static class NativeOpening
             request.startType = opening.PartnerScenario.startType;
             request.startScenarioId = opening.PartnerScenario.id;
             NewGameData.HandleInitialItem();
-            if (!Core.OpeningRentPlan.TryFee(opening.PartnerScenario.id, out int cost) || store.playerCash != cash - cost)
+            if (store.playerCash != checked(cash - opening.Cost(opening.PartnerScenario.id)))
                 throw new InvalidDataException("The partner career charged a different start cost.");
         }
         finally
@@ -137,6 +144,35 @@ internal static class NativeOpening
             request.startType = previousType;
             request.startScenarioId = previousId;
             careerOnly = false;
+        }
+    }
+
+    private static bool ApplyRegisteredCareer()
+    {
+        var opening = Current;
+        if (opening == null) return false;
+        var scenario = careerOnly ? opening.PartnerScenario : opening.HostScenario;
+        if (!scenario.IsMod) return false;
+
+        // The game's normal modded branch catches exceptions and proceeds.
+        // A paired opening must finish both careers before the initial save.
+        var store = PlayerStore.Instance;
+        var oldType = store.startType;
+        string oldId = store.startScenarioId;
+        int expectedCash = checked(store.playerCash - opening.Cost(scenario.id));
+        try
+        {
+            store.startType = scenario.startType;
+            store.startScenarioId = scenario.id;
+            scenario.onStart?.Invoke();
+            if (store.playerCash != expectedCash)
+                throw new InvalidDataException("Career does not match its declared starting cash cost: " + scenario.id);
+            return true;
+        }
+        finally
+        {
+            store.startType = oldType;
+            store.startScenarioId = oldId;
         }
     }
 
@@ -187,18 +223,25 @@ internal static class NativeOpening
 
             var only = AccessTools.Method(typeof(NativeOpening), nameof(CareerOnly));
             var second = AccessTools.Method(typeof(NativeOpening), nameof(ApplySecondCareer));
+            var custom = AccessTools.Method(typeof(NativeOpening), nameof(ApplyRegisteredCareer));
             var returnLabel = il.DefineLabel();
             var careerLabel = il.DefineLabel();
+            var afterCareerLabel = il.DefineLabel();
             var done = code.Last();
             if (done.opcode != OpCodes.Ret) throw new InvalidDataException("Native career return changed.");
             Labels(done).Add(returnLabel);
-            Labels(code[careers]).Add(careerLabel);
+            var startCareer = new CodeInstruction(OpCodes.Call, custom);
+            foreach (object label in Labels(code[careers])) Labels(startCareer).Add(label);
+            Labels(code[careers]).Clear();
+            Labels(startCareer).Add(careerLabel);
             var stopReplay = new CodeInstruction(OpCodes.Call, only);
             foreach (object label in Labels(code[after])) Labels(stopReplay).Add(label);
+            Labels(stopReplay).Add(afterCareerLabel);
             stopReplay.blocks.AddRange(code[after].blocks);
             Labels(code[after]).Clear();
             code[after].blocks.Clear();
             code.InsertRange(after, new[] { stopReplay, new CodeInstruction(OpCodes.Brtrue, returnLabel), new CodeInstruction(OpCodes.Call, second) });
+            code.InsertRange(careers, new[] { startCareer, new CodeInstruction(OpCodes.Brtrue, afterCareerLabel) });
             var skipShared = new CodeInstruction(OpCodes.Call, only);
             foreach (object label in Labels(code[first])) Labels(skipShared).Add(label);
             Labels(code[first]).Clear();
@@ -223,6 +266,16 @@ internal static class NativeOpening
         {
             if (Current is not CoopOpening opening) return;
             var store = PlayerStore.Instance;
+            if (opening.ModProviders.Length != 0)
+            {
+                var packages = NativeRoomModManifest.Local();
+                var required = opening.ModProviders.Select(id => packages.TryGetValue(id, out var mod) &&
+                    RoomModManifest.ExactPackage(mod, mod) ? mod :
+                    throw new InvalidDataException("Required opening Mod is no longer enabled: " + id));
+                var encoded = RoomModManifest.Write(required);
+                RoomModManifest.ReadOpeningPackages(encoded);
+                store.modData[NativeActorCheckpoint.OpeningModsDataKey] = encoded.ToString(Formatting.None);
+            }
             store.modData[PartnerCareerKey] = opening.PartnerScenario.id;
             var shared = opening.PartnerPerks.Where(perk =>
                 NativeActorPartnerSetup.Classify(perk.id) == NativeActorPartnerSetup.PerkScope.SharedShop);
@@ -241,6 +294,21 @@ internal static class NativeOpening
             if (Current != null && item?.unitCount > 0 && item.parentInventory == null &&
                 context == "EmporiumTryAdd: every store inventory is full")
                 throw new InvalidDataException("The two starting packages do not fit in the shop.");
+        }
+    }
+
+    [HarmonyPatch(typeof(ModHelper), nameof(ModHelper.IsStartingScenario))]
+    private static class ScenarioMembership
+    {
+        private static void Postfix(string id, ref bool __result)
+        {
+            if (__result || string.IsNullOrEmpty(id)) return;
+            if (Current is { } opening)
+                __result = opening.HostScenario.id == id || opening.PartnerScenario.id == id;
+            else if ((NativeActorSession.Current?.Store ?? NativeActorPersistence.LoadedOpeningStore) is { } store)
+                __result = PartnerCareer(store) == id;
+            else
+                __result = NativeWorld.Guest?.OpeningCareer == id;
         }
     }
 
@@ -274,6 +342,41 @@ internal static class NativeOpening
         {
             if (!__result) __result = UsesCareer(__instance, CareerByMethod[__originalMethod.Name]);
         }
+    }
+
+    [HarmonyPatch(typeof(StoreClientListStory), nameof(StoreClientListStory.CreateMentorDisplayCase))]
+    private static class MentorDisplayCaseGifts
+    {
+        [HarmonyPrepare] private static bool Prepare() => CanInstallHostHooks;
+
+        private static void Postfix(StoreClient __result)
+        {
+            var store = NativeActorSession.Current?.Store;
+            if (store == null || NativeGuest.Active || store.skipIntro || store.isDisplayCaseIntroduced ||
+                StartingScenario.Get(PartnerCareer(store) ?? "") is not { } partner) return;
+
+            var missing = DisplayCaseSigns(partner.startType).Except(DisplayCaseSigns(store.startType)).ToArray();
+            if (missing.Length == 0) return;
+            // The original third dialogue line gives the selected career's
+            // signs and marks the common lesson complete.
+            var lesson = __result.mainDialogue?.nextDialogue?.nextDialogue;
+            var nativeGift = lesson?.endAction;
+            if (nativeGift == null) return;
+            lesson.endAction = () =>
+            {
+                bool firstLesson = !store.isDisplayCaseIntroduced;
+                nativeGift();
+                if (!firstLesson || !store.isDisplayCaseIntroduced || !ReferenceEquals(NativeActorSession.Current?.Store, store)) return;
+                foreach (string sign in missing) store.AddDirectSellingItemToTable(sign, isOwend: true);
+            };
+        }
+
+        private static string[] DisplayCaseSigns(NewGameData.StartType career) => career switch
+        {
+            NewGameData.StartType.WATER_MERCHANT => new[] { "sign_water" },
+            NewGameData.StartType.SCAV => new[] { "sign_material" },
+            _ => new[] { "sign_food", "sign_household" }
+        };
     }
 
     [HarmonyPatch]

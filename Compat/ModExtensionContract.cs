@@ -21,6 +21,31 @@ internal sealed class ModExtensionJoinException : IOException
     }
 }
 
+internal sealed class ModExtensionProjectionException : IOException
+{
+    internal string ModId { get; }
+
+    internal ModExtensionProjectionException(string modId, Exception error)
+        : base("A cooperative extension failed to apply the host state", error)
+    {
+        ModId = modId;
+    }
+}
+
+internal sealed class ModExtensionActionFailure
+{
+    internal const string Code = "MOD-101";
+    internal string Context { get; }
+
+    internal ModExtensionActionFailure(string modId, string actionId, Exception error)
+    {
+        string errorType = error.GetType().Name;
+        Context = $"mod={SafeToken(modId)} action={SafeToken(actionId)} error={SafeToken(errorType)}";
+    }
+
+    private static string SafeToken(string value) => ModExtensionContract.IsToken(value) ? value : "unknown";
+}
+
 internal sealed class ModExtensionContract
 {
     internal const int MaxExtensions = 16;
@@ -58,6 +83,16 @@ internal sealed class ModExtensionContract
             throw new InvalidDataException("Invalid or too large cooperative extension state: " + Id);
         if(!forceRevision && previous?.Payload==data) return previous;
         return new CoopExtensionState(checked((previous?.Revision ?? 0)+1),data);
+    }
+
+    internal CoopExtensionState VerifyActionResult(CoopExtensionState before, string after, string action, CoopActionResult result)
+    {
+        if (result == CoopActionResult.Applied) return Freeze(before, after, true);
+        if (result is not (CoopActionResult.Rejected or CoopActionResult.Stale or CoopActionResult.Busy))
+            throw new InvalidOperationException($"Cooperative extension {Id} returned an invalid result for {action}.");
+        if (!string.Equals(before.Payload, after, StringComparison.Ordinal))
+            throw new InvalidOperationException($"Cooperative extension {Id} changed shared state for {action} but returned {result}.");
+        return before;
     }
 
     internal JObject Write(CoopExtensionState state) => new JObject {

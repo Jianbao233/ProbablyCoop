@@ -93,14 +93,14 @@ internal sealed partial class NativeWorld
         return true;
     }
 
-    private NativeActorInventory CaptureOwnershipGraph()
+    private NativeActorInventory CaptureOwnershipGraph(Action<GameItem,GameItem,RootKey> visit = null)
     {
         var bindings=PhysicalRoots(true).ToArray();
         var roots=bindings.Select(row=>new NativeActorInventory.RootBinding(row.Key,model.Id(row.Inventory),row.Inventory is GameSlotInventory)).ToArray();
         var rootSet=new HashSet<GameInventory>(bindings.Select(row=>row.Inventory));
         var inventories=new Dictionary<GameInventory,GameItem>();
         var items=new Dictionary<GameItem,GameInventory>();
-        void Walk(GameInventory inventory,int depth)
+        void Walk(GameInventory inventory,int depth,GameItem root,RootKey key)
         {
             if(depth>NativeActorInventory.MaximumOwnershipDepth) throw new InvalidDataException("Actor physical inventory depth exceeded");
             foreach(var item in inventory.childItems)
@@ -108,15 +108,17 @@ internal sealed partial class NativeWorld
                 if(item==null || item.parentInventory!=inventory || items.ContainsKey(item))
                     throw new InvalidDataException("Actor physical inventory contains an aliased child");
                 items.Add(item,inventory);
+                GameItem top=root ?? item;
+                visit?.Invoke(item,top,key);
                 if(item.children.Count==0) continue;
                 foreach(var nested in PhysicalInventories(item,rootSet))
                 {
                     if(rootSet.Contains(nested) || inventories.ContainsKey(nested)) throw new InvalidDataException("Actor nested inventory has multiple owners");
-                    inventories.Add(nested,item); Walk(nested,depth+1);
+                    inventories.Add(nested,item); Walk(nested,depth+1,top,key);
                 }
             }
         }
-        foreach(var binding in bindings) Walk(binding.Inventory,0);
+        foreach(var binding in bindings) Walk(binding.Inventory,0,null,binding.Key);
         return NativeActorInventory.Build(roots, inventories.Select(row=>new NativeActorInventory.OwnedInventory(model.Id(row.Key),model.Id(row.Value),row.Key is GameSlotInventory)),
             items.Select(row=>new NativeActorInventory.PlacedItem(model.Id(row.Key),model.Id(row.Value))));
     }

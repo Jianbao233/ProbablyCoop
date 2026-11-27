@@ -20,8 +20,15 @@ internal sealed class NativeRecordBasis
         ? item : throw new InvalidDataException("Missing borrowed native record");
     internal IReadOnlyDictionary<JToken,NativeDeferredFields.Block> FrozenFields=>fields;
     internal bool MatchesRecord(uint id,JObject item,Dictionary<JToken,NativeDeferredFields.Block> captured,
-        Dictionary<JObject,JObject> borrowed)=>
-        Contains(id) && Equal(item,records[id],captured,borrowed);
+        Dictionary<JObject,JObject> borrowed,out bool matchesTopLevel)
+    {
+        matchesTopLevel=false;
+        if(!records.TryGetValue(id,out var original) || original==null || !Equal(item,original,captured,borrowed)) return false;
+        // A nested match confirms capture state, but only a match against the
+        // exact root record can become a wire reference in the next pass.
+        matchesTopLevel=items.TryGetValue(id,out var top) && ReferenceEquals(top,original);
+        return true;
+    }
 
     // Copy only on the encoder worker, when a new full checkpoint is needed.
     // The acknowledged basis and its frozen arrays are immutable. Native/Unity

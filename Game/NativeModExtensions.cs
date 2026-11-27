@@ -36,12 +36,17 @@ internal sealed partial class NativeWorld
     }
 
     private Dictionary<string,ModExtension> modExtensions;
-    private JArray roomMods;
+    private JArray roomMods, roomOpeningMods;
     private readonly Dictionary<ulong,ModActionPending> pendingModActions = new Dictionary<ulong,ModActionPending>();
     private ulong modActionsProjectedThrough;
     private bool modExtensionExecuting;
     private bool modExtensionHostInitialized;
     private Exception modExtensionSetupFailure;
+#if PROBABLY_COOP_GRID_QA
+    internal bool QaExpeditionExtensionReady => modExtensions != null &&
+        modExtensions.TryGetValue("probably_coop_extension_probe", out var fixture) &&
+        fixture.State?.Payload == "1" && pendingModActions.Count == 0;
+#endif
 
     private static Dictionary<string,ModExtension> DiscoverModExtensions()
     {
@@ -127,7 +132,9 @@ internal sealed partial class NativeWorld
 
     private bool IsModExtensionReady(ModExtension extension) => !closed && !modExtensionExecuting &&
         ModHelper.IsModRunning(extension.Contract.Id) && extension.State!=null && link!=null &&
-        (host ? shop!=null : !link.SynchronizationFailed && applied!=0 && projectingGraph==null && Ready);
+        (host ? shop is { BlocksWorldCommands: false } &&
+            NativeActorSession.Current is { Faulted: false, Terminal: false, Hydrating: false } :
+            !link.SynchronizationFailed && applied!=0 && projectingGraph==null && Ready);
 
     private CoopExtensionState ReadModExtensionState(ModExtension extension)
     {
@@ -155,13 +162,15 @@ internal sealed partial class NativeWorld
         return rows;
     }
 
-    private List<(ModExtension Extension,CoopExtensionState State)> PrepareModExtensionProjection(JToken token)
+    private List<(ModExtension Extension,CoopExtensionState State)> PrepareModExtensionProjection(JToken token,bool localSceneChanged)
     {
         var extensions = GetModExtensions();
         var prepared = new List<(ModExtension,CoopExtensionState)>(extensions.Count);
         CheckModExtensionRows(token,extensions,extension=>extension.Contract,(extension,state)=>
         {
-            if(!ReferenceEquals(state,extension.State)) prepared.Add((extension,state));
+            // A new location rebuilds the native view. The extension may
+            // need to bind its UI there even though its shared state is unchanged.
+            if(localSceneChanged || !ReferenceEquals(state,extension.State)) prepared.Add((extension,state));
         },extension=>extension.State);
         return prepared;
     }
@@ -216,12 +225,13 @@ internal sealed partial class NativeWorld
     {
         foreach(var row in prepared)
         {
-            row.Extension.Registration.ProjectState(row.State);
+            try { row.Extension.Registration.ProjectState(row.State); }
+            catch (Exception error) { throw new ModExtensionProjectionException(row.Extension.Contract.Id, error); }
             row.Extension.State = row.State;
         }
     }
 
-    private bool ModActionAllowed() => !closed && !modExtensionExecuting && !EndingActive &&
+    private bool ModActionAllowed() => !closed && !modExtensionExecuting && !independentTransition && !EndingActive &&
         NativeActorSession.Current is { Terminal:false, Faulted:false, Hydrating:false, NightActive:false, TransitionActive:false } &&
         shop!=null && !shop.BlocksWorldCommands && !PartnerHasHand &&
         ItemMouseDragHandler.current?.IsDraggingItem!=true && ItemMultiSelectHandler.current?.IsGroupDragging!=true;
@@ -235,7 +245,13 @@ internal sealed partial class NativeWorld
         {
             if(!ModActionAllowed() || NativeActorSession.Current.Run.CurrentActor!=NativeActorRun.Slot.Host)
                 return CoopActionSubmission.Busy;
-            var result = RunModAction(extension,action,payload,revision,CoopExtensionActor.Host);
+            CoopActionResult result;
+            try { result = RunModAction(extension,action,payload,revision,CoopExtensionActor.Host); }
+            catch (Exception error)
+            {
+                Debug.LogWarning($"[probably_coop] extension {extension.Contract.Id} failed action={action} error={error.GetType().Name}");
+                result = CoopActionResult.Failed;
+            }
             NotifyModAction(complete,result);
             return CoopActionSubmission.Completed;
         }
@@ -285,20 +301,15 @@ internal sealed partial class NativeWorld
             extension.State = extension.Contract.Freeze(extension.State,ReadModAuthorityState(extension),false);
             if(extension.State.Revision!=revision) return CoopActionResult.Stale;
             var result = extension.Registration.Execute(new CoopExtensionAction(actor,action,payload));
-            if(result==CoopActionResult.Applied)
-            {
-                extension.State = extension.Contract.Freeze(extension.State,ReadModAuthorityState(extension),true);
-                nextCapture = 0;
-            }
-            else if(result is not (CoopActionResult.Rejected or CoopActionResult.Stale or CoopActionResult.Busy))
-                throw new InvalidOperationException("Cooperative extension callback returned an invalid result: " + extension.Contract.Id);
+            extension.State = extension.Contract.VerifyActionResult(extension.State,ReadModAuthorityState(extension),action,result);
+            if(result==CoopActionResult.Applied) nextCapture = 0;
             return result;
         }
         catch(Exception error)
         {
             // The author may already have mutated native state. Reuse the
             // existing no-save run recovery boundary rather than claim rollback.
-            NativeActorSession.Current?.MarkFault(error);
+            NativeActorSession.Current?.MarkModActionFault(extension.Contract.Id, action, error);
             throw;
         }
         finally { modExtensionExecuting = false; }
@@ -313,6 +324,7 @@ internal sealed partial class NativeWorld
         try
         {
             using var authority = NativeActorSession.Current?.Enter(NativeActorRun.Slot.Host);
+            using var site = EnterExpeditionSite(NativeActorRun.Slot.Host);
             return extension.Registration.ReadState();
         }
         finally { modExtensionExecuting = executing; }

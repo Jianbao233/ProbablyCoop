@@ -29,6 +29,8 @@ internal sealed class RoomSelector : ICoopRoom
     public bool CanApprove => active?.CanApprove == true;
     public bool AcceptingJoins => active?.AcceptingJoins == true;
     public string Code => active?.Code ?? "";
+    internal string GuestJoinInfo => !IsGuest ? "" : active is LocalRoom { GuestMappedAddress: { } mapping }
+        ? Code + "\n" + mapping : Code;
     public string Status => active?.Status ?? selectionStatus;
     public string Detail => active?.Detail ?? "";
     public string PartnerName => active?.PartnerName ?? "";

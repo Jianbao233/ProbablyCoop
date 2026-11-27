@@ -13,19 +13,35 @@ internal sealed partial class NativeWorld
     private NativeActorState remoteHostActor;
     private Guid actorProjectionRun;
     private Harmony actorHarmony;
+#if PROBABLY_COOP_GRID_QA
     private bool qaActorWoundApplied;
+#endif
     private NativeActorPersonalUi.Receiver actorNotifications=new NativeActorPersonalUi.Receiver();
     internal bool HasActorProjection => actorRun != null || actorProjectionRun != Guid.Empty;
     internal NativeActorState RemoteHostActor => remoteHostActor;
-    internal static bool ActorProjectionQaRequested => NativeBackgroundQa.Enabled &&
+    internal static bool ActorProjectionQaRequested =>
+#if PROBABLY_COOP_GRID_QA
+        NativeBackgroundQa.Enabled &&
         Array.IndexOf(Environment.GetCommandLineArgs(), "--probably-coop-qa-actor-projection") >= 0;
+#else
+        false;
+#endif
     private static readonly Lazy<System.Reflection.FieldInfo[]> SharedWorldFieldContract = new Lazy<System.Reflection.FieldInfo[]>(
         () => WorldFields.Where(field => !NativeActorProjection.OwnsPlayerField(field.Name)).ToArray());
     private static System.Reflection.FieldInfo[] SharedWorldFields => SharedWorldFieldContract.Value;
+    private static readonly Lazy<int> GuestOutingDayIndex = new Lazy<int>(() =>
+        Array.FindIndex(SharedWorldFields, field => field.Name == nameof(PlayerStore.lastAfterhourOutingDay)));
 
-    // Activation remains isolated QA-only until carried roots, starting effects,
-    // activity continuations and the complete checkpoint have been integrated.
-    // No existing cooperative or single-player slot is silently upgraded here.
+    private void CapturePartnerWorldFields(PlayerStore store, object[] values)
+    {
+        var contract = SharedWorldFields;
+        int outing = GuestOutingDayIndex.Value;
+        for (int index = 0; index < values.Length; index++)
+            values[index] = index == outing ? actorRun.OutingDay(NativeActorRun.Slot.Partner) : contract[index].GetValue(store);
+    }
+
+#if PROBABLY_COOP_GRID_QA
+    // Exercise the actor projection in the isolated rapid-input fixture.
     internal void EnableQaActorProjection(PlayerStore existingStore)
     {
         if (!host || !NativeBackgroundQa.IsHostProduct || !ActorProjectionQaRequested || actorRun != null ||
@@ -45,6 +61,7 @@ internal sealed partial class NativeWorld
         try { NativeActorFieldAccess.Install(actorHarmony, actorRun.Resolve); }
         catch { actorRun.Dispose(); actorRun = null; throw; }
     }
+#endif
 
     private JObject CaptureActors() => actorRun == null ? null : NativeActorProjection.Capture(actorRun.Run,
         NativeActorState.Capture(PlayerStore.Instance), actorRun.Partner);
@@ -99,6 +116,7 @@ internal sealed partial class NativeWorld
         if (patchError != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(patchError).Throw();
     }
 
+#if PROBABLY_COOP_GRID_QA
     internal bool RequestQaActorWound() => ActorProjectionQaRequested && HasActorProjection &&
         Submit(new JObject { ["kind"] = "qaActorWound" });
 
@@ -122,4 +140,5 @@ internal sealed partial class NativeWorld
         UnityEngine.Debug.Log("[probably_coop QA] PASS actor-network-host-mutation native=ReceiveMinorWound partner=8 host=unchanged");
         return (ushort)ShopResult.Applied;
     }
+#endif
 }

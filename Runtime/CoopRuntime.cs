@@ -22,7 +22,8 @@ internal sealed class CoopRuntime : MonoBehaviour
     private readonly NativePartnerJoin partnerJoin = new NativePartnerJoin();
     private readonly CoopOpeningLobby opening = new CoopOpeningLobby();
     private bool returningGuest;
-    private (string Code, int? Day)? recoveryExit;
+    private (string Code, NativeActorCheckpoint.Envelope Verified, string Context)? pendingRecovery;
+    private (string Code, CoopRun.Checkpoint Target, string Context)? recoveryExit;
     private CoopRun.Checkpoint mutationResume;
     private (CoopRun.Checkpoint Checkpoint, CoopSession Connection)? queuedReload;
     private CoopRun.Checkpoint loadingCheckpoint;
@@ -31,24 +32,28 @@ internal sealed class CoopRuntime : MonoBehaviour
     private PlayerStore checkedStore;
     private bool stopped;
     private Action captureAfterReceive;
+#if PROBABLY_COOP_GRID_QA
     private readonly NativeBackgroundQa qa = NativeBackgroundQa.Create();
     private readonly NativeArchitectureQa architectureQa = NativeArchitectureQa.Create();
+#endif
 
     private void Update()
     {
-        NativePerformance.Frame(room?.Session?.State==LinkState.Connected &&
-            (world!=null && shop!=null || NativeWorld.Guest?.Ready==true));
+        bool host = world != null && shop != null;
+        bool frameConnected = room?.Session?.State == LinkState.Connected;
+#if PROBABLY_COOP_GRID_QA
+        NativeFrameAttribution.Boundary(host, frameConnected);
+        using var frameRuntime = NativeFrameAttribution.Measure(NativeFrameAttribution.Stage.Runtime);
+#endif
+        NativePerformance.Frame(frameConnected && (host || NativeWorld.Guest?.Ready == true));
         using var performance = NativePerformance.Measure("runtime.update");
         if (stopped) return;
+#if PROBABLY_COOP_GRID_QA
         if (architectureQa != null) { architectureQa.Tick(); return; }
+#endif
         try
         {
-            if(NativeActorFaultRecovery.TryReturnToMenu(CloseSession, day =>
-            {
-                var attempt = shop?.RecoveryCandidate;
-                mutationResume = shop?.MutationResume;
-                recoveryExit = (shop?.FailedMutation?.Code ?? (attempt == null ? "DAY-205" : CoopIssueCode.Settlement(attempt)), day);
-            })) return;
+            if (NativeActorFaultRecovery.TryReturnToMenu(CloseSession, RecordHostFaultRecovery)) return;
             var activeScene = SceneManager.GetActiveScene();
             if (queuedReload is { } requested)
             {
@@ -118,11 +123,15 @@ internal sealed class CoopRuntime : MonoBehaviour
                 if (inMenu && localTest)
                 {
                     int join = Array.IndexOf(args, "--probably-coop-join");
-                    int qaBind = NativeBackgroundQa.Enabled ? Array.IndexOf(args,"--probably-coop-qa-host-ip") : -1;
+#if PROBABLY_COOP_GRID_QA
+                    int qaBind = NativeBackgroundQa.Enabled ? Array.IndexOf(args, "--probably-coop-qa-host-ip") : -1;
+#endif
                     if (join >= 0 && join + 1 < args.Length)
                         room.Join(args[join + 1]);
-                    else if(qaBind>=0 && qaBind+1<args.Length)
-                        room.CreateLan(args[qaBind+1]);
+#if PROBABLY_COOP_GRID_QA
+                    else if (qaBind >= 0 && qaBind + 1 < args.Length)
+                        room.CreateLan(args[qaBind + 1]);
+#endif
                     else if (Array.IndexOf(args, "--probably-coop-host") >= 0)
                         room.Create();
                 }
@@ -130,6 +139,12 @@ internal sealed class CoopRuntime : MonoBehaviour
             }
             shop?.Tick(room.Session?.State == LinkState.Connected);
             panel.SetContext(inMenu, shop != null || guest != null);
+            if (inMenu && pendingRecovery is { } recovery)
+            {
+                pendingRecovery = null;
+                var target = mutationResume ?? CoopRun.FindVerifiedCheckpoint(recovery.Verified);
+                recoveryExit = (recovery.Code, target, recovery.Context);
+            }
             if (inMenu && mutationResume != null && MainMenuUIController.Instance != null)
             {
                 var target = mutationResume;
@@ -173,7 +188,7 @@ internal sealed class CoopRuntime : MonoBehaviour
                 NativeGuest.ReturnToMenu();
                 return;
             }
-            opening.Tick(room, inMenu);
+            opening.Tick(room, panel, inMenu);
             panel.ObserveJoin(guest!=null,NativeWorld.Guest?.Ready==true);
             if(room.IsGuest && connection?.Native.SynchronizationFailed==true)
             {
@@ -182,7 +197,7 @@ internal sealed class CoopRuntime : MonoBehaviour
             }
             bool reviewingGuest = inMenu && guest == null && room.IsGuest && connection?.State==LinkState.Connected && connection.Shop.View.Active;
             partnerJoin.ObserveConnection(reviewingGuest);
-            if(!reviewingGuest) panel.CloseModReview();
+            if(!reviewingGuest && !opening.HasGuestDraft) panel.CloseModReview();
             panel.SetPartnerPickerVisible(partnerJoin.PickerVisible || opening.CoversRoomPanel);
             // Transport callbacks may replace/drop the peer during room.Tick.
             // Clear consent/ownership now, before later UI callbacks in this frame.
@@ -226,7 +241,9 @@ internal sealed class CoopRuntime : MonoBehaviour
             NativeActorCarryUi.Tick();
             pointer.Tick(connection, inMenu || shop != null || guest != null);
             panel.Tick();
+#if PROBABLY_COOP_GRID_QA
             qa?.Tick(room, panel, shop, guest, inMenu);
+#endif
         }
         catch (Exception exception)
         {
@@ -241,6 +258,23 @@ internal sealed class CoopRuntime : MonoBehaviour
             Debug.LogError($"[probably_coop] runtime stopped: {exception}");
             Stop();
         }
+    }
+
+    private void RecordHostFaultRecovery(NativeActorSession session)
+    {
+        mutationResume = shop?.MutationResume;
+        var attempt = shop?.RecoveryCandidate;
+        var extension = session.ExtensionActionFailure;
+        string code = shop?.FailedMutation?.Code;
+        if (code == null && attempt != null) code = CoopIssueCode.Settlement(attempt);
+        string context = extension?.Context;
+        if (code == null && extension != null) code = ModExtensionActionFailure.Code;
+        if (code == null && session.TravelTransitionFailed)
+        {
+            code = NativeActorSession.TravelFaultCode;
+            context = "operation=joint_travel stage=scene_transition";
+        }
+        pendingRecovery = (code ?? "DAY-205", session.VerifiedCheckpoint, context);
     }
 
     private bool QueueReload(CoopRun.Checkpoint checkpoint)
@@ -268,7 +302,8 @@ internal sealed class CoopRuntime : MonoBehaviour
         }
         if (!CoopRun.PrepareResume(checkpoint, out var verified))
         {
-            StoreUIManager.Instance?.Notify(ModHelper.GetLocalized("probably_coop", "checkpoint_unavailable"));
+            StoreUIManager.Instance?.Notify(verified?.UnavailableReason ??
+                ModHelper.GetLocalized("probably_coop", "checkpoint_unavailable"));
             return false;
         }
 
@@ -344,10 +379,13 @@ internal sealed class CoopRuntime : MonoBehaviour
     private void FailGuestSynchronization(Exception error=null)
     {
         var native=room.Session?.Native;
+        var extension = error as ModExtensionProjectionException;
+        string detail = extension == null ? error?.ToString() :
+            $"extension={extension.ModId} callback=ProjectState error={extension.InnerException.GetType().Name}";
         Debug.LogWarning($"[probably_coop] guest synchronization failed; room can be rejoined. " +
-            $"reason={native?.FailureReason} receivedRevision={native?.Revision} fullRevision={native?.FullRevision} {error}");
+            $"reason={native?.FailureReason} receivedRevision={native?.Revision} fullRevision={native?.FullRevision} {detail}");
         panel.JoinFailed(error as ModExtensionJoinException,native?.FailureReason ?? NativeSyncFailure.None,
-            error!=null, duringPlay:guest?.EnteredShop==true);
+            error!=null, duringPlay:guest?.EnteredShop==true, failedExtension:extension?.ModId);
         panel.RecordProjectionFailure(error,native?.FailureReason ?? NativeSyncFailure.None);
         partnerJoin.Dispose();
         if(guest!=null || NativeGuest.Active) LeaveGuest("sync_failed");
@@ -379,11 +417,13 @@ internal sealed class CoopRuntime : MonoBehaviour
         if (stopped) return;
         stopped = true;
         steamJoin.Dispose();
+#if PROBABLY_COOP_GRID_QA
         if (architectureQa != null)
         {
             architectureQa.Stop();
             Application.Quit();
         }
+#endif
         var closingScene=SceneManager.GetActiveScene();
         var closingActors=NativeActorSession.Current;
         bool cooperativeHost=closingActors!=null && PlayerStore.HasInstance &&

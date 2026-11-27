@@ -58,6 +58,7 @@ internal sealed class NativeGuest
         if (!link.View.Active || !PlayerStore.IsInstanceExist() ||
             entry == null || entry.invElement == null) return;
         if (!world.TickGuest(session.Native, replicas)) return;
+        session.MarkNativeProjectionReady();
         trade.Tick(link,world.View,world.ShopPresentation);
         events.Tick(link,world.View);
         if (awaitingReply && !link.Waiting && link.Result is not (ShopResult.None or ShopResult.Applied) &&

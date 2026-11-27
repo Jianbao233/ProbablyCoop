@@ -126,9 +126,9 @@ Restart the room after changing any enabled gameplay Mods or their protocol.
 
 | Callback | Runs on | Contract |
 | --- | --- | --- |
-| `ReadState` | Host's native actor context | Return a quick, read-only summary of current shared gameplay state. Use a stable textual encoding and omit presentation and sensitive data. Called during capture, before and after an accepted execution, and when host UI reads `CurrentState`. Avoid inventory scans and file reads. Read directly from your Mod's model. |
+| `ReadState` | Host's native actor and location context | Return a quick, read-only summary of current shared gameplay state. Use a stable textual encoding and omit presentation and sensitive data. Called during capture, before and after `Execute`, and when host UI reads `CurrentState`. Use your Mod's model as the source for shared state and avoid inventory scans and file reads. |
 | `Execute` | Host | Validate the permitted action, parsed payload, actor, relevant scene, funds, ownership, and other current game preconditions. Return `Rejected`, `Stale`, or `Busy` before changing anything if a check fails. Apply a valid action once and return `Applied`. |
-| `ProjectState` | Guest | Receive the complete extension state. Render from the supplied state, including its revision. This runs during projection, before the handle can read the newly applied state or submit another action. Make this callback idempotent and limit it to local presentation. |
+| `ProjectState` | Guest | Receive the complete extension state after the guest's native location has been set. A location change can deliver the same revision again so you can rebind local UI. This runs during projection, before the handle can read the newly applied state or submit another action. Make this callback idempotent and limit it to local presentation. |
 | `Attach` | Both | Store the handle before its initial state is available. It becomes ready when the current shop has usable state. The host can use the handle while waiting for a guest. A new guest session receives a new handle and a full current projection. |
 
 Each extension must declare 1 to 32 unique action IDs. An ID or protocol is at most 64 ASCII
@@ -142,9 +142,12 @@ method, or type lookup is part of that protocol.
 Persist durable progress using your own normal Mod save data on the host. The
 extension snapshot and its revision are current room state. They are carried to
 rejoining guests and they do not create a new kind of saved game. Returning a
-rejection requires leaving the game unchanged. A throwing action has no
-transactional rollback and the cooperative run enters its existing fault
-recovery path. Validate first and keep accepted mutations bounded and synchronous.
+rejection requires leaving the game unchanged. ProbablyCoop checks that the
+state reported by `ReadState` is identical when `Execute` declines a request.
+A mismatch or an exception stops the run through fault recovery without
+saving the current scene. Validate first and keep accepted mutations bounded
+and synchronous. Include all relevant shared state in `ReadState` so a
+rejected operation cannot silently change it.
 
 ## Submit an action from your UI
 
@@ -176,7 +179,8 @@ other original game state, perform those checks in your own host callback.
 its actor, and the host runs it in the partner's native context.
 
 The host executes its own request synchronously and calls the optional completion
-callback before `Request` returns `Completed`. Set UI pending state before calling
+callback before `Request` returns `Completed`. An action that faults reports `Failed`
+and the host must restore the last verified checkpoint. Set UI pending state before calling
 `Request`. A guest receives `Queued`. On
 success its callback runs after the authoritative projection containing the
 receipt has been applied. A queued request can also finish with a rejection,
@@ -194,8 +198,9 @@ game-thread updates outside the extension callbacks.
 客机界面保存最近一次显示的状态版本，提交时带上该版本。房主的完成回调可能在
 `Request` 返回前就执行，所以提交前先开启等待提示。`IsReady` 决定按钮是否可用，
 `IsClosed` 用来丢弃已经过期的会话。客机正在加载、掉线或更新投影时，停用共享操作，
-等新的会话或状态到达。共享状态回调在主线程执行，`ReadState` 直接读取本 Mod 的数据，
-`ProjectState` 直接用传入内容刷新界面。
+等新的会话或状态到达。共享状态回调在主线程执行，`ReadState` 始终在房主的角色与地点上下文中读取本 Mod 的数据，
+`ProjectState` 在客机的原版地点就绪后刷新界面。地点切换时，相同版本的状态也可能再次传入，供 Mod 重新绑定本地界面。
+`Execute` 拒绝请求后，`ReadState` 返回的共享状态必须和执行前一致。若状态已改变或执行抛错，合作档会进入无需写档的故障恢复流程。请把会被动作改变的共享数据纳入 `ReadState`。
 
 ## Customer appearance on the guest
 
@@ -214,13 +219,66 @@ guest and requires no shared-action registration.
 `PortraitKey` 和是否为入房或读档后的首次恢复 `Restoring`。回调内可以调整客机自己的
 `StoreClientMono.Instance.image`。停用 Mod 时移除监听。这个消息只在本机触发，无需登记共享动作。
 
+## Starting careers / 开局职业
+
+Register the scenario with the game's `ModHelper.AddStartingScenario` first. To list it in a paired opening, expose the scenario ID, exact net cash cost, and any incompatible career IDs. Both players need the same enabled package. Use `ModHelper.IsStartingScenario(id)` to check both careers in your `onStart` callback and in `OnGameLoadedEarly` or later load callbacks. `GetStartingScenarioId()` returns the career currently initializing during its `onStart` callback and the host's career during normal play.
+
+先用游戏的 `ModHelper.AddStartingScenario` 登记职业，再声明职业 ID、实际现金扣款和互斥职业。双方需要启用同一份 Mod。在 `onStart` 和从 `OnGameLoadedEarly` 开始的读档回调中，可以用 `ModHelper.IsStartingScenario(id)` 查询两人所选职业。`GetStartingScenarioId()` 在 `onStart` 内返回正在初始化的职业，正常游玩时返回房主所选职业。
+
+```csharp
+const string CareerId = "example_brewer";
+ModHelper.AddStartingScenario(MyModId, CareerId, () => "Brewer",
+    () => "Start with supplies for your shop.",
+    new Func<string>[] { () => "Processed juice" },
+    onStart: () =>
+    {
+        GraphUtils.EmporiumTryAdd(EmporiumEntry.Instance.invElement, DirectoryMaster.Item("processed_juice"));
+        PlayerStore.Instance.playerCash -= 100;
+    });
+ModHelper.Expose(MyModId, CoopExtensionApi.OpeningCareersService,
+    new[] { new CoopOpeningCareer(CareerId, cashCost: 100) });
+```
+
+The host invokes the original `onStart` synchronously once per distinct selected career. The two careers share one shop and one wallet. Declare a positive net cost for a charge, zero for a free career, or a negative net cost for a grant. A callback must finish within the original new-game initialization without scheduling another save or reinitializing the shop. A callback failure or cash mismatch stops the opening before its first save. Continue to use the shared action API for new runtime behavior. The base game's service capability rules apply.
+
+房主对每个不同的已选职业同步执行原版 `onStart` 一次，店铺和钱包共用。扣款填正数，免费填零，奖励现金填负数。回调应在原版开局初始化内完成，不安排第二次保存或重置店铺。回调抛错或实际现金与声明不符会在首次保存前停止开局。新增游玩行为仍走共享动作接口。此服务遵循游戏的能力声明规则。
+
+## Starting perks / 开局天赋
+
+Register each perk using the game's `ModHelper.AddStartingPerk`. Expose its ID and
+scope so either player can choose it in the original opening picker when both
+players have the same enabled Mod package. Native points, slots, and
+incompatibilities still apply.
+
+用游戏的 `ModHelper.AddStartingPerk` 登记天赋，再声明天赋 ID 和作用范围。双方启用了同一份 Mod 包时，可在原版双人开局界面选择。点数、栏位和互斥继续走原版规则。
+
+```csharp
+ModHelper.Expose(MyModId, CoopExtensionApi.OpeningPerksService,
+    new Dictionary<string, CoopOpeningPerkScope>
+    {
+        ["example_careful_hands"] = CoopOpeningPerkScope.Personal,
+        ["example_shop_service"] = CoopOpeningPerkScope.SharedShop
+    });
+```
+
+Use `ModHelper.IsStartingPerkActive(id)` in your gameplay rules. A
+`Personal` perk follows the local player and the actor executing a cooperative
+action on the host. A `SharedShop` perk applies to the shop if either player
+chose it. For custom grants, shop effects, and state changes, use your original
+game hooks together with the shared action interface. The cooperative save records the selected provider. The room check requires
+its active package on both ends. Both players can update that package together.
+
+玩法代码可以用 `ModHelper.IsStartingPerkActive(id)` 查询。`Personal` 跟随本地角色，房主处理联机动作时跟随实际操作者。`SharedShop` 是全店天赋，任一玩家选择后全店有效。自定义赠品、全店效果和后续状态修改可以通过原版钩子与共享动作接口实现。合作档会记录提供已选天赋或职业的 Mod。重新入房时，两端须启用同一份包。双方可以一起更新。
+
 ## Verify an adapter
 
 Build the independent example in `Tests/ModExtensionProbe/` with
 `-p:CoopApiAssembly=<absolute-path-to-ProbablyCoop.dll>`. It registers a counter
-through the same game-local messaging API as a third-party Mod. In isolated QA
-with the package activated on both ends, launch both with
-`--probably-coop-qa-extension-probe`. The partner requests one increment, checks
+through the same game-local messaging API as a third-party Mod. For the automated
+probe, build ProbablyCoop with `-p:ProbablyCoopGridQa=true` and install the output
+from `torelease/qa/ProbablyCoop` in both isolated QA profiles. With the example
+activated on both ends, add `--probably-coop-qa-extension-probe` to both test
+launches. The partner requests one increment, checks
 that the successful reply observes the new count, and retries using the old
 revision to verify rejection. Relaunch the partner with
 `--probably-coop-qa-extension-probe --probably-coop-qa-extension-rejoin` to verify

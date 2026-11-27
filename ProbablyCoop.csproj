@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>ProbablyCoop</AssemblyName>
     <RootNamespace>ProbablyCoop</RootNamespace>
-    <Version>0.3.7</Version>
+    <Version>0.3.8</Version>
 
     <ModId>probably_coop</ModId>
     <OutDir>$(MSBuildThisFileDirectory)torelease\ProbablyCoop\</OutDir>
@@ -11,6 +11,7 @@
 
   <PropertyGroup Condition="'$(ProbablyCoopGridQa)' == 'true'">
     <DefineConstants>$(DefineConstants);PROBABLY_COOP_GRID_QA</DefineConstants>
+    <OutDir>$(MSBuildThisFileDirectory)torelease\qa\ProbablyCoop\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(ProbablyCoopAndroidHostPreview)' == 'true'">
     <DefineConstants>$(DefineConstants);PROBABLY_COOP_ANDROID_HOST_PREVIEW</DefineConstants>
@@ -46,6 +47,7 @@
       <Private>false</Private>
     </Reference>
     <Compile Remove="Tests\**\*.cs;LocalGuest\**\*.cs" />
+    <Compile Remove="Game\**\*Qa.cs" Condition="'$(ProbablyCoopGridQa)' != 'true'" />
     <Compile Include="Tests\NativeInventoryPilotQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
     <Compile Include="Tests\NativeEffectCampaignQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />
     <Compile Include="Tests\NativeEffectBusinessQa.cs" Condition="'$(ProbablyCoopGridQa)' == 'true'" />

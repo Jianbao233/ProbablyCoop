@@ -14,7 +14,7 @@ internal static class NativeActorFaultRecovery
 
     // Call before room.Tick, native capture and any new gameplay command.
     // true means this frame was consumed by the recovery transition.
-    internal static bool TryReturnToMenu(Action closeNetwork, Action<int?> reportStop)
+    internal static bool TryReturnToMenu(Action closeNetwork, Action<NativeActorSession> reportStop)
     {
         if (returning && SceneManager.GetActiveScene().name == "EmporiumMenu") returning = false;
         var session = NativeActorSession.Current;
@@ -34,7 +34,7 @@ internal static class NativeActorFaultRecovery
         var failures = new List<Exception>();
         string reason = session.Failure ?? "合作状态未能完成一致性校验。";
         if (reason.Length > 1200) reason = reason.Substring(0, 1200);
-        reportStop(session.VerifiedCheckpoint?.Day);
+        reportStop(session);
         CoopRun.Armed = false;
         try
         {

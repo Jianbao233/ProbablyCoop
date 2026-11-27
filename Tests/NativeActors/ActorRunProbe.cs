@@ -58,6 +58,58 @@ static class ActorRunProbe
         return shell;
     }
 
+    private static void CheckOutingHistory(NativeActorState host, NativeActorState partner, string runId)
+    {
+        var store = Shell(host, runId);
+        store.lastAfterhourOutingDay = 7;
+        using var run = new NativeActorRun(store, partner);
+        Check(run.OutingDay(NativeActorRun.Slot.Partner) == 7 && store.modData == null,
+            "legacy outing day keeps the original paired value without a write");
+        run.RecordOuting(NativeActorRun.Slot.Host, 10);
+        Check(run.OutingDay(NativeActorRun.Slot.Host) == 10 && run.OutingDay(NativeActorRun.Slot.Partner) == 7 &&
+            store.healthData.wentToAfterhoursLastNight && !run.Partner.healthData.wentToAfterhoursLastNight,
+            "Host departure advances only the Host");
+        run.RecordOuting(NativeActorRun.Slot.Partner, 11);
+        Check(run.OutingDay(NativeActorRun.Slot.Host) == 10 && run.OutingDay(NativeActorRun.Slot.Partner) == 11 &&
+            run.Partner.healthData.wentToAfterhoursLastNight,
+            "Partner departure advances only the Partner");
+        var loaded = Shell(NativeActorState.Capture(store), runId);
+        loaded.lastAfterhourOutingDay = store.lastAfterhourOutingDay;
+        loaded.modData = new Dictionary<string, string>(store.modData);
+        using var restored = NativeActorRun.RestorePersonalCheckpoint(loaded, run.CapturePersonalCheckpoint());
+        Check(restored.OutingDay(NativeActorRun.Slot.Host) == 10 && restored.OutingDay(NativeActorRun.Slot.Partner) == 11 &&
+            restored.HasLateOpeningPenalty(), "restoration retains both outing histories and next-day outcome");
+        var separate = Shell(host, runId);
+        separate.lastAfterhourOutingDay = -1;
+        using var partnerFirst = new NativeActorRun(separate, partner);
+        partnerFirst.RecordOuting(NativeActorRun.Slot.Partner, 1);
+        Check(partnerFirst.OutingDay(NativeActorRun.Slot.Host) == -1 &&
+            partnerFirst.OutingDay(NativeActorRun.Slot.Partner) == 1 &&
+            !separate.healthData.wentToAfterhoursLastNight && partnerFirst.HasLateOpeningPenalty(),
+            "Partner can travel first without marking the Host");
+    }
+
+    private static void CheckLateOpeningPenalty(NativeActorState host, NativeActorState partner, string runId)
+    {
+        for (int mask = 0; mask < 16; mask++)
+        {
+            bool hostWent = (mask & 1) != 0, partnerWent = (mask & 2) != 0;
+            bool hostShort = (mask & 4) != 0, partnerShort = (mask & 8) != 0;
+            var store = Shell(host, runId);
+            var guest = partner.Clone();
+            if (hostShort) store.startingPerks.Add(new StartingPerk { id = "short_sleeper" });
+            if (partnerShort) guest.startingPerks.Add(new StartingPerk { id = "short_sleeper" });
+            using var run = new NativeActorRun(store, guest);
+            if (hostWent) run.RecordOuting(NativeActorRun.Slot.Host, 19);
+            if (partnerWent) run.RecordOuting(NativeActorRun.Slot.Partner, 19);
+            bool expected = (hostWent && !hostShort) || (partnerWent && !partnerShort);
+            using (run.Enter(NativeActorRun.Slot.Partner))
+                Check(run.HasLateOpeningPenalty() == expected, "schedule is independent of the actor evaluating it: " + mask);
+            Check(run.HasLateOpeningPenalty() == expected && store.healthData.wentToAfterhoursLastNight == hostWent &&
+                run.Partner.healthData.wentToAfterhoursLastNight == partnerWent, "all sixteen outing/short-sleeper combinations: " + mask);
+        }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static int Run()
     {
@@ -78,6 +130,8 @@ static class ActorRunProbe
         using var run = new NativeActorRun(store, partner);
         Check(run.Run == Guid.Parse(runId) && run.CurrentActor == NativeActorRun.Slot.Host, "owner run and default host");
         Check(run.Resolve(store) == null, "host falls through to canonical raw store");
+        CheckOutingHistory(host, partner, runId);
+        CheckLateOpeningPenalty(host, partner, runId);
         Check(!ReferenceEquals(run.Partner, partner) && !ReferenceEquals(run.Partner.healthData, partner.healthData), "partner clone detached");
         partner.healthData.luck = 99;
         Check(run.Partner.healthData.luck == -5, "input clone cannot mutate run partner");

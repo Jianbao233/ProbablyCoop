@@ -10,6 +10,12 @@ internal sealed class NativeActorSession
     internal NativeActorPersonalUi PersonalUi { get; }
     internal bool Faulted { get; private set; }
     internal void MarkFault(System.Exception error) => Faulted = true;
+    internal bool TravelTransitionFailed { get; private set; }
+    internal void MarkTravelTransitionFault(System.Exception error)
+    {
+        MarkFault(error);
+        TravelTransitionFailed = true;
+    }
     internal NativeActorSession(NativeActorRun run)
     { Run = run; Activities = new NativeActorActivities(run); PersonalUi = new NativeActorPersonalUi(run); }
     internal System.IDisposable Enter(NativeActorRun.Slot actor) => Run.Enter(actor);
@@ -23,9 +29,14 @@ internal sealed class NativeWorld
 }
 internal static class NativeOpening
 {
+    internal static System.Collections.Generic.Dictionary<string, StartingPerk> SavedShopPerks { get; set; }
     internal static StartingPerk SharedStartingPerk(string id) => null;
-    internal static System.Collections.Generic.Dictionary<string, StartingPerk> SharedPerks(PlayerStore store) => null;
+    internal static System.Collections.Generic.Dictionary<string, StartingPerk> SharedPerks(PlayerStore store) => SavedShopPerks;
     internal static bool HasMixedBenefit(string id) => false;
+}
+internal static class NativeActorPersistence
+{
+    internal static PlayerStore LoadedOpeningStore => null;
 }
 internal static class NativeInventoryPilot
 {

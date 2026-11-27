@@ -187,6 +187,7 @@ internal sealed partial class NativeWorld
             if(link.AcceptTooltip==ReceiveFastTooltip) link.AcceptTooltip=null;
         }
         tripUi?.Close(); tripUi=null;
+        splitGround?.Dispose(); splitGround=null;
         if(Host==null && Guest==null) NativeSpriteTransfer.Clear();
     }
 
@@ -196,6 +197,7 @@ internal sealed partial class NativeWorld
         BindHost(authority,connection);
         TickShootingAuthority();
         TickPartnerHand();
+        TickRemoteScavenging();
         if(peerConnected) NativeCaptureComparison.Current?.Advance(Time.realtimeSinceStartupAsDouble);
         ValidateTripReadiness(); TickTripUi();
         bool androidHost=NativePlatform.IsAuditedAndroidRuntime;
@@ -227,6 +229,9 @@ internal sealed partial class NativeWorld
                     RecoverHostSynchronization(connection,NativeSyncFailure.HostEncode,packed.Error,encodingUsesBasis);
                     return;
                 }
+#if PROBABLY_COOP_GRID_QA
+                using var framePublish = NativeFrameAttribution.Measure(NativeFrameAttribution.Stage.Publish);
+#endif
                 ConfirmCapturedRecords(packed);
                 NativePerformance.Sample("host.pack_worker",packed.Milliseconds);
                 encodingComparison?.worker.Add(packed.Milliseconds);
@@ -293,6 +298,7 @@ internal sealed partial class NativeWorld
             ReferenceEquals(lastCaptureCustomer,store.currentClientInstance) && Equals(lastCaptureMap,map) &&
             lastCaptureArrival==store.isClientArrived && lastCaptureDragging==dragging)
         { PrefetchTooltipReads(); return; }
+        if(authorityBasis==null && !PrepareJoinCheckpoint(now)) return;
         anchorClockThisCapture=basis==null || lastClockCommand!=connection.CompletedRequest ||
             lastCaptureContext!=operationContext.Generation || lastCaptureCash!=store.playerCash || lastCaptureDay!=day ||
             !ReferenceEquals(lastCaptureCustomer,store.currentClientInstance) || lastCaptureArrival!=store.isClientArrived;
@@ -325,6 +331,9 @@ internal sealed partial class NativeWorld
         mayUsePrefetch=!HasOpaqueTooltipHooks();
         try
         {
+#if PROBABLY_COOP_GRID_QA
+            using (NativeFrameAttribution.Measure(NativeFrameAttribution.Stage.Capture))
+#endif
             using(new NativeCaptureComparison.CaptureTimer(encodingComparison))
             using(NativePerformance.Measure("host.capture",NativePerformance.FrameWork.Capture)) snapshot=Capture(fields,out shopView,out shopBytes);
             snapshot["tooltipThrough"]=outstandingReads.Capture(SnapshotMatchesRead);
@@ -338,7 +347,11 @@ internal sealed partial class NativeWorld
             RecoverHostSynchronization(connection,NativeSyncFailure.HostCapture,error,basis!=null);
             return;
         }
-        finally { captureTooltips.Clear(); prefetched.Clear(); capturedControlOwner=null; capturedControlOwnerProof=null; }
+        finally
+        {
+            FinishCheckpointPreparation();
+            captureTooltips.Clear(); prefetched.Clear(); capturedControlOwner=null; capturedControlOwnerProof=null;
+        }
         snapshot["commandThrough"]=connection.CompletedRequest;
         snapshot["commandResult"]=connection.CompletedResult;
         snapshot["commandReceipts"]=new JArray(connection.CaptureCommandReceipts().Select(receipt=>new JObject {
@@ -380,6 +393,7 @@ internal sealed partial class NativeWorld
         if(closed) return;
         shop=authority; link=connection; link.Execute=Execute; link.AcceptPresence=ReceiveViews;
         BindActorSession();
+        EnableIndependentTravel();
         ObserveOperationContext();
         InitializeHostModExtensions();
     }
@@ -434,7 +448,18 @@ internal sealed partial class NativeWorld
         using var performance=NativePerformance.Measure("guest.apply",NativePerformance.FrameWork.Apply);
         var data=decoded.Data;
         if((int)data["schema"]!=WorldSchema) throw new InvalidDataException("Unknown native world schema");
-        var extensionProjection=PrepareModExtensionProjection(data["modExtensions"]);
+        // Validate against the exact first checkpoint before hydrating its
+        // scene. The join menu may have reviewed an earlier revision.
+        if (applied == 0 && RoomModManifest.ReadOpeningPackages(data[RoomModManifest.OpeningField]) is { } required)
+        {
+            var local = NativeRoomModManifest.Local();
+            foreach (var provider in required.Values)
+                if (!local.TryGetValue(provider.Id, out var installed) || !RoomModManifest.ExactPackage(provider, installed))
+                    throw new ModExtensionJoinException("sync_opening_mod_required", provider.Id, "Required opening Mod differs");
+        }
+        var scene=(JObject)data["scene"];
+        bool localSceneChanged=shownScene!=((string)scene["location"] ?? "");
+        var extensionProjection=PrepareModExtensionProjection(data["modExtensions"],localSceneChanged);
         if(data["commandThrough"]?.Type!=JTokenType.Integer || !ulong.TryParse(data["commandThrough"].ToString(),out ulong commandThrough))
             throw new InvalidDataException("Invalid native command watermark");
         if(data["commandResult"]?.Type!=JTokenType.Integer || !ushort.TryParse(data["commandResult"].ToString(),out ushort commandResult) ||
@@ -487,7 +512,7 @@ internal sealed partial class NativeWorld
             Action refreshBusiness;
             using(NativePerformance.Measure("guest.business")) refreshBusiness=ApplyBusinessFacts((JObject)data["business"],decoded.Index.ChangedBusiness);
             documentReadToken=(string)data["documentRead"];
-            ApplySharedSceneFacts((JObject)data["scene"]);
+            ApplySharedSceneFacts(scene);
             model.Seen.Clear();
             var retained=new HashSet<GameItem>();
             var bootstrap=projectionRoots.SelectMany(root=>nativeRoots[root.Key].childItems)
@@ -536,7 +561,7 @@ internal sealed partial class NativeWorld
             // This is read readiness, not the published/acknowledged revision.
             projectionFaulted=false;
             projection.AllowReads();
-            PresentSharedScene((JObject)data["scene"]);
+            PresentSharedScene(scene);
             BindFixtureReferences();
             projection.Flush();
             ApplyShutter((JObject)data["shutter"]);
@@ -605,11 +630,78 @@ internal sealed partial class NativeWorld
 
     private JObject Capture(NativeDeferredFields fields,out ShopView shopView,out byte[] shopBytes)
     {
+        using var site = EnterExpeditionSite(NativeActorRun.Slot.Partner);
         var store=PlayerStore.Instance;
         var blueprint=store.currentClientInstance?.GetClientBlueprint();
         var client=CaptureClient(blueprint);
         var actors=CaptureActors();
         BeginChangedCapture(actors,client);
+        var roots = CapturePhysicalInventory(fields);
+        var customerMotion=CaptureCustomerMotion();
+        using(EnterPartnerOperation())
+            if(client!=null) client["itemQueries"]=CaptureClientItemQueries(blueprint);
+        tradeToken=TradeToken();
+        var snapshot=new JObject { ["schema"]=WorldSchema,["roots"]=roots };
+        snapshot["customerMotion"]=customerMotion;
+        snapshot["operationContext"]=ObserveOperationContext();
+        using(NativePerformance.Measure("host.store_panels"))
+        {
+            snapshot["wild"]=CaptureWild(); snapshot["phone"]=CapturePhone(fields);
+            snapshot["dialogue"]=CaptureDialogue(); snapshot["morningReport"]=JArray.FromObject(shop.FullMorningReport);
+            snapshot["morningReportDay"]=shop.FullMorningReportDay;
+        }
+        using(NativePerformance.Measure("host.shop_view"))
+        {
+            shopView=shop.Capture(); shopBytes=ShopProtocol.Encode(shopView);
+            snapshot["view"]=Convert.ToBase64String(shopBytes);
+        }
+        snapshot["actors"]=actors;
+        snapshot["partnerSetupRequired"]=PartnerSetupRequired();
+        snapshot["personalNotifications"]=NativeActorSession.Current?.PersonalUi.CaptureNotifications();
+        snapshot["world"] = actorRun == null ? fields.Capture(store, WorldFields) :
+            fields.Capture(store, SharedWorldFields, CapturePartnerWorldFields);
+        snapshot["scene"] = CaptureSharedScene();
+        if(NativeOpening.PartnerCareer(store) is string openingCareer)
+        {
+            var rent = OpeningRent.Describe(store);
+            snapshot["openingCareer"] = openingCareer;
+            if(NativeOpening.SharedPerks(store) is { Count: > 0 } sharedPerks)
+                snapshot["openingSharedPerks"] = new JArray(sharedPerks.Keys.OrderBy(id => id, StringComparer.Ordinal));
+            snapshot["openingRentActive"] = rent.Active;
+            snapshot["openingRentBalance"] = rent.Balance;
+        }
+        snapshot["cash"]=store.playerCash; snapshot["day"]=StoreStation.Instance.dayCounter;
+        snapshot["retailMarkup"]=store.retailMarkup; snapshot["clientArrived"]=store.isClientArrived;
+        snapshot["client"]=client; snapshot["clientInstance"]=blueprint==null ? 0u : model.Id(store.currentClientInstance);
+        snapshot["tradeToken"]=tradeToken;
+        using(EnterPartnerOperation()) snapshot["bargain"]=CaptureBargain();
+        using(NativePerformance.Measure("host.business")) snapshot["business"]=CaptureBusiness(fields,!HasActorProjection);
+        string oracle=NativeBackgroundQa.Enabled && (++verifiedUpgradeInputs%43==1 || wildAwaitingClose) ? WildProof() : null;
+        fields.DeferUpgradeProof((JObject)snapshot["wild"],(JObject)snapshot["business"]["upgrades"],
+            store.playerCash,store.wildFavor,HashData,oracle,upgradeProofCache);
+        snapshot["shutter"]=CaptureShutter();
+        snapshot["shopPresentation"]=NativeShopPresentation.Capture(bellCue,shutterCue,shutterAnimated);
+        snapshot["audio"]=CaptureAudio();
+        using(EnterPartnerOperation())
+        using(NativePerformance.Measure("host.target_queries")) snapshot["targets"]=CaptureTargetQueries();
+        snapshot["auxiliary"]=CaptureAuxiliary();
+        using(EnterPartnerOperation())
+        using(NativePerformance.Measure("host.sorts")) snapshot["sorts"]=CaptureSorts();
+        snapshot["ending"]=CaptureEnding(); snapshot["securityScene"]=CaptureSecurityScene(); snapshot["shooting"]=CaptureShooting();
+        using(EnterPartnerOperation()) snapshot["choice"]=CaptureDynamicChoice();
+        using(EnterPartnerOperation()) snapshot["frontends"]=CaptureFrontends();
+        snapshot["documentRead"]=DocumentReadProof();
+        snapshot["modExtensions"]=CaptureModExtensions();
+        snapshot[RoomModManifest.Field]=roomMods ??= NativeRoomModManifest.Capture();
+        if (store.modData.ContainsKey(NativeActorCheckpoint.OpeningModsDataKey))
+            snapshot[RoomModManifest.OpeningField] = roomOpeningMods ??= NativeRoomModManifest.CaptureOpening(store);
+        return snapshot;
+    }
+    private JArray CapturePhysicalInventory(NativeDeferredFields fields)
+    {
+#if PROBABLY_COOP_GRID_QA
+        using var inventoryTiming = NativeFrameAttribution.Measure(NativeFrameAttribution.Stage.Inventory);
+#endif
         // A full baseline still validates the complete physical ownership graph.
         // Routine publications retain unchanged subgraphs without walking them.
         bool fullCheckpoint = !borrowCapturedRecords || link.Revision - authorityBaseRevision >= 96;
@@ -647,62 +739,9 @@ internal sealed partial class NativeWorld
         moveProofs.Retain(model.Seen);
         sortProofs.Retain(model.Seen);
         contentsProofs.Retain(model.Seen);
-        var customerMotion=CaptureCustomerMotion();
-        using(EnterPartnerOperation())
-            if(client!=null) client["itemQueries"]=CaptureClientItemQueries(blueprint);
-        tradeToken=TradeToken();
-        var snapshot=new JObject { ["schema"]=WorldSchema,["roots"]=roots };
-        snapshot["customerMotion"]=customerMotion;
-        snapshot["operationContext"]=ObserveOperationContext();
-        using(NativePerformance.Measure("host.store_panels"))
-        {
-            snapshot["wild"]=CaptureWild(); snapshot["phone"]=CapturePhone(fields);
-            snapshot["dialogue"]=CaptureDialogue(); snapshot["morningReport"]=JArray.FromObject(shop.FullMorningReport);
-            snapshot["morningReportDay"]=shop.FullMorningReportDay;
-        }
-        using(NativePerformance.Measure("host.shop_view"))
-        {
-            shopView=shop.Capture(); shopBytes=ShopProtocol.Encode(shopView);
-            snapshot["view"]=Convert.ToBase64String(shopBytes);
-        }
-        snapshot["actors"]=actors;
-        snapshot["partnerSetupRequired"]=PartnerSetupRequired();
-        snapshot["personalNotifications"]=NativeActorSession.Current?.PersonalUi.CaptureNotifications();
-        snapshot["world"]=fields.Capture(store,HasActorProjection ? SharedWorldFields : WorldFields); snapshot["scene"]=CaptureSharedScene();
-        if(NativeOpening.PartnerCareer(store) is string openingCareer)
-        {
-            var rent = OpeningRent.Describe(store);
-            snapshot["openingCareer"] = openingCareer;
-            if(NativeOpening.SharedPerks(store) is { Count: > 0 } sharedPerks)
-                snapshot["openingSharedPerks"] = new JArray(sharedPerks.Keys.OrderBy(id => id, StringComparer.Ordinal));
-            snapshot["openingRentActive"] = rent.Active;
-            snapshot["openingRentBalance"] = rent.Balance;
-        }
-        snapshot["cash"]=store.playerCash; snapshot["day"]=StoreStation.Instance.dayCounter;
-        snapshot["retailMarkup"]=store.retailMarkup; snapshot["clientArrived"]=store.isClientArrived;
-        snapshot["client"]=client; snapshot["clientInstance"]=blueprint==null ? 0u : model.Id(store.currentClientInstance);
-        snapshot["tradeToken"]=tradeToken;
-        using(EnterPartnerOperation()) snapshot["bargain"]=CaptureBargain();
-        using(NativePerformance.Measure("host.business")) snapshot["business"]=CaptureBusiness(fields,!HasActorProjection);
-        string oracle=NativeBackgroundQa.Enabled && (++verifiedUpgradeInputs%43==1 || wildAwaitingClose) ? WildProof() : null;
-        fields.DeferUpgradeProof((JObject)snapshot["wild"],(JObject)snapshot["business"]["upgrades"],
-            store.playerCash,store.wildFavor,HashData,oracle,upgradeProofCache);
-        snapshot["shutter"]=CaptureShutter();
-        snapshot["shopPresentation"]=NativeShopPresentation.Capture(bellCue,shutterCue,shutterAnimated);
-        snapshot["audio"]=CaptureAudio();
-        using(EnterPartnerOperation())
-        using(NativePerformance.Measure("host.target_queries")) snapshot["targets"]=CaptureTargetQueries();
-        snapshot["auxiliary"]=CaptureAuxiliary();
-        using(EnterPartnerOperation())
-        using(NativePerformance.Measure("host.sorts")) snapshot["sorts"]=CaptureSorts();
-        snapshot["ending"]=CaptureEnding(); snapshot["securityScene"]=CaptureSecurityScene(); snapshot["shooting"]=CaptureShooting();
-        using(EnterPartnerOperation()) snapshot["choice"]=CaptureDynamicChoice();
-        using(EnterPartnerOperation()) snapshot["frontends"]=CaptureFrontends();
-        snapshot["documentRead"]=DocumentReadProof();
-        snapshot["modExtensions"]=CaptureModExtensions();
-        snapshot[RoomModManifest.Field]=roomMods ??= NativeRoomModManifest.Capture();
-        return snapshot;
+        return roots;
     }
+
     internal bool AuditProjection(out string detail)
     {
         // A pending local placement is intentionally ahead of the last host
@@ -1097,8 +1136,12 @@ internal sealed partial class NativeWorld
                 return (ushort)ShopResult.Stale;
             if(!AcceptFrontendPrediction(command)) return (ushort)ShopResult.Stale;
             bool hand=command["hand"]!=null;
+#if PROBABLY_COOP_GRID_QA
+            using var frameRemoteDrag = hand ? NativeFrameAttribution.Measure(NativeFrameAttribution.Stage.RemoteDrag) : default;
+#endif
             hostHand=CaptureHostHand(!hand);
             using var actorScope=EnterPartnerOperation();
+            using var site = kind == "travel" ? null : EnterExpeditionSite(NativeActorRun.Slot.Partner);
             RemoteUiExecution=this; remoteChoiceOrigins=ChoiceOrigins(command);
             ushort result=hand ? ExecuteHand(command) : ExecuteCore(command);
             if(result==(ushort)ShopResult.Applied && (string)command["kind"] is not ("handBegin" or "handRenew" or "handRelease")) prefetched.Clear();
@@ -1110,7 +1153,12 @@ internal sealed partial class NativeWorld
     }
     private ushort ExecuteCore(JObject command)
     {
-        if((string)command["kind"]=="qaActorWound") return ExecuteQaActorWound();
+        if((string)command["kind"]=="qaActorWound")
+#if PROBABLY_COOP_GRID_QA
+            return ExecuteQaActorWound();
+#else
+            return (ushort)ShopResult.Unavailable;
+#endif
         if((string)command["kind"]=="ending") return ExecuteEnding(command);
         if(NativeActorSession.Current is NativeActorSession actors && (actors.Terminal || actors.Faulted))
             return (ushort)ShopResult.Busy;
@@ -1236,6 +1284,9 @@ internal sealed partial class NativeWorld
     private static EncodedSnapshot EncodeSnapshot(JObject snapshot,NativeDeferredFields fields,CancellationToken cancellation,
         NativeRecordBasis basis,ulong baseRevision,byte[] auditBasis,bool preferPages,NativeRecordBasis completeCaptureBasis)
     {
+#if PROBABLY_COOP_GRID_QA
+        using var framePack = NativeFrameAttribution.MeasurePack();
+#endif
         var result=new EncodedSnapshot(); var timer=System.Diagnostics.Stopwatch.StartNew();
         try
         {

@@ -23,7 +23,7 @@ internal sealed class NativePartnerJoin : IDisposable
     private string[] draft;
     private double retry, pickerDeadline;
     private string pickerFailure;
-    private Task<(Guid Run,bool Required,JToken Extensions,JToken Mods)> reading;
+    private Task<(Guid Run,bool Required,JToken Extensions,JToken Mods,JToken OpeningMods)> reading;
     private Dictionary<string,ModExtensionContract> extensions;
     private RoomModManifest review, acceptedReview;
     private WeakReference<CoopSession> consentConnection;
@@ -78,13 +78,14 @@ internal sealed class NativePartnerJoin : IDisposable
             if(run!=Guid.Empty && run!=incoming) throw new InvalidDataException("Cooperative character run changed during join");
             run=incoming; required=metadata.Required; observed=readingRevision;
             var blockers=NativeWorld.ReviewModExtensionJoin(metadata.Extensions,ref extensions);
-            var report=RoomModManifest.Compare(RoomModManifest.Read(metadata.Mods),NativeRoomModManifest.Local(),blockers);
+            var report=RoomModManifest.Compare(RoomModManifest.Read(metadata.Mods),NativeRoomModManifest.Local(),blockers,
+                RoomModManifest.ReadOpeningPackages(metadata.OpeningMods));
             if(!report.Same(review))
             {
                 acceptedReview=consentConnection?.TryGetTarget(out var acceptedConnection)==true &&
                     ReferenceEquals(acceptedConnection, room.Session) && report.Same(consentReport) ? report : null;
                 review=report;
-                panel.RecordModReview(report);
+                panel.RecordModReview(report, acceptedReview != null);
             }
         }
         if(run==Guid.Empty) return false;
@@ -118,6 +119,7 @@ internal sealed class NativePartnerJoin : IDisposable
         }
         if(draft==null && !picker)
         {
+#if PROBABLY_COOP_GRID_QA
             if(NativeBackgroundQa.Enabled)
             {
                 if(!NativePartnerSetupQa.Tick(out var selected)) return false;
@@ -126,6 +128,7 @@ internal sealed class NativePartnerJoin : IDisposable
                     Debug.Log("[probably_coop QA] PASS partner-native-picker "+evidence);
             }
             else
+#endif
             {
                 TryOpenPicker(room);
             }
@@ -189,7 +192,9 @@ internal sealed class NativePartnerJoin : IDisposable
         disposing=true;
         try
         {
+#if PROBABLY_COOP_GRID_QA
             if(NativeBackgroundQa.Enabled) NativePartnerSetupQa.Reset();
+#endif
             NativeActorPartnerSetup.CancelDraft(pickerOwner);
         }
         finally
@@ -222,7 +227,11 @@ internal sealed partial class NativeWorld
         NativeActorPartnerSetup.Prepared prepared;
         try { prepared=NativeActorPartnerSetup.Prepare(session.Run,draft,receipt); }
         catch(InvalidDataException) { return (ushort)ShopResult.Unavailable; }
-        try { session.Store.modData[NativeActorPartnerSetup.SaveKey]=prepared.Commit(); }
+        try
+        {
+            session.Store.modData[NativeActorPartnerSetup.SaveKey]=prepared.Commit();
+            NativeSharedPerkEvents.RestoreMissedCommissaryIntroduction(session);
+        }
         catch(Exception error) { session.MarkFault(error); throw; }
         // Both the receipt and actor data now belong to the native in-memory
         // run. The next native save persists them together; this does not claim

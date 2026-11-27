@@ -52,6 +52,7 @@ internal static class NativeActorCheckpoint
         internal JArray Roots => (JArray)data["roots"].DeepClone();
         internal JArray SelectedBackpacks => (JArray)data["selectedBackpacks"].DeepClone();
         internal string PartnerSetup => SetupText(data["partnerSetup"]);
+        internal string OpeningMods => data["openingMods"] == null ? null : OpeningModsText(Text(data["openingMods"]));
         internal Envelope(Guid run, int slot, int day, Guid checkpoint, JObject value)
         {
             Run = run; Slot = slot; Day = day; Checkpoint = checkpoint;
@@ -70,6 +71,8 @@ internal static class NativeActorCheckpoint
 
     // A receipt describes bytes from ONE file read. It deliberately does not
     // deserialize PlayerStore or StoreStation. It is not a gameplay checkpoint.
+    internal const string OpeningModsDataKey = "probably_coop.opening.providers.v1";
+
     internal sealed class Receipt
     {
         internal Guid Run;
@@ -80,6 +83,7 @@ internal static class NativeActorCheckpoint
         internal bool UsesEffectReplication;
         internal string Encoded;
         internal string PartnerSetup;
+        internal string OpeningMods;
         internal JObject NativeHost;
         internal readonly Dictionary<string, string> NativeInventories = new Dictionary<string, string>(StringComparer.Ordinal);
     }
@@ -91,13 +95,15 @@ internal static class NativeActorCheckpoint
     // savedItemFeatureList: capture after SaveGame clears it, before WriteSlotFile.
     // This codec never calls EncodeNodes; it cannot certify capture side effects.
     internal static Envelope Create(Guid run, int slot, int day, JObject personal,
-        JArray roots, JArray selectedBackpacks, IEnumerable<int> sharedItemIds, string partnerSetup = null)
+        JArray roots, JArray selectedBackpacks, IEnumerable<int> sharedItemIds, string partnerSetup = null,
+        string openingMods = null)
     {
         var value = new JObject { ["schema"] = SchemaVersion, ["run"] = run.ToString("D"),
             ["slot"] = slot, ["day"] = day, ["checkpoint"] = Guid.NewGuid().ToString("D"),
             ["phase"] = "settled", ["personal"] = personal?.DeepClone(),
             ["roots"] = roots?.DeepClone(), ["selectedBackpacks"] = selectedBackpacks?.DeepClone(),
             ["partnerSetup"] = partnerSetup == null ? JValue.CreateNull() : new JValue(partnerSetup) };
+        if (openingMods != null) value["openingMods"] = openingMods;
         var envelope = Decode(value.ToString(Formatting.None), sharedItemIds);
         envelope.AuthorizeFreshCapture(FreshWriteAuthority);
         return envelope;
@@ -126,7 +132,9 @@ internal static class NativeActorCheckpoint
     {
         var value = Parse(encoded, MaximumEnvelopeCharacters);
         if (Int(value["schema"]) != SchemaVersion) throw Invalid("unsupported actor checkpoint schema; create a new cooperative run");
-        Keys(value, "schema run slot day checkpoint phase personal roots selectedBackpacks partnerSetup");
+        const string fields = "schema run slot day checkpoint phase personal roots selectedBackpacks partnerSetup";
+        Keys(value, value["openingMods"] == null ? fields : fields + " openingMods");
+        if (value["openingMods"] != null) OpeningModsText(Text(value["openingMods"]));
         if (Text(value["phase"]) != "settled") throw Invalid("phase");
         SetupText(value["partnerSetup"]);
         var run = Identity(value["run"]); var checkpoint = Identity(value["checkpoint"]);
@@ -171,6 +179,8 @@ internal static class NativeActorCheckpoint
                 throw Invalid("host/personal capture mismatch");
             if (!string.Equals(ReadPartnerSetup(data), expected.PartnerSetup, StringComparison.Ordinal))
                 throw Invalid("partner setup capture mismatch");
+            if (!string.Equals(ReadOpeningMods(data), expected.OpeningMods, StringComparison.Ordinal))
+                throw Invalid("opening Mod capture mismatch");
             hadPrevious = data.TryGetValue(ModDataKey, out previous);
             if (hadPrevious)
             {
@@ -205,7 +215,8 @@ internal static class NativeActorCheckpoint
             CheckIdentity();
             if (!canWrite() || !ReferenceEquals(store.modData, data) ||
                 !data.TryGetValue(ModDataKey, out var current) || current != Expected.Encoded ||
-                !string.Equals(ReadPartnerSetup(data), Expected.PartnerSetup, StringComparison.Ordinal))
+                !string.Equals(ReadPartnerSetup(data), Expected.PartnerSetup, StringComparison.Ordinal) ||
+                !string.Equals(ReadOpeningMods(data), Expected.OpeningMods, StringComparison.Ordinal))
                 throw Invalid("write context changed");
         }
         private void CheckIdentity()
@@ -255,6 +266,8 @@ internal static class NativeActorCheckpoint
             throw Invalid("loaded native host/personal mismatch");
         if (!string.Equals(receipt.PartnerSetup, decoded.PartnerSetup, StringComparison.Ordinal))
             throw Invalid("loaded partner setup/checkpoint mismatch");
+        if (!string.Equals(receipt.OpeningMods, decoded.OpeningMods, StringComparison.Ordinal))
+            throw Invalid("loaded opening Mods/checkpoint mismatch");
         var ids = sharedIds.Concat(carryIds);
         if (receipt.CurrentUniqueId < 0 || receipt.EffectWatermarks is EffectItemIds watermarks &&
             (!watermarks.Valid || receipt.CurrentUniqueId >= EffectItemIds.HostStart) ||
@@ -361,6 +374,7 @@ internal static class NativeActorCheckpoint
                     }
                     if (modData == null || !modData.TryGetValue(ModDataKey, out receipt.Encoded)) throw Invalid("missing coop entry");
                     receipt.PartnerSetup = ReadPartnerSetup(modData);
+                    receipt.OpeningMods = ReadOpeningMods(modData);
                     receipt.UsesEffectReplication = modData.TryGetValue(EffectItemIds.RunKey, out var mode) && mode == EffectItemIds.RunSchema;
                     if (modData.TryGetValue(EffectItemIds.SaveKey, out string allocation))
                     {
@@ -406,6 +420,15 @@ internal static class NativeActorCheckpoint
         if (string.IsNullOrEmpty(value) || value.Length > MaximumPartnerSetupCharacters)
             throw Invalid("partner setup receipt size");
         return value;
+    }
+
+    internal static string ReadOpeningMods(Dictionary<string, string> data) =>
+        data.TryGetValue(OpeningModsDataKey, out string value) ? OpeningModsText(value) : null;
+
+    private static string OpeningModsText(string text)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length > 8192) throw Invalid("opening Mod receipt size");
+        return text;
     }
 
     private static string SetupText(JToken value)

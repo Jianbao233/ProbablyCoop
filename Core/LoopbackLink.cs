@@ -18,7 +18,21 @@ internal sealed class LoopbackLink : IDisposable
     private readonly HMACSHA256 mac;
     private IPEndPoint peer;
     private readonly DirectFragments fragments = new DirectFragments();
+    private readonly SentChunk[] recentChunks = new SentChunk[32];
     private ulong nextFragmentSequence;
+    private double sendTime;
+    private readonly struct SentChunk
+    {
+        internal readonly byte[] Bytes;
+        internal readonly ulong Sequence;
+        internal readonly double SentAt;
+        internal SentChunk(byte[] bytes, ulong sequence, double sentAt)
+        {
+            Bytes = bytes;
+            Sequence = sequence;
+            SentAt = sentAt;
+        }
+    }
     internal CoopSession Session { get; }
     internal string Code { get; }
     internal IPEndPoint LocalEndpoint { get; }
@@ -69,6 +83,7 @@ internal sealed class LoopbackLink : IDisposable
 
     internal void Tick(double now,Action beforeSessionTick=null)
     {
+        sendTime = now;
         Session.ObserveNetworkPump(now);
         int count=0;
         long start=Stopwatch.GetTimestamp();
@@ -133,6 +148,7 @@ internal sealed class LoopbackLink : IDisposable
     {
         peer = null;
         fragments.Reset();
+        Array.Clear(recentChunks, 0, recentChunks.Length);
         Session.DropPeer();
     }
 
@@ -142,7 +158,7 @@ internal sealed class LoopbackLink : IDisposable
         if (mac != null && bytes.Length > DirectFragments.ChunkSize)
         {
             if (cursor) return false;
-            ulong sequence = ++nextFragmentSequence;
+            ulong sequence = FragmentSequence(bytes);
             for (int index = 0; index < DirectFragments.Count(bytes.Length); index++)
                 if (!SendDatagram(DirectFragments.Encode(bytes, sequence, index))) return false;
         }
@@ -155,6 +171,21 @@ internal sealed class LoopbackLink : IDisposable
         }
         Sent++;
         return true;
+    }
+
+    private ulong FragmentSequence(byte[] bytes)
+    {
+        int index = Wire.NativeChunkIndex(bytes);
+        if (index < 0) return ++nextFragmentSequence;
+        int slot = index % recentChunks.Length;
+        var recent = recentChunks[slot];
+        // Stable only for the exact encoded chunk, including room, epoch,
+        // revision, page and payload. A different chunk never shares an ID.
+        if (recent.Bytes != null && sendTime - recent.SentAt < DirectFragments.AssemblyLifetime * 0.75 &&
+            bytes.AsSpan().SequenceEqual(recent.Bytes)) return recent.Sequence;
+        ulong sequence = ++nextFragmentSequence;
+        recentChunks[slot] = new SentChunk(bytes, sequence, sendTime);
+        return sequence;
     }
 
     private bool SendDatagram(byte[] datagram)

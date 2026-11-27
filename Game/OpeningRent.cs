@@ -31,8 +31,11 @@ internal static class OpeningRent
 
     private static (OpeningRentPlan Plan, int Arrears, int LastDay) Read(PlayerStore store)
     {
-        if (NativeActorSession.Current?.Store != store || !store.modData.TryGetValue(SaveKey, out var json))
-            return default;
+        // Native load hooks can read prices after the cooperative checkpoint
+        // has been verified but before both actors are attached to the shop.
+        if ((!ReferenceEquals(NativeActorSession.Current?.Store, store) &&
+            !ReferenceEquals(NativeActorPersistence.LoadedOpeningStore, store)) ||
+            !store.modData.TryGetValue(SaveKey, out var json)) return default;
         var cached = Accounts.GetValue(store, _ => new RentAccount());
         if (cached.Serialized == json) return (cached.Plan, cached.Arrears, cached.LastDay);
         var record = JObject.Parse(json);
@@ -89,6 +92,9 @@ internal static class OpeningRent
             if (account.Plan == null) return true;
             int today = StoreStation.Instance.dayCounter;
             if (account.LastDay == today) return false;
+            // Keep the final receipt for reloads on the settlement day,
+            // then allow the original rent rules to run on their own.
+            if (account.Plan.Complete && account.Arrears == 0) return true;
             __state = (account.Plan, account.Arrears, today);
             return true;
         }
@@ -121,12 +127,12 @@ internal static class OpeningRent
         private static void Postfix(AdvCalendarUIManager __instance)
         {
             var store = PlayerStore.Instance;
-            int active = Describe(store).Active;
-            if (active == 0 || store.IsPropertyPaid || store.isPayingMortgage) return;
+            var debt = Describe(store);
+            if (debt.Balance == 0 || store.IsPropertyPaid || store.isPayingMortgage) return;
             var text = __instance.landlordTMP;
-            int arrears = Math.Max(0, store.temporaryRent - active);
+            int arrears = Math.Max(0, store.temporaryRent - debt.Active);
             text.text = ModHelper.GetLocalized("probably_coop", "opening_rent_calendar",
-                store.GetRentValue(), active, arrears, store.dayUntilRent);
+                store.GetRentValue(), debt.Active, arrears, store.dayUntilRent, debt.Balance);
         }
     }
 

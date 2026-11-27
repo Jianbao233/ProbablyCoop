@@ -27,15 +27,19 @@ internal sealed class OpeningRentPlan
     }
 
     internal static bool CanCombine(string host, string partner) =>
-        TryFee(host, out _) && TryFee(partner, out _) &&
-        (host == partner || host != "rock_bottom" && partner != "rock_bottom");
+        TryFee(host, out _) && TryFee(partner, out _) && CanCombineIds(host, partner);
+
+    internal static bool CanCombineIds(string host, string partner) =>
+        host == partner || host != "rock_bottom" && partner != "rock_bottom";
 
     internal static int QuotedShortfall(string host, string partner, bool savingPerk)
     {
         if (!CanCombine(host, partner)) throw new ArgumentException("Incompatible starting scenarios.");
-        int cost = Fees[host] + (host == partner ? 0 : Fees[partner]);
-        return Math.Max(0, cost - StartingCash - (savingPerk ? SavingPerkCredit : 0));
+        return QuotedShortfall(Fees[host], host == partner ? 0 : Fees[partner], savingPerk);
     }
+
+    internal static int QuotedShortfall(int hostCost, int partnerCost, bool savingPerk) =>
+        Math.Max(0, checked(hostCost + partnerCost - StartingCash - (savingPerk ? SavingPerkCredit : 0)));
 
     internal ReadOnlyCollection<int> Amounts { get; }
     internal int Index { get; }

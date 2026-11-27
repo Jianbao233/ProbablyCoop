@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Net;
 using System.Net.Sockets;
+using Newtonsoft.Json.Linq;
+using ProbablyCoop;
 using ProbablyCoop.Core;
 
 var build = new byte[Wire.FingerprintSize];
@@ -321,6 +323,7 @@ Check(measurements.LocallyDelayedProbes == 0 && measurements.CompletedProbes == 
 Console.WriteLine("PASS connection processing gaps: exclude affected probes, expire notice and clear old samples");
 DirectConnectionMeasurementsTests.Run();
 CheckWorldReload(build);
+CheckNativeProjectionGrace(build);
 
 var incompatible = (byte[])build.Clone();
 incompatible[0] = 1;
@@ -440,6 +443,34 @@ Console.WriteLine("PASS shop state delivery after silent loss");
     shared.Cash++; panel.Tick(1.31,true);
     Check(shared.Captures==3 && panel.View.Cash==shared.Cash,"metadata fallback stopped after native publications ceased");
     Console.WriteLine("PASS native and panel share one host observation; inputs revalidate and periodic fallback resumes");
+}
+{
+    var shared = new TestShop { EndDayOpen = true };
+    var sent = new List<byte[]>();
+    var panel = new ShopLink(true, (kind, serial, revision, value, bytes) =>
+    {
+        if (kind == Kind.ShopState) sent.Add(bytes);
+        return true;
+    });
+    panel.SetAuthority(shared);
+    var observed = shared.Capture();
+    byte[] published = ShopProtocol.Encode(observed);
+    panel.ObserveAuthority(shared, observed, published, 1);
+    panel.Tick(1, true);
+    panel.Tick(1.61, true);
+    Check(sent.Count == 2 && ReferenceEquals(sent[0], published) && ReferenceEquals(sent[1], published),
+        "shop observation and retransmit did not share the original bytes");
+    panel.Submit(ShopAction.Ready, 0, 1.62);
+    panel.Tick(2.23, true);
+    Check(sent.Count == 4 && !ReferenceEquals(sent[2], published) && ReferenceEquals(sent[2], sent[3]) &&
+        ShopProtocol.TryDecode(sent[2], out var readyView) && readyView.ReadyMask == 1,
+        "readiness must update the outbound bytes once and use them on retry");
+    shared.Cash++;
+    panel.Tick(2.44, true);
+    Check(sent.Count == 5 && ShopProtocol.TryDecode(sent[4], out var changed) && changed.Cash == shared.Cash &&
+        changed.ReadyMask == 0 && ShopProtocol.TryDecode(published, out var original) && original.Cash != changed.Cash,
+        "a fresh observation must replace the old bytes without mutating them");
+    Console.WriteLine("PASS shop wire payload reuse: initial publication, silent loss, new readiness and new authority state");
 }
 int movesBeforeHold = authority.Moves;
 guest.Shop.Submit(ShopAction.PickUp, 7, 634);
@@ -707,6 +738,64 @@ static void CheckWorldReload(byte[] fingerprint)
     Check(host.State == LinkState.TimedOut && guest.State == LinkState.TimedOut,
         "a stalled announced load still expires after the bounded grace period");
     Console.WriteLine("PASS in-room reload handshake: lost start and acknowledgement, old action and announcement, repeat reload and connected room");
+}
+
+static void CheckNativeProjectionGrace(byte[] fingerprint)
+{
+    foreach (bool dropCheckpointAck in new[] { false, true })
+    {
+        var toHost = new Queue<byte[]>();
+        var toGuest = new Queue<byte[]>();
+        var host = new CoopSession(true, fingerprint, (data, _) => { toGuest.Enqueue(data); return true; });
+        var guest = new CoopSession(false, fingerprint, (data, _) => { toHost.Enqueue(data); return true; });
+        void Drain(double time)
+        {
+            while (toGuest.Count > 0 || toHost.Count > 0)
+            {
+                while (toHost.TryDequeue(out var command)) host.Receive(command, false, time);
+                while (toGuest.TryDequeue(out var update)) guest.Receive(update, false, time);
+            }
+        }
+
+        host.Connect(0);
+        guest.Connect(0);
+        guest.Tick(0);
+        Drain(0);
+        host.Native.PublishCheckpoint(NativeSnapshotBinary.Pack(new JObject { ["day"] = 75 }));
+        host.Tick(1);
+        if (dropCheckpointAck)
+        {
+            while (toGuest.TryDequeue(out var update)) guest.Receive(update, false, 1);
+            toHost.Clear();
+        }
+        else Drain(1);
+        Check(guest.Native.FullRevision != 0 && (host.Native.FullRevision == 0) == dropCheckpointAck,
+            "native checkpoint received with or without delivery of its final acknowledgement");
+        Check(host.Native.HasFullCheckpointTraffic && guest.Native.HasFullCheckpointTraffic,
+            "both peers observe progress from the complete checkpoint transfer");
+
+        host.Tick(15);
+        guest.Tick(15);
+        Check(host.State == LinkState.Connected && guest.State == LinkState.Connected,
+            "a fifteen-second native scene stall cannot disconnect either peer");
+        if (dropCheckpointAck)
+        {
+            host.Tick(62);
+            guest.Tick(62);
+            Check(host.State == LinkState.TimedOut && guest.State == LinkState.TimedOut,
+                "an interrupted initial projection expires after the loading grace period");
+            continue;
+        }
+
+        guest.MarkNativeProjectionReady();
+        guest.Native.PublishPresence(new byte[8]);
+        Drain(15.1);
+        host.Tick(27.2);
+        guest.Tick(27.2);
+        Check(host.State == LinkState.TimedOut && guest.State == LinkState.TimedOut,
+            "ready players return to the ordinary disconnect timeout");
+    }
+    Console.WriteLine("PASS native projection loading grace: delayed scene, lost acknowledgement, ready or interrupted peer");
 }
 
 static Process StartPeer(string role, string port = null)

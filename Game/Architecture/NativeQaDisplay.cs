@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Text.RegularExpressions;
 using HarmonyLib;
 using UnityEngine;
 
@@ -10,21 +11,35 @@ namespace ProbablyCoop;
 /// Production/local multiplayer settings and ordinary single-player are untouched.</summary>
 internal static class NativeQaDisplay
 {
+    internal static bool IsProduct(string role)
+    {
+        string product = Application.productName;
+        return product == "Probably Stolen Coop QA " + role ||
+            Regex.IsMatch(product, "^Probably Stolen Coop Regression[A-Za-z0-9-]* " + role + "$");
+    }
+
     internal static bool IsIsolatedQa
     {
         get
         {
+#if PROBABLY_COOP_GRID_QA
             if (!NativeBackgroundQa.IsHostProduct &&
                 !NativeBackgroundQa.IsGuestProduct) return false;
             var args = Environment.GetCommandLineArgs();
             return (Application.isBatchMode || Array.IndexOf(args,"--probably-coop-qa-windowed")>=0) &&
                 Array.IndexOf(args, "--probably-coop-local") >= 0 &&
                 (Array.IndexOf(args, "--probably-coop-qa") >= 0 || Array.IndexOf(args, "--probably-coop-architecture-qa") >= 0);
+#else
+            return false;
+#endif
         }
     }
+#if PROBABLY_COOP_GRID_QA
     internal static IEnumerator Empty() { yield break; }
+#endif
 }
 
+#if PROBABLY_COOP_GRID_QA
 [HarmonyPatch(typeof(EmporiumOption), nameof(EmporiumOption.ApplySetting))]
 internal static class QaKeepCommandLineResolution
 {
@@ -51,3 +66,4 @@ internal static class QaNoDisplayResolutionRetry
         __result = NativeQaDisplay.Empty(); return false;
     }
 }
+#endif

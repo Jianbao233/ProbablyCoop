@@ -15,7 +15,8 @@ internal static class NativeSharedScavengingArrival
     private static void Prefix()
     {
         var session=NativeActorSession.Current;
-        if(session==null || session.Terminal || session.Faulted || NativeGuest.Active) return;
+        if(session==null || session.Terminal || session.Faulted || NativeGuest.Active ||
+            NativeWorld.Host?.IndependentTravel == true) return;
         var other=session.Run.CurrentActor==NativeActorRun.Slot.Host
             ? NativeActorRun.Slot.Partner : NativeActorRun.Slot.Host;
         // The original arrival resets the initiator and runs the shared
@@ -38,11 +39,30 @@ internal sealed partial class NativeWorld
 
     private void ObservePairedTravel()
     {
-        var entry = EmporiumEntry.Instance;
+        if (splitGround != null)
+        {
+            siteLedger.BeginNight(StoreStation.Instance.dayCounter);
+            return;
+        }
         var map = MapUIManager.Instance;
         if (!map.IsInTransit)
-            siteLedger.ObservePaired(StoreStation.Instance.dayCounter, map.Current?.Id, () => entry.afterhourInventory);
+            siteLedger.ObservePaired(StoreStation.Instance.dayCounter, map.Current?.Id, static () => EmporiumEntry.Instance.afterhourInventory);
     }
+    private TravelSiteLedger<GameGridInventory>.Position ObserveTravelPosition(NativeActorRun.Slot actor)
+    {
+        ObservePairedTravel();
+        return siteLedger.Where((int)actor);
+    }
+
+    internal bool EitherActorOutside
+    {
+        get
+        {
+            ObservePairedTravel();
+            return !siteLedger.EveryoneHome;
+        }
+    }
+
     internal static bool NativeTravelExecution;
     internal string ProposedTrip => proposedTrip;
     internal byte TripReady => tripReady;
@@ -50,26 +70,33 @@ internal sealed partial class NativeWorld
     internal bool IsDiscovered(string id,out bool value)=>discovered.TryGetValue(id,out value);
     private JObject CaptureSharedScene()
     {
-        ObservePairedTravel();
+        var partnerPosition = ObserveTravelPosition(NativeActorRun.Slot.Partner);
         var store=PlayerStore.Instance;
-        var partnerPosition = siteLedger.Where((int)NativeActorRun.Slot.Partner);
         var places=new JObject();
         using (EnterPartnerOperation())
             foreach(var id in new[]{AfterhourLocation.DUMPING_GROUND,AfterhourLocation.COMMISSARY,AfterhourLocation.DR_JACKSON})
                 places[id]=AfterhourLocation.Get(id)?.IsDiscovered()==true;
         var data=new JObject { ["location"]=partnerPosition.Site,["playerLocation"]=(int)store.playerLocation,
-            ["proposed"]=proposedTrip,["ready"]=tripReady,["proof"]=TravelProof(partnerPosition),["visits"]=store.visitLeftTonight,["discovered"]=places,
+            ["proposed"]=proposedTrip,["ready"]=tripReady,["proof"]=TravelProof(NativeActorRun.Slot.Partner, partnerPosition),["visits"]=store.visitLeftTonight,["discovered"]=places,
             ["backpack"]=proposedBackpack,["backpackProof"]=proposedBackpackProof,
             ["actorBackpacks"]=new JArray(tripBags),["actorBackpackProofs"]=new JArray(tripBagProofs),["initiator"]=tripInitiator,
             ["searches"]=ScavHelper.GetScavTimeLeft(),["minor"]=ScavHelper.GetMinorWoundChance(),["major"]=ScavHelper.GetMajorWoundChance(),
             ["wounded"]=store.healthData.isWoundedFresh };
+        if (splitGround != null)
+        {
+            int partner = (int)NativeActorRun.Slot.Partner;
+            data["independent"] = true;
+            data["peerLocation"] = siteLedger.Where((int)NativeActorRun.Slot.Host).Site;
+            data["visits"] = IndependentVisitsLeft(NativeActorRun.Slot.Partner);
+            data["lastVisitor"] = siteLedger.TryPrepareLeave(partner, partnerPosition, out var reservation) && reservation.LastVisitor;
+        }
         if(HasActorProjection) foreach(string field in new[]{"searches","minor","major","wounded"}) data.Remove(field);
         return data;
     }
-    internal void ProposeTrip(string destination,bool acceptProposal=false)
+    internal void ProposeTrip(string destination,bool acceptProposal=false,string proofOverride=null)
     {
         uint backpack=0; string contents="";
-        if(destination is not ("return" or "cancel"))
+        if(destination is not ("return" or "cancel" or ConfirmedIndependentReturn))
         {
             if(acceptProposal && !HasActorProjection) { backpack=proposedBackpack; contents=proposedBackpackProof; }
             else if(EmporiumEntry.Instance.selectedBackpack is GameItem selected)
@@ -82,34 +109,37 @@ internal sealed partial class NativeWorld
         { CommandNotice("另一位玩家已经选了这个背包。请选择另一个，或选择不携带。"); return; }
         if(host)
         {
-            var result=(ShopResult)TravelRequest(destination,1,null,backpack,contents);
+            var result=(ShopResult)TravelRequest(destination,1,proofOverride,backpack,contents);
             if(result!=ShopResult.Applied)
                 CommandNotice(result switch {
                     ShopResult.Busy=>ModHelper.GetLocalized("probably_coop", tripRefusal ?? "trip_block_busy"),
-                    ShopResult.NoSpace=>"随身栏放不下选定的背包，请重新选择。",
+                    ShopResult.NoSpace => tripRefusal != null ? ModHelper.GetLocalized("probably_coop", tripRefusal) : "随身栏放不下选定的背包，请重新选择。",
                     _=>"出行条件已变化，请检查目的地和背包。"
                 });
         }
-        else Submit(new JObject { ["kind"]="travel",["destination"]=destination,["proof"]=remoteTripProof,
+        else Submit(new JObject { ["kind"]="travel",["destination"]=destination,["proof"]=proofOverride ?? remoteTripProof,
             ["backpack"]=backpack,["backpackProof"]=contents });
     }
     private string TravelProof()
     {
-        ObservePairedTravel();
-        return TravelProof(siteLedger.Where((int)NativeActorRun.Slot.Host));
+        return TravelProof(NativeActorRun.Slot.Host, ObserveTravelPosition(NativeActorRun.Slot.Host));
     }
-    private string TravelProof(TravelSiteLedger<GameGridInventory>.Position position)
+    private string TravelProof(NativeActorRun.Slot actor, TravelSiteLedger<GameGridInventory>.Position position)
     {
         var ground = siteLedger.At(position.Site);
-        return HashData(new JObject { ["scene"]=position.Site,
+        var data = new JObject { ["scene"]=position.Site,
             ["day"]=StoreStation.Instance.dayCounter,["state"]=(int)PlayerStore.Instance.storeState,
-            ["visits"]=PlayerStore.Instance.visitLeftTonight,["visitGeneration"]=position.Generation,
-            ["ground"]=ground == null ? new JArray() : new JArray(ground.childItems.Select(MoveToken)) });
+            ["visits"]=splitGround != null ? IndependentVisitsLeft(actor) : PlayerStore.Instance.visitLeftTonight,
+            ["visitGeneration"]=position.Generation,
+            ["occupancy"]=siteLedger.OccupancyVersion(position.Site),
+            ["ground"]=ground == null ? new JArray() : new JArray(ground.childItems.Select(MoveToken)) };
+        if (splitGround != null && position.Site == AfterhourLocation.DR_JACKSON)
+            data["merchantOwned"] = new JArray(splitGround.Counters.OwnedMerchantItems(ground).Select(MoveToken));
+        return HashData(data);
     }
     private bool HasPartnerTravelProof(string expected)
     {
-        var position = siteLedger.Where((int)NativeActorRun.Slot.Partner);
-        return expected == TravelProof(position);
+        return expected == TravelProof(NativeActorRun.Slot.Partner, ObserveTravelPosition(NativeActorRun.Slot.Partner));
     }
     private void ValidateTripReadiness()
     {
@@ -139,6 +169,7 @@ internal sealed partial class NativeWorld
     private ushort TravelRequest(string destination,byte actor,string expected=null,uint backpack=0,string backpackProof="")
     {
         tripRefusal=null;
+        if (splitGround != null) return IndependentTravelRequest(destination,actor,expected,backpack,backpackProof);
         if(HasActorProjection) return ActorTravelRequest(destination,actor,expected,backpack,backpackProof);
         if(EndingActive || shop.BlocksWorldCommands || string.IsNullOrEmpty(destination)) return (ushort)ShopResult.Busy;
         var map=MapUIManager.Instance; var store=PlayerStore.Instance;
@@ -245,10 +276,10 @@ internal sealed partial class NativeWorld
             if(location.UsesAfterhourBag && !PrepareActorBackpacks(session,selectedBags)) return (ushort)ShopResult.NoSpace;
         }
         session.Activities.RetireScene();
-        var activity=session.Activities.Begin(map,"joint-travel",(NativeActorRun.Slot)(tripInitiator-1),
+        var activity=session.Activities.Begin(map,NativeActorActivities.JointTravel,(NativeActorRun.Slot)(tripInitiator-1),
             ()=>ReferenceEquals(NativeActorSession.Current,session) && !session.Terminal && !session.Faulted);
         EndSharedPhone(); NativeTravelExecution=true;
-        try { activity.Wrap(()=> { if(destination=="return") map.ReturnNow(); else map.Travel(location); })(); }
+        try { activity.WrapTravelTransition(()=> { if(destination=="return") map.ReturnNow(); else map.Travel(location); })(); }
         finally { NativeTravelExecution=false; ResetActorTrip(); }
         return (ushort)ShopResult.Applied;
     }
@@ -321,7 +352,8 @@ internal sealed partial class NativeWorld
     }
     private ushort ScavengeRequest()
     {
-        if(MapUIManager.Instance.Current?.Id!=AfterhourLocation.DUMPING_GROUND || !ScavHelper.CanScavenge() || shop.Settling)
+        if(ObserveTravelPosition(NativeActorRun.Slot.Partner).Site!=AfterhourLocation.DUMPING_GROUND ||
+            !ScavHelper.CanScavenge() || shop.Settling)
             return (ushort)ShopResult.Unavailable;
         ScavHelper.ScavengeDumpingGrounds(); nextCapture=0; return (ushort)ShopResult.Applied;
     }
@@ -367,6 +399,11 @@ internal sealed partial class NativeWorld
     }
     private void ApplySharedSceneFacts(JObject data)
     {
+        remoteIndependentTravel = (bool?)data["independent"] == true;
+        remoteFinalLeave = (bool?)data["lastVisitor"] == true;
+#if PROBABLY_COOP_GRID_QA
+        qaRemoteTravelPeerLocation = (string)data["peerLocation"] ?? "";
+#endif
         proposedTrip=(string)data["proposed"]; tripReady=(byte)data["ready"]; remoteTripProof=(string)data["proof"];
         proposedBackpack=(uint)data["backpack"]; proposedBackpackProof=(string)data["backpackProof"];
         tripInitiator=(byte)data["initiator"];
@@ -384,14 +421,21 @@ internal sealed partial class NativeWorld
     }
     private void PresentSharedScene(JObject data)
     {
+        PresentTravelLocation((string)data["location"] ?? "");
+        TickTripUi();
+    }
+
+    private void PresentTravelLocation(string scene)
+    {
         var store=PlayerStore.Instance;
-        string scene=(string)data["location"] ?? "";
         if(scene!=shownScene)
         {
             var map=MapUIManager.Instance; var e=EmporiumEntry.Instance;
             e.selectedBackpack=null;
             CloseTravelPreparation();
             TransitUI.Close(); NegociationUIManager.Instance.CloseUI();
+            if(IndependentTravel && (!string.IsNullOrEmpty(shownScene) || !string.IsNullOrEmpty(scene)))
+                PaperUIManager.Instance?.CloseAllPaperUI();
             e.CloseItemWindowUIWindow();
             AccessTools.Method(typeof(MapUIManager),"CloseLocationPanel").Invoke(map,null);
             AccessTools.Method(typeof(MapUIManager),"HideStage").Invoke(map,null);
@@ -410,6 +454,13 @@ internal sealed partial class NativeWorld
             }
             e.frontInvWindow.rectTransform.gameObject.SetActive(location?.ShowsStoreCounters==true || location==null && store.storeState==PlayerStore.StoreState.OPEN);
             e.backInvWindow.rectTransform.gameObject.SetActive(location==null || location.ShowsStoreCounters);
+            if (host)
+            {
+                e.faucetWindow?.rectTransform.gameObject.SetActive(location == null && EmporiumEntry.IsWaterTapUnlocked());
+                StoreVendingMachine.Instance.gameObject.SetActive(location == null && e.vendingMachineElement.childItem != null);
+                StoreVendingFountain.Instance.gameObject.SetActive(location == null && store.isVendingFountainUnlocked &&
+                    e.vendingFountainElement.childItem != null);
+            }
             StoreShutterButton.Instance.blockerGameObject.transform.parent.gameObject.SetActive(location==null);
             if(location!=null)
             {
@@ -434,7 +485,6 @@ internal sealed partial class NativeWorld
             else if (!string.IsNullOrEmpty(location.AmbienceId))
                 StoreSoundPlayer.Instance?.PlayAmbient(location.AmbienceId);
         }
-        TickTripUi();
     }
     internal int GuestScavLeft;
     internal float GuestScavMinor,GuestScavMajor;
@@ -459,6 +509,7 @@ internal static class SharedReturnRequest
         var world=NativeGuest.Active ? NativeWorld.Guest : NativeWorld.Host;
         // A lone host gets the native warning about goods left on the ground.
         // ReturnNow goes through travel validation again when the player confirms.
+        if(world?.IndependentTravel == true) { world.RequestIndependentReturn(); return false; }
         if(world==null || world.HostWithoutTravelPartner) return true;
         world.ProposeTrip("return");
         return false;
@@ -468,7 +519,14 @@ internal static class SharedReturnRequest
 internal static class SharedConfirmedReturn
 {
     private static bool Prefix()
-    { if(NativeWorld.NativeTravelExecution) return true; var w=NativeGuest.Active ? NativeWorld.Guest : NativeWorld.Host; if(w==null) return true; w.ProposeTrip("return"); return false; }
+    {
+        if (NativeWorld.NativeTravelExecution) return true;
+        var world = NativeGuest.Active ? NativeWorld.Guest : NativeWorld.Host;
+        if (world == null) return true;
+        if (world.IndependentTravel) world.RequestIndependentReturn();
+        else world.ProposeTrip("return");
+        return false;
+    }
 }
 [HarmonyPatch(typeof(MapUIManager),nameof(MapUIManager.OpenUI))]
 internal static class LocalTransitView

@@ -30,6 +30,8 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     private bool guestOutside;
     private readonly NativeStoreEvents events = new NativeStoreEvents();
     internal bool GuestOutside => guestOutside;
+    private bool AnyPlayerOutside => guestOutside || MapUIManager.Instance?.IsOutside == true ||
+        NativeWorld.Host?.EitherActorOutside == true;
     private GameItem quotedItem;
     private StoreClientInstance quotedClient;
     private int quotedAmount;
@@ -71,7 +73,8 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
     internal bool PendingSettlement => settlement?.Pending == true;
     internal bool BlocksWorldCommands => PendingSettlement || failedMutation ||
         PhaseBlocksWorldCommands(phase);
-    internal bool CanReloadWorld => Active && !BlocksWorldCommands;
+    internal bool CanReloadWorld => Active && !BlocksWorldCommands && MapUIManager.Instance?.IsInTransit == false &&
+        !AnyPlayerOutside;
     internal static bool PhaseBlocksWorldCommands(ShopDay phase) =>
         phase is ShopDay.Settling or ShopDay.SaveUnverified or ShopDay.Ended;
     internal DaySettlement RecoveryCandidate => phase == ShopDay.SaveUnverified ? settlement : null;
@@ -96,32 +99,19 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
             actors.Terminal || actors.Faulted || actors.NightActive || actors.TransitionActive ||
             actors.Activities.HasExecuting || verified == null || verified.Slot != slot || verified.Run != actors.Run.Run)
             return false;
-        var target = FindVerifiedCheckpoint(verified);
+        var target = CoopRun.FindVerifiedCheckpoint(verified);
         if (target == null) return false;
         MutationResume = target;
         actors.MarkFault(new InvalidOperationException($"{fault.Code} recovery requested: {fault.Operation}/{fault.Reason}"));
         return true;
     }
 
-    private CoopRun.Checkpoint FindVerifiedCheckpoint(NativeActorCheckpoint.Envelope verified)
-    {
-        if (verified == null || verified.Slot != slot) return null;
-        bool IsExact(CoopRun.Checkpoint checkpoint) => checkpoint is { HasActors: true } &&
-            checkpoint.Slot == verified.Slot && checkpoint.StoredSlot == verified.Slot &&
-            checkpoint.Run == verified.Run && checkpoint.Day == verified.Day &&
-            checkpoint.Nonce == verified.Checkpoint;
-
-        if (!CoopRun.TryRead(slot, verified.Run, out var target) || !IsExact(target))
-            target = CoopRun.ListCheckpoints(includeHistory: true, onlySlot: slot).FirstOrDefault(IsExact);
-        return target;
-    }
-
     internal bool RequestSettlementRecovery(DaySettlement attempt, string reason)
     {
         var actors = NativeActorSession.Current;
         if (attempt == null || !ReferenceEquals(attempt, RecoveryCandidate) || actors == null ||
-            actors.TransitionActive || actors.NightActive || actors.Activities.HasExecuting || !HasSettlementContext(attempt)) return false;
-        MutationResume = FindVerifiedCheckpoint(actors.VerifiedCheckpoint);
+            actors.TransitionActive || actors.NightActive || actors.Activities.HasExecuting || !OwnsSettlement(attempt)) return false;
+        MutationResume = CoopRun.FindVerifiedCheckpoint(actors.VerifiedCheckpoint);
         attempt.Fail();
         // Reuse the no-save exit. Marking the actor fault also invalidates the
         // deferred native blackscreen and morning callbacks before scene unload.
@@ -675,9 +665,11 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         var map = MapUIManager.Instance;
         if (map == null) return NightBlocker.ActorState;
         if (map.IsInTransit) return NightBlocker.InTransit;
-        if (guestOutside || map.IsOutside) return NightBlocker.Outside;
+        if (AnyPlayerOutside) return NightBlocker.Outside;
         if (NativeWorld.Host?.EndingActive == true) return NightBlocker.Transition;
         var storeUi = StoreUIManager.Instance;
+        if (storeUi != null && storeUi.blackscreen != null && storeUi.blackscreen.gameObject.activeInHierarchy)
+            return NightBlocker.Transition;
         if (storeUi != null && (store.isHandlingShootout || store.isClientBeingArrested || storeUi.isShot) &&
             (storeUi.secGameObject?.gameObject.activeInHierarchy == true ||
              storeUi.secGameObject2?.gameObject.activeInHierarchy == true)) return NightBlocker.Transition;
@@ -750,24 +742,28 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
             blocker = NightBlocker.MissingSave;
             return ShopResult.Unavailable;
         }
+        DaySettlement attempt = null;
         try
         {
             if (forced)
             {
                 NativeInventoryPilot.ActiveCampaign?.CancelDepartureForNight();
                 NativeWorld.Host?.CancelDepartureForSleep();
-                NativeWorld.Host?.EndSharedPhone();
+            }
+            NativeWorld.Host?.EndSharedPhone();
+            if (forced)
+            {
                 NativeWorld.Host?.ReleasePartnerHandForNight();
                 ClearHold();
-                blocker = CheckNightPlan(out _, out _, out _);
-                if (blocker != NightBlocker.None) return ShopResult.Unavailable;
             }
-            settlement = new DaySettlement(store, runId, slot, NativeActorSession.Current,
+            blocker = CheckNightPlan(out _, out _, out _);
+            if (blocker != NightBlocker.None) return ShopResult.Unavailable;
+            attempt = new DaySettlement(store, runId, slot, NativeActorSession.Current,
                 StoreStation.Instance.dayCounter, Time.realtimeSinceStartupAsDouble + 20);
+            settlement = attempt;
             morningReport = Array.Empty<string>();
             morningReportCaptured = false;
             FullMorningReport=Array.Empty<string>(); FullMorningReportDay=0;
-            if (!forced) NativeWorld.Host?.EndSharedPhone();
             SetDayPhase(ShopDay.Settling);
             Gate = this;
             allowNativeEnd = true;
@@ -777,9 +773,13 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         }
         catch (Exception ex)
         {
-            settlement?.Fail();
-            SetDayPhase(ShopDay.SaveUnverified);
-            Debug.LogError($"[probably_coop] day transition exception: {ex}");
+            if (attempt == null)
+                FreezeMutation("DAY-210", "prepare_day", ex.GetType().Name, ex);
+            else
+            {
+                FailSettlement(attempt, ex.GetType().Name);
+                Debug.LogError($"[probably_coop] day transition exception: {ex}");
+            }
             return ShopResult.Failed;
         }
         finally { allowNativeEnd = false; }
@@ -796,10 +796,12 @@ internal sealed class NativeShop : IShopAuthority, IDisposable
         if (!forced) StoreUIManager.Instance?.Notify($"[{code}] " + ModHelper.GetLocalized("probably_coop", "day_block_" + blocker));
     }
 
-    private bool HasSettlementContext(DaySettlement attempt) => Active && !failedMutation &&
+    private bool OwnsSettlement(DaySettlement attempt) => Active && !failedMutation &&
         attempt.Matches(store, store.runID, store.saveSlotId, NativeActorSession.Current) &&
-        attempt.AcceptsDay(StoreStation.Instance.dayCounter) &&
         NativeActorSession.Current?.Faulted != true && NativeActorSession.Current?.Terminal != true;
+
+    private bool HasSettlementContext(DaySettlement attempt) => OwnsSettlement(attempt) &&
+        attempt.AcceptsDay(StoreStation.Instance.dayCounter);
 
     private void FailSettlement(DaySettlement attempt, string reason, bool saveFailed = false)
     {

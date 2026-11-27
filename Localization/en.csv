@@ -181,6 +181,7 @@ solo_import_failure_reason,Couldn't create a co-op copy: {0}
 sync_extension_missing_guest,Enable the required Mod on your client: {0}
 sync_extension_missing_host,The host is missing a Mod you enabled: {0}
 sync_extension_mismatch,The two clients have incompatible versions or settings for {0}.
+sync_extension_apply_failed,Mod {0} could not apply the host's state. Check the connection log and verify the Mod on both sides before rejoining.
 no_checkpoints,No readable co-op checkpoints.
 checkpoint_unavailable,Could not read that co-op checkpoint.
 cursor_location_0,Main menu
@@ -251,6 +252,8 @@ settings_ping_binding,Item Ping Binding
 settings_ping_binding_help,Aim at an item and press this button to notify your partner. Defaults to middle mouse.
 settings_sync_notices,Show Co-op Sync Notices
 settings_sync_notices_help,Show ordinary wait and retry notices. Join errors and connection details stay on the co-op panel.
+settings_independent_travel,Independent Outings (Host)
+settings_independent_travel_help,Each player can make one separate outing after closing. Players at the same destination share its inventory. Set this before opening or reloading a co-op save.
 item_ping_notice,Your partner marked {0}
 player_name,Player Name
 player_name_input,Enter player name (Steam name by default)
@@ -298,6 +301,11 @@ force_day_started,The host started the normal end-of-day process. Waiting for th
 force_day_stale,This end-of-day request is no longer available. Check Connection Details again.
 trip_block_busy,Wait for the scene change or nightly settlement to finish before leaving.
 trip_block_trade,A trade is still in progress. Finish or close it before leaving.
+trip_merchant_no_space,The shop is full. The remaining items are still with the engineer. Make room and try returning again.
+trip_offline_return,Return Disconnected Partner
+trip_offline_return_confirm,Your partner disconnected at {0}. Returning them brings back their carried items and applies the normal final-visitor rules to items left on the ground. You can settle the day afterward.
+trip_offline_return_done,Your partner is back at the shop. You can now settle the day.
+trip_offline_return_stale,The connection or outing state changed. Open the confirmation again if your partner is still outside.
 diag_copy,Copy diagnostic
 diag_copied,Diagnostic copied
 diag_DAY-200,The native end-of-day process is running. Wait for the save and morning report.
@@ -309,12 +317,15 @@ diag_DAY-206,The host could not write or verify the next day’s save. If it rep
 diag_DAY-207,An inventory operation failed. Open Connection Details to recover the last verified co-op save.
 diag_DAY-208,The trade's cash or items could not be verified. Open Connection Details to recover the last verified co-op save.
 diag_DAY-209,A shop operation failed. Open Connection Details to recover the last verified co-op save.
+diag_DAY-210,An error occurred while preparing to end the day. Open Connection Details to recover the last verified co-op save.
 mutation_recovery_resume,Recover Last Verified Co-op Save
 mutation_recovery_confirm,The room will close. Unsaved progress will be discarded and the last verified co-op save will load.
 mutation_recovery_unavailable,No co-op save matched the last verified checkpoint. Send the connection report and host log to the author.
 diag_DAY-301,The host's shop or day transition is paused. Ask the host for the DAY code in Connection Details and wait in the shop.
-diag_reloaded_from,Returned to the menu. Resume the last confirmed co-op save from day {0}.
-diag_no_checkpoint,Returned to the menu. There is no confirmed save for this run. Start a new co-op game.
+diag_MOD-101,A third-party Mod action failed. This session stopped before saving. If the issue repeats after recovery, copy the connection details and share the host log.
+diag_TRIP-201,The shared outing could not finish changing scenes. This session stopped before saving. If it happens again after recovery, copy the connection details and share the host log.
+diag_reloaded_from,Returned to the menu. You can recover the verified day {0} checkpoint here.
+diag_no_checkpoint,Returned to the menu. The last verified checkpoint could not be located. Check Continue Co-op Save for other saves or share the connection details and host log.
 diag_SYNC-101,The host could not collect shop state. Keep the host game open and rejoin once. If it repeats, send the host log.
 diag_SYNC-102,The host could not package shop state. Rejoin once with the original room code. If it repeats, send the host log.
 diag_SYNC-103,A checkpoint failed validation on the guest. Rejoin with the original code. If it repeats, send both logs.
@@ -328,20 +339,30 @@ opening_title,Two-player start
 opening_connect_partner,Start a two-player run once your partner joins the room.
 join_mod_title,Room Mod Check
 join_mod_can_try,Mod differences found · you can try joining
-join_mod_blocked,A required co-op extension is not ready
-join_mod_resolve,Resolve the highlighted extension issues first. Restart the game when prompted after enabling or updating a mod.
+join_mod_blocked,A required Mod is not ready
+join_mod_resolve,Resolve the highlighted Mod issues first. Restart the game when prompted after enabling or updating a Mod.
 join_mod_explain,Players can use different mods. You can resolve these differences or try joining with the current setup.
 join_mod_versions,Host {0}   ·   Local {1}
 join_mod_Missing,Missing locally · obtain the same version
 join_mod_Disabled,Installed · enable in Modifications and restart
+join_mod_LoadFailed,Load failed · see Modifications for details
 join_mod_Version,Different versions
 join_mod_Files,Same version · different files
+join_mod_local_override,The local copy takes priority
 join_mod_LocalOnly,Enabled only on this side
 join_mod_Extension,Co-op extension required on both sides
 join_mod_unsubscribed,Not subscribed
-join_mod_downloading,Subscribed · waiting for Steam to install
+join_mod_downloading,Downloading in Steam
+join_mod_download_queued,Queued in Steam Downloads
+join_mod_download_waiting,Subscribed · check Steam Downloads
+join_mod_download_percent,Steam download · {0}%
+join_mod_copy_join,Copy join info
+join_mod_join_copied,Join info copied
 join_mod_restart,Installed · waiting for the game to reload
 join_mod_workshop,Open Workshop
+join_mod_open_mods,Copy Join Info & Open Modifications
+join_mod_open_mods_hint,Subscribe on Steam. Enable installed Mods and restart when prompted. Then resume the previous join or paste the copied join info. If the files still differ, check which build the host is using. The room is remembered on this device for one hour.
+join_mod_resume,Resume the Previous Join
 join_mod_warning,Try joining with these differences. If content cannot load the guest goes back to the menu with a diagnostic record.
 join_mod_cancel,Cancel
 join_mod_confirm,Confirm Join
@@ -351,10 +372,12 @@ join_mod_consent,Guest accepted the current mod differences
 join_mod_ready,Joined with the current mod setup
 join_mod_count,{0} mod differences found
 join_diag_mod,{0}  ·  Host {1} / Local {2}  ·  {3}
+join_diag_full_mods,{0} more differences. Use Copy diagnostic for the full list.
 diag_build,Game {0}  ·  Probably Coop {1}  ·  Protocol {2}
 diag_connection_state,Connection {0}  ·  {1}
 join_diag_load,Synchronization failed · {0}
 join_diag_item,Item {0} · asset source {1} · {2}
+join_diag_extension,Mod {0} · applying host state · {1}
 opening_reopen,Return to two-player setup
 opening_host_role,Host career · {0}
 opening_partner_role,Partner career · {0}
@@ -373,4 +396,16 @@ opening_debt_waived,Starting shortfall waived · {0}
 opening_debt_schedule,Starting debt {0} · Weekly rent additions {1}
 opening_partner_perks,Partner's starting perks
 opening_partner_perks_hint,Choose personal and shop perks. Shared effects and gifts are applied once.
-opening_rent_calendar,Next rent {0} (opening installment {1} · arrears {2}) · Due in {3} days
+opening_rent_calendar,Next rent {0} (opening installment {1} · arrears {2}) · Due in {3} days\nOpening balance remaining {4}
+opening_shop_perk_conflict,These perks conflict for the shared shop: {0} / {1}. Please choose another perk.
+opening_career_conflict,These careers cannot share a shop. Please choose another career.
+opening_career_unavailable,This career is unavailable for a co-op opening: {0}.
+commissary_perk_ban,Your starting perk prevents you from using the commissary.
+opening_mod_review,Review Opening Mods
+opening_mod_review_heading,Mods for the available opening choices
+opening_mod_review_hint,You can pick from the openings both players have. If the host already picked a Mod opening you need the same enabled package.
+opening_mod_back,Back to Opening Choices
+opening_install_host_career,Install and enable the same version of the mod that adds {0} before choosing a career.
+opening_mod_missing_match,The starting perk or career needs the same enabled Mod on both sides.
+opening_save_missing_mod,Enable the Mods this cooperative save needs and restart the game. Required Mods {0}
+sync_opening_mod_required,This save requires both players to enable the same package for {0}.

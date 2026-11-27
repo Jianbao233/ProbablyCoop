@@ -15,7 +15,9 @@ internal sealed partial class NativeWorld
     }
     private ushort ExecuteCommissary(JObject command)
     {
-        if(shop.Settling || MapUIManager.Instance.Current?.Id!=AfterhourLocation.COMMISSARY) return (ushort)ShopResult.Unavailable;
+        if(shop.Settling || StartingPerk.IsBannedCommissary() ||
+            ObserveTravelPosition(NativeActorRun.Slot.Partner).Site!=AfterhourLocation.COMMISSARY)
+            return (ushort)ShopResult.Unavailable;
         var data=PlayerStore.Instance.commissaryData;
         if((int)command["day"]!=StoreStation.Instance.dayCounter || (int)command["tokens"]!=data.redeemedCredit) return (ushort)ShopResult.Stale;
         switch((string)command["action"])
@@ -37,7 +39,7 @@ internal sealed partial class NativeWorld
     // Reserve a valid native slot and insert in the same Unity tick before charging.
     internal static bool BuyCommissaryItem(string id)
     {
-        if(MapUIManager.Instance.Current?.Id!=AfterhourLocation.COMMISSARY) return false;
+        if(MapUIManager.Instance.Current?.Id!=AfterhourLocation.COMMISSARY || StartingPerk.IsBannedCommissary()) return false;
         var data=PlayerStore.Instance.commissaryData; var stock=data.GetItemData(id);
         if(stock==null || stock.StockCount<1 || data.redeemedCredit<stock.price) return false;
         var item=DirectoryMaster.Item(id);
@@ -50,6 +52,17 @@ internal sealed partial class NativeWorld
         return true;
     }
 }
+[HarmonyPatch(typeof(CommissaryUIManager), nameof(CommissaryUIManager.OpenUI))]
+internal static class NativePersonalCommissaryAccess
+{
+    private static bool Prefix()
+    {
+        if ((!NativeGuest.Active && NativeWorld.Host == null) || !StartingPerk.IsBannedCommissary()) return true;
+        StoreUIManager.Instance.Notify(ModHelper.GetLocalized("probably_coop", "commissary_perk_ban"));
+        return false;
+    }
+}
+
 [HarmonyPatch(typeof(CommissaryData),nameof(CommissaryData.BuyItem))]
 internal static class ReplicaCommissaryBuy
 { private static bool Prefix(string id) { if(NativeGuest.Active) NativeWorld.Guest?.RequestCommissary("buy",id); else if(NativeWorld.Host!=null) NativeWorld.BuyCommissaryItem(id); else return true; return false; } }

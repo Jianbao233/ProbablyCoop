@@ -21,8 +21,12 @@ internal static partial class NativeMirrorProbe
     private static readonly FieldInfo[] TagFields = typeof(TagState).GetFields(Fields).Where(f => !f.IsStatic && Scalar(f.FieldType)).ToArray();
     private static readonly NativeTagRow.Layout TagLayout=NativeTagRow.GetLayout(TagFields);
     private static readonly Func<TagState,NativeTagRow> FreezeTag=CaptureTag;
+#if PROBABLY_COOP_GRID_QA
     private static readonly bool VerifyFrozenTags=NativeBackgroundQa.IsHostProduct &&
         Array.IndexOf(Environment.GetCommandLineArgs(),"--probably-coop-qa")>=0;
+#else
+    private static readonly bool VerifyFrozenTags=false;
+#endif
     private static int verifiedTagRows;
     private static int verifiedInheritedTags;
     private static int verifiedInheritedShapes;

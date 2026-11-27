@@ -53,9 +53,10 @@ internal sealed partial class NativeBackgroundQa
             return false;
         }
         var ui = AdvCalendarUIManager.Instance;
+        int expectedPerks = store.startingPerks.Count + NativeActorPerkQueries.MissingStatusPerks(store).Count();
         Require(ui.UIPanel.activeSelf && ui.statusSection.activeSelf &&
-            ui.activePerksContainer.GetComponentsInChildren<StartingPerkElement>().Length == store.startingPerks.Count,
-            "original status UI did not render partner perks");
+            ui.activePerksContainer.GetComponentsInChildren<StartingPerkElement>().Length == expectedPerks,
+            "original status UI did not render partner and shared perks");
         NativeOffscreenCapture.Capture("qa-actor-personal-status");
         ui.CloseUI();
         Record("PASS actor-network-projection", "real guest request -> native ReceiveMinorWound on partner -> complete snapshot; host unchanged; native health/list identities stable; original status UI verified");

@@ -247,10 +247,10 @@ internal sealed class NativeActorState
         liquidLuckDaysLeft = value.liquidLuckDaysLeft
     };
 
-    private static StartingPerk ClonePerk(StartingPerk value) => new StartingPerk
+    internal static StartingPerk ClonePerk(StartingPerk value) => new StartingPerk
     {
         id = value.id, cost = value.cost, maxSlot = value.maxSlot,
-        incompatiblePerks = new List<string>(value.incompatiblePerks),
+        incompatiblePerks = value.incompatiblePerks == null ? new List<string>() : new List<string>(value.incompatiblePerks),
         type = value.type, mindEditable = value.mindEditable,
         rawName = value.rawName, rawDescription = value.rawDescription,
         // Runtime-only bindings are retained on an in-memory copy. They never

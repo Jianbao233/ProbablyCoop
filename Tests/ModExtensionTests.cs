@@ -9,7 +9,20 @@ internal static class ModExtensionTests
     {
         CheckSessionLifetime();
         CheckWireContract();
-        Console.WriteLine("PASS extension v1 handles, action bounds, UTF-8 limits, and revision validation");
+        CheckActionResult();
+        CheckActionFailureDetails();
+        Console.WriteLine("PASS extension v1 lifetime, wire boundaries, revisions and declined action state integrity");
+    }
+
+    private static void CheckActionFailureDetails()
+    {
+        var error = new InvalidDataException("Private action data");
+        var failure = new ModExtensionActionFailure("example.mod", "accept", error);
+        Check(failure.Context == "mod=example.mod action=accept error=InvalidDataException",
+            "action failure details identify the mod without exposing the callback message");
+        var invalid = new ModExtensionActionFailure("bad/mod", "bad\naction", error);
+        Check(invalid.Context == "mod=unknown action=unknown error=InvalidDataException",
+            "action failure details contain only single-line identifiers");
     }
 
     private static void CheckSessionLifetime()
@@ -77,6 +90,29 @@ internal static class ModExtensionTests
     private static ModExtensionContract CreateContract(IEnumerable<string> actions) =>
         new ModExtensionContract("test_mod", "1.0", new CoopExtensionRegistration("test-v1", actions,
             () => "open", _ => CoopActionResult.Rejected, _ => { }, _ => { }));
+
+    private static void CheckActionResult()
+    {
+        var contract = CreateContract(new[] { "accept" });
+        var before = contract.Freeze(null, "contract-open", false);
+        foreach (var result in new[] { CoopActionResult.Rejected, CoopActionResult.Stale, CoopActionResult.Busy })
+        {
+            Check(ReferenceEquals(before, contract.VerifyActionResult(before, before.Payload, "accept", result)),
+                "a declined action with stable shared state must retain its revision");
+            bool reported = false;
+            try { contract.VerifyActionResult(before, "contract-charged", "accept", result); }
+            catch (InvalidOperationException error)
+            {
+                reported = error.Message.Contains("test_mod") && error.Message.Contains("accept") &&
+                    !error.Message.Contains("contract-charged");
+            }
+            Check(reported, "a declined action that changes shared state must fault without logging its payload");
+        }
+        var accepted = contract.VerifyActionResult(before, "contract-charged", "accept", CoopActionResult.Applied);
+        var noOp = contract.VerifyActionResult(before, before.Payload, "accept", CoopActionResult.Applied);
+        Check(accepted.Revision == before.Revision + 1 && accepted.Payload == "contract-charged" &&
+            noOp.Revision == accepted.Revision, "an accepted action advances exactly once with either state result");
+    }
 
     private static void Reject(Action action)
     {

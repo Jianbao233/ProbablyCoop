@@ -34,7 +34,7 @@ internal sealed partial class CoopPanel : IDisposable
     private CustomUIElement resumeRun, importSolo, shopResume;
     private RectTransform panelBody;
     private ScrollRect panelScroll;
-    private CustomUIElement lanToggle, joinFromMenu;
+    private CustomUIElement lanToggle, joinFromMenu, resumeModJoin;
     private CustomUIElement joinProgressLabel, joinHistory, joinHistoryToggle;
     private RectTransform joinProgressFill;
     private GameObject joinProgressTrack;
@@ -43,7 +43,7 @@ internal sealed partial class CoopPanel : IDisposable
     private DaySettlement recoveryAttempt;
     private NativeShop.MutationFault mutationFault;
     private bool hostDayPending;
-    private (string Code, int? Day)? recoveryExit;
+    private (string Code, CoopRun.Checkpoint Target, string Context)? recoveryExit;
     private string joinFailureCode;
     private bool issueCopied;
     private GameObject setupRow, joinColumn, lanControls, saveRow, roomActions, approvalRow, joinLog, shopOverview,
@@ -285,7 +285,9 @@ internal sealed partial class CoopPanel : IDisposable
         builder.AddButton(Loc("paste_room_code"),PasteRoomCode);
         builder.AddButton(Loc("join"),RequestJoin); join=builder.Last;
         builder.End();
+        builder.AddButton(Loc("join_mod_resume"), ResumeModJoin, "join_mod_resume"); resumeModJoin=builder.Last;
         ipv4.AddMapping(builder, RequestJoin);
+        code.input.onValueChanged.AddListener(_ => ipv4.RestoreMapping(""));
         if(NativePlatform.IsAndroid && !NativePlatform.SupportsHosting) builder.AddLabel(Loc("status_android_guest_only"));
         builder.End();
 
@@ -327,7 +329,7 @@ internal sealed partial class CoopPanel : IDisposable
         }
         builder.End();
         if (inShop) builder.End();
-        builder.AddButton(Loc("opening_reopen"),opening.Reopen); reopenOpening=builder.Last;
+        builder.AddButton(Loc("opening_reopen"), () => opening.Reopen(this)); reopenOpening=builder.Last;
         builder.AddButton(Loc("pause_joins"),()=>{ room.SetAcceptingJoins(!room.AcceptingJoins); Refresh(); }); access=builder.Last;
         if (inShop) GrowShopControl(access, 23, 39);
         if (!inShop) AddJoinApproval(builder);
@@ -432,12 +434,21 @@ internal sealed partial class CoopPanel : IDisposable
         layout.minHeight = Mathf.Max(layout.minHeight, minimumHeight);
     }
 
-    private void PasteRoomCode()
+    private void PasteRoomCode() => ApplyPastedRoomCode(GUIUtility.systemCopyBuffer?.Trim());
+
+    private void ApplyPastedRoomCode(string pasted)
     {
         if(!inMenu || !CanConnect) return;
-        var pasted=GUIUtility.systemCopyBuffer?.Trim();
-        if(!string.IsNullOrEmpty(pasted) && pasted.Length<=code.input.characterLimit)
+        if (DirectRoomEndpoint.TryReadMappedJoin(pasted, out string restoredCode, out string mapping))
         {
+            code.SetString(restoredCode);
+            ipv4.RestoreMapping(mapping);
+            Refresh();
+        }
+        else if (!string.IsNullOrEmpty(pasted) && pasted.IndexOfAny(new[] { '\r', '\n' }) < 0 &&
+            pasted.Length <= code.input.characterLimit)
+        {
+            if (pasted != code.GetString()?.Trim()) ipv4.RestoreMapping("");
             code.SetString(pasted);
             Refresh();
         }
@@ -475,11 +486,16 @@ internal sealed partial class CoopPanel : IDisposable
         var session=room.Session;
         if(!ReferenceEquals(joinSession,session))
         {
-            ResetJoin();
+            ResetJoin(newAttempt: true);
             joinSession=session;
             if(NativeBackgroundQa.SynchronizationProfile) reopenJoinPanel=true;
         }
-        if(ready) { SetJoinPhase("sync_ready",1f); return; }
+        if(ready)
+        {
+            if (joinPhase != "sync_ready" && GetSavedModJoin()?.Code == room.Code) ClearSavedModJoin();
+            SetJoinPhase("sync_ready",1f);
+            return;
+        }
         var snapshot=session?.Native;
         if(snapshot?.Snapshot!=null)
         {
@@ -524,7 +540,7 @@ internal sealed partial class CoopPanel : IDisposable
     }
 
     internal void JoinFailed(ModExtensionJoinException mismatch=null,NativeSyncFailure reason=NativeSyncFailure.None,
-        bool localError=false,bool duringPlay=false)
+        bool localError=false,bool duringPlay=false,string failedExtension=null)
     {
         joinFailureCode=CoopIssueCode.Synchronization(reason,localError,mismatch!=null);
         Debug.LogWarning($"[probably_coop] {joinFailureCode} guest synchronization stopped ({reason})");
@@ -532,6 +548,11 @@ internal sealed partial class CoopPanel : IDisposable
         if(mismatch!=null)
         {
             joinFailureReason=string.Format(Loc(mismatch.MessageKey),mismatch.ModId);
+            AddJoinStep(joinFailureReason);
+        }
+        else if(failedExtension!=null)
+        {
+            joinFailureReason=JoinText("sync_extension_apply_failed", failedExtension);
             AddJoinStep(joinFailureReason);
         }
         else if(reason!=NativeSyncFailure.None || localError)
@@ -549,13 +570,18 @@ internal sealed partial class CoopPanel : IDisposable
         reopenJoinPanel=!duringPlay;
         issueCopied=false;
     }
-    private void ResetJoin()
+    private void ResetJoin(bool newAttempt = false)
     {
         joinSession=null; joinPhase=null; joinPages=0; joinPercentage=0; joinCounters=joinFailureReason="";
         joinSteps.Clear();
         joinFailureCode=null;
-        triedWithDifferences=false;
         issueCopied=false;
+        if (newAttempt)
+        {
+            lastModReview = null;
+            lastModReviewAccepted = false;
+            nextTerminalRefresh = 0;
+        }
     }
     private void NoteReceivedPages(int count,int total,int bytes)
     {
@@ -571,7 +597,7 @@ internal sealed partial class CoopPanel : IDisposable
         joinPhase=phase;
         AddJoinStep(Loc(phase));
         AddConnectionEvent(phase is "sync_failed" or "sync_disconnected" ? "ERROR" : "INFO",
-            Loc(phase=="sync_ready" && triedWithDifferences ? "join_mod_ready" : phase));
+            Loc(phase=="sync_ready" && lastModReviewAccepted ? "join_mod_ready" : phase));
     }
     private void AddJoinStep(string line)
     {
@@ -602,6 +628,7 @@ internal sealed partial class CoopPanel : IDisposable
         bool steamJoinBusy=Time.realtimeSinceStartupAsDouble<steamJoinBusyUntil;
         bool showSetup=!room.HasLobby && !room.Busy;
         bool showJoin = inMenu && showSetup;
+        bool showResumeModJoin = showJoin && GetSavedModJoin() != null;
         bool showMapping = showJoin && Ipv4RoomControls.IsIpv4Code(code.GetString());
         bool showLan = showSetup && showLanOptions;
         bool showProgress=joinPhase!=null;
@@ -616,7 +643,7 @@ internal sealed partial class CoopPanel : IDisposable
         var endpoint = room.Ipv4HostEndpoint;
         string signature=$"{room.Status}/{room.Detail}/{room.Code}/{room.Busy}/{room.CanApprove}/"+
             $"{room.PartnerName}/{session?.State}/{real}/{inShop}/{NativeActorCarryUi.Available}/{MapUIManager.Instance?.IsOutside}/{justCopied}/{steamJoinBusy}/{room.FriendsCanJoin}/{showMapping}"+
-            $"/{joinPhase}/{joinPercentage:F3}/{joinCounters}/{joinFailureReason}/{history}/{showHistory}/{session?.Native.SynchronizationFailed}/{room.AcceptingJoins}/{showLan}/{showSaves}/{issue.Code}/{opening.HasGuestDraft}/{available}";
+            $"/{joinPhase}/{joinPercentage:F3}/{joinCounters}/{joinFailureReason}/{history}/{showHistory}/{session?.Native.SynchronizationFailed}/{room.AcceptingJoins}/{showLan}/{showSaves}/{showResumeModJoin}/{issue.Code}/{opening.HasGuestDraft}/{available}";
         if(signature==displaySignature) return;
         displaySignature=signature;
         heading.SetText(Loc(inShop || real ? "native_header" : "room_header"));
@@ -625,6 +652,7 @@ internal sealed partial class CoopPanel : IDisposable
         steamHint.SetVisible(room.FriendsCanJoin);
         setupRow.SetActive(showSetup);
         joinColumn.SetActive(showJoin);
+        resumeModJoin.SetVisible(showResumeModJoin);
         lanControls.SetActive(showLan);
         lanToggle.SetText(Loc(showLan ? "hide_lan_options" : "show_lan_options"));
         joinFromMenu.SetVisible(showSetup && !inMenu && !localTest);
@@ -713,7 +741,7 @@ internal sealed partial class CoopPanel : IDisposable
         LayoutRebuilder.ForceRebuildLayoutImmediate(rect);
     }
 
-    internal void ObserveDay(NativeShop shop,bool guestWaiting,(string Code,int? Day)? lastRecovery)
+    internal void ObserveDay(NativeShop shop, bool guestWaiting, (string Code, CoopRun.Checkpoint Target, string Context)? lastRecovery)
     {
         var attempt=shop?.RecoveryCandidate;
         var fault=shop?.FailedMutation;
@@ -764,10 +792,13 @@ internal sealed partial class CoopPanel : IDisposable
             return (directCode,Loc("status_"+room.Status),$"transport=udp status={room.Status}");
         if(recoveryExit is { } result)
         {
-            string resume=result.Day.HasValue ?
-                string.Format(Loc("diag_reloaded_from"),result.Day.Value) : Loc("diag_no_checkpoint");
-            string explanation=result.Code=="DAY-206" ? Loc("diag_DAY-206")+" "+resume : resume;
-            return (result.Code,explanation,$"role=host stopped=true confirmed_day={result.Day?.ToString() ?? "none"}");
+            string resume=result.Target != null ?
+                string.Format(Loc("diag_reloaded_from"),result.Target.Day) : Loc("diag_no_checkpoint");
+            string explanation = result.Code is "DAY-206" or ModExtensionActionFailure.Code or NativeActorSession.TravelFaultCode
+                ? Loc("diag_" + result.Code) + " " + resume : resume;
+            string context = $"role=host stopped=true recoverable_day={result.Target?.Day.ToString() ?? "none"}";
+            if (result.Context != null) context += " " + result.Context;
+            return (result.Code, explanation, context);
         }
         return default;
     }
@@ -777,6 +808,11 @@ internal sealed partial class CoopPanel : IDisposable
 
     private void RecoverDay()
     {
+        if (inMenu && !room.IsGuest && !room.Busy && recoveryExit?.Target is { } target)
+        {
+            Resume(target);
+            return;
+        }
         if (mutationFault is { } fault && dayShop!=null)
         {
             SetMutationRecoveryPrompt(fault);
@@ -822,7 +858,7 @@ internal sealed partial class CoopPanel : IDisposable
     private void Join()
     {
         if(!inMenu || !CanConnect || string.IsNullOrWhiteSpace(code.GetString())) return;
-        ResetJoin();
+        ResetJoin(newAttempt: true);
         room.Join(code.GetString(), ipv4.Mapping);
         Refresh();
     }
@@ -1052,9 +1088,9 @@ internal sealed partial class CoopPanel : IDisposable
         {
             try
             {
-                if (!CoopRun.PrepareResume(checkpoint))
+                if (!CoopRun.PrepareResume(checkpoint, out var checkedCheckpoint))
                 {
-                    menu.confirmPanelUIManager.OpenPanel(Loc("checkpoint_unavailable"), hideNoButton: true);
+                    menu.confirmPanelUIManager.OpenPanel(checkedCheckpoint?.UnavailableReason ?? Loc("checkpoint_unavailable"), hideNoButton: true);
                     return;
                 }
                 checkpoints?.Close();
@@ -1140,6 +1176,24 @@ internal sealed partial class CoopPanel : IDisposable
     {
         window?.Hide();
         OpenConnectionDetails();
+    }
+
+    internal bool QaRecoverVerifiedDay(NativeActorCheckpoint.Envelope verified, string code)
+    {
+        QaOpenConnectionDetails();
+        if (!inMenu || CurrentIssue().Code != code || recoveryExit?.Target?.MatchesVerified(verified) != true ||
+            recoverDay?.button == null || !recoverDay.button.gameObject.activeInHierarchy || !recoverDay.button.interactable)
+            return false;
+        var target = recoveryExit.Value.Target;
+        NativeOffscreenCapture.Capture("qa-settlement-recovery-menu");
+        recoverDay.button.onClick.Invoke();
+        if (!string.IsNullOrEmpty(target.Locale) && target.Locale != LocHelper.GetCurrentLocaleCode())
+        {
+            var confirm = MainMenuUIController.Instance?.confirmPanelUIManager;
+            if (confirm?.panel?.activeSelf != true) return false;
+            confirm.OnYesClick();
+        }
+        return true;
     }
 
     internal void QaStartPairedOpening()

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using ProbablyCoop.Core;
 using Steamworks;
@@ -12,6 +13,10 @@ namespace ProbablyCoop;
 internal sealed partial class CoopPanel
 {
     private const int ConnectionLogLimit = 48;
+    private const int TerminalModRows = 24;
+    private const string ModJoinResumeFile = "mod-join-resume.txt";
+    private bool modJoinResumeLoaded;
+    private RoomJoinResume savedModJoin;
     private static readonly Color TerminalBackground = new Color32(19, 25, 33, 255);
     private static readonly Color TerminalInk = new Color32(197, 222, 219, 255);
     private static readonly Color ReviewWarning = new Color32(244, 205, 146, 255);
@@ -24,8 +29,12 @@ internal sealed partial class CoopPanel
     private (NativeShop Shop, int Day)? pendingForcedDay;
     private ScrollRect diagnosticScroll;
     private RoomModManifest shownReview;
+    private RoomModManifest lastModReview;
+    private bool lastModReviewAccepted;
+    private readonly List<(RoomModManifest.Row Row, CustomUIElement Label)> workshopReviewLabels = new();
+    private double nextWorkshopReviewRefresh;
     private string previousConnectionState;
-    private bool triedWithDifferences, placeWindowsTogether;
+    private bool placeWindowsTogether, reviewingOpeningChoices;
 
     private string JoinWindowLayer => inMenu ? "menu" : "overlay";
     private static string JoinText(string key, params object[] values) => ModHelper.GetLocalized("probably_coop", key, values);
@@ -105,8 +114,9 @@ internal sealed partial class CoopPanel
             if (room.Status is not ("idle" or "local_idle" or "none"))
                 AddConnectionEvent("INFO", JoinText("diag_connection_state", room.Transport, room.Status));
         }
-        if (diagnosticsWindow?.IsVisible != true) return;
         double now = Time.realtimeSinceStartupAsDouble;
+        TickWorkshopReview(now);
+        if (diagnosticsWindow?.IsVisible != true) return;
         if (now < nextTerminalRefresh) return;
         nextTerminalRefresh = now + 0.5;
         var state = RoomConnectionStatus.Format(room, joinPhase, joinCounters);
@@ -119,13 +129,17 @@ internal sealed partial class CoopPanel
         bool confirming = pendingMutationRecovery != null && ReferenceEquals(pendingMutationRecovery, mutationFault);
         mutationRecoveryConfirmation.gameObject.SetActive(confirming);
         bool canForce = !inMenu && dayShop?.CanOfferForcedDay == true;
-        bool confirmingDay = canForce && pendingForcedDay is { } pending && ReferenceEquals(pending.Shop, dayShop) &&
+        bool canRecall = canForce && room.Session?.State != LinkState.Connected &&
+            NativeWorld.Host?.CanReturnOfflinePartner == true;
+        bool confirmingDay = canForce && !canRecall && pendingForcedDay is { } pending && ReferenceEquals(pending.Shop, dayShop) &&
             pending.Day == StoreStation.GetDayCounter();
         if (!confirmingDay) pendingForcedDay = null;
         forcedDayConfirmation.gameObject.SetActive(confirmingDay);
+        forceDay.SetText(Loc(canRecall ? "trip_offline_return" : "force_day"));
         forceDay.SetVisible(canForce && !confirmingDay);
-        recoverDay.SetVisible(!confirming && (recoveryAttempt != null || mutationFault != null));
-        recoverDay.SetText(Loc(mutationFault != null || dayShop?.HasVerifiedDayRecovery == true
+        bool canResumeStoppedRun = inMenu && recoveryExit?.Target != null && !room.IsGuest && !room.Busy;
+        recoverDay.SetVisible(!confirming && (recoveryAttempt != null || mutationFault != null || canResumeStoppedRun));
+        recoverDay.SetText(Loc(mutationFault != null || dayShop?.HasVerifiedDayRecovery == true || canResumeStoppedRun
             ? "mutation_recovery_resume" : "day_recovery_exit"));
         copyIssue.SetText(Loc(issueCopied ? "diag_copied" : "diag_copy"));
         FitJoinWindow(diagnosticsWindow, 780, 460);
@@ -138,9 +152,38 @@ internal sealed partial class CoopPanel
 
     private void SetForcedDayPrompt(bool show)
     {
+        if (show && room.Session?.State != LinkState.Connected &&
+            NativeWorld.Host is { CanReturnOfflinePartner: true } world)
+        {
+            ShowOfflinePartnerReturn(world);
+            return;
+        }
         pendingForcedDay = show && dayShop?.CanOfferForcedDay == true ? (dayShop, StoreStation.GetDayCounter()) : null;
         nextTerminalRefresh = 0;
         TickConnectionDetails();
+    }
+
+    private void ShowOfflinePartnerReturn(NativeWorld world)
+    {
+        var confirm = GenericConfirmationUIManager.Instance;
+        if (confirm?.panel?.activeSelf != false || world.PrepareOfflinePartnerReturn() is not { } request) return;
+        string prompt = JoinText("trip_offline_return_confirm", request.Location.GetTitle());
+        if (request.HasGroundItems)
+            prompt += "\n\n" + (request.Location.GetLeaveWarning() ?? LocHelper.GetLocalizedMechanic("afterhour_items_lost_warning"));
+        confirm.OpenPanel(prompt, Loc("trip_offline_return"), Loc("join_mod_cancel"), () =>
+        {
+            var result = room.Session?.State == LinkState.Connected || !ReferenceEquals(world, NativeWorld.Host)
+                ? ShopResult.Stale : world.ReturnOfflinePartner(request.Proof, request.PeerGeneration);
+            string key = result switch
+            {
+                ShopResult.Applied => "trip_offline_return_done",
+                ShopResult.NoSpace => "trip_merchant_no_space",
+                ShopResult.Busy => "trip_block_busy",
+                _ => "trip_offline_return_stale"
+            };
+            AddConnectionEvent(result == ShopResult.Applied ? "INFO" : "WARN", Loc(key));
+            TickConnectionDetails();
+        });
     }
 
     private void ConfirmForcedDay()
@@ -166,6 +209,7 @@ internal sealed partial class CoopPanel
         var lines = new List<string> { JoinText("diag_build", PlayerStore.VERSION_NUMBER, typeof(CoopPanel).Assembly.GetName().Version, Wire.Version) };
         if (!string.IsNullOrEmpty(counts)) lines.Add(counts);
         if (!string.IsNullOrEmpty(issue)) lines.Add(issue);
+        AppendModDiagnostics(lines, decorated);
         if (connectionLog.Count == 0) lines.Add(Loc("terminal_no_session"));
         else
         {
@@ -200,6 +244,7 @@ internal sealed partial class CoopPanel
     {
         if (code != null) return $"[{code}] {advice}";
         if (reviewWindow?.IsVisible != true || shownReview == null) return summary;
+        if (reviewingOpeningChoices) return Loc("opening_mod_review");
         return shownReview.Blocked ? $"[SYNC-106] {Loc("join_mod_blocked")}" : Loc("join_mod_can_try");
     }
 
@@ -212,52 +257,77 @@ internal sealed partial class CoopPanel
         Debug.Log($"[probably_coop] join {level}: {message}");
     }
 
-    internal void RecordModReview(RoomModManifest review)
+    internal void RecordModReview(RoomModManifest review, bool accepted = false)
     {
+        lastModReview = review;
+        lastModReviewAccepted = accepted;
+        nextTerminalRefresh = 0;
+        issueCopied = false;
         if (review.Rows.Length == 0) return;
         AddConnectionEvent(review.Blocked ? "ERROR" : "INFO", (review.Blocked ? "SYNC-106  " : "") +
             JoinText("join_mod_count", review.Rows.Length));
-        foreach (var row in review.Rows.Take(24))
+        foreach (var row in review.Rows)
         {
-            string status = row.Blocker != null ? JoinText(row.Blocker, row.Id) : Loc("join_mod_" + row.Kind);
             string level = row.Blocker != null ? "ERROR" : row.Kind == RoomModManifest.Difference.LocalOnly ? "INFO" : "WARN";
-            AddConnectionEvent(level, JoinText("join_diag_mod", row.Id, DiagnosticVersion(row.HostVersion),
-                DiagnosticVersion(row.LocalVersion), status));
+            Debug.Log($"[probably_coop] join {level}: {row.Diagnostic()}");
         }
     }
 
-    private static string DiagnosticVersion(string text)
+    private void AppendModDiagnostics(List<string> lines, bool forTerminal)
     {
-        if (string.IsNullOrEmpty(text)) return "-";
-        return text.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'z' or >= 'A' and <= 'Z' or '.' or '-' or '_' or '+')
-            ? text : "(hidden)";
+        if (lastModReview is not { Rows.Length: > 0 } review) return;
+        lines.Add(JoinText("join_mod_count", review.Rows.Length));
+        if (!forTerminal)
+        {
+            lines.Add($"mod_review_consent={(lastModReviewAccepted ? "accepted" : "none")}");
+            foreach (var row in review.Rows) lines.Add(row.Diagnostic());
+            return;
+        }
+        foreach (var row in review.Rows.Take(TerminalModRows))
+            lines.Add(JoinText("join_diag_mod", row.Id, RoomModManifest.DiagnosticVersion(row.HostVersion),
+                RoomModManifest.DiagnosticVersion(row.LocalVersion), FormatReviewStatus(row)));
+        if (review.Rows.Length > TerminalModRows)
+            lines.Add(JoinText("join_diag_full_mods", review.Rows.Length - TerminalModRows));
     }
 
     internal void RecordModConsent()
     {
-        triedWithDifferences = true;
+        lastModReviewAccepted = true;
         AddConnectionEvent("WARN", Loc("join_mod_consent"));
     }
 
     internal void RecordProjectionFailure(Exception error, NativeSyncFailure reason)
     {
-        string detail = error is NativeItemProjectionException item
-            ? JoinText("join_diag_item", item.Identifier, item.Provider, item.InnerException.GetType().Name)
-            : $"{reason}  {error?.GetType().Name}";
+        string detail = error switch
+        {
+            NativeItemProjectionException item => JoinText("join_diag_item", item.Identifier, item.Provider,
+                item.InnerException.GetType().Name),
+            ModExtensionProjectionException extension => JoinText("join_diag_extension", extension.ModId,
+                extension.InnerException.GetType().Name),
+            ModExtensionJoinException mismatch => JoinText(mismatch.MessageKey, mismatch.ModId),
+            _ => $"{reason}  {error?.GetType().Name}"
+        };
         AddConnectionEvent("ERROR", $"{joinFailureCode}  {JoinText("join_diag_load", detail)}");
     }
 
-    internal void ShowModReview(RoomModManifest review, Action accept, Action recheck, Action cancel)
+    internal void ShowModReview(RoomModManifest review, Action accept, Action recheck, Action cancel, bool openingChoices = false)
     {
         if (reviewWindow?.IsAlive == true && ReferenceEquals(shownReview, review)) return;
         CloseModReview();
         shownReview = review;
-        var builder = CustomUIManager.Window("probably_coop_join_review", Loc("join_mod_title"), JoinWindowLayer)
+        reviewingOpeningChoices = openingChoices;
+        bool canOpenMods = inMenu && room.IsGuest && room.Code.Length != 0 &&
+            review.Rows.Any(row => row.Kind is RoomModManifest.Difference.Disabled or RoomModManifest.Difference.LoadFailed ||
+                row.LocalOverridesWorkshop || CanShowWorkshopProgress(row));
+        var builder = CustomUIManager.Window("probably_coop_join_review",
+            Loc(openingChoices ? "opening_mod_review" : "join_mod_title"), JoinWindowLayer)
             .SetSize(900, 520).Center().SetDraggable(true).SetCloseOnEscape().OnClose(cancel);
         builder.BeginPanel(alignment: TextAnchor.UpperLeft, padding: 16, spacing: 7);
-        builder.AddLabel(Loc(review.Blocked ? "join_mod_blocked" : "join_mod_can_try"), "mod_review_heading");
+        builder.AddLabel(Loc(openingChoices ? "opening_mod_review_heading" :
+            review.Blocked ? "join_mod_blocked" : "join_mod_can_try"), "mod_review_heading");
         StyleLabel(builder.Last, TextAlignmentOptions.Left, ReviewWarning, 27);
-        builder.AddLabel(Loc(review.Blocked ? "join_mod_resolve" : "join_mod_explain"));
+        builder.AddLabel(Loc(openingChoices ? "opening_mod_review_hint" :
+            review.Blocked ? "join_mod_resolve" : "join_mod_explain"));
         StyleLabel(builder.Last, TextAlignmentOptions.Left, new Color32(208, 195, 177, 255), 19);
         builder.End();
         builder.BeginScrollFlexible(125);
@@ -281,56 +351,188 @@ internal sealed partial class CoopPanel
             builder.Last.text.richText = false;
             StyleLabel(builder.Last, TextAlignmentOptions.Right, row.Kind == RoomModManifest.Difference.LocalOnly ?
                 new Color32(184, 216, 184, 255) : ReviewWarning, 18);
+            if (CanShowWorkshopProgress(row))
+                workshopReviewLabels.Add((row, builder.Last));
             if (row.Workshop != 0 && row.Kind != RoomModManifest.Difference.LocalOnly)
-                builder.AddButton(Loc("join_mod_workshop"), () => ModWorkshop.OpenItemPage(row.Workshop), "mod_review_workshop_" + row.Id);
+                builder.AddButton(Loc("join_mod_workshop"), () => OpenWorkshopFromReview(row.Workshop), "mod_review_workshop_" + row.Id);
             builder.End().End().End();
         }
         builder.End();
-        builder.BeginPanel(alignment: TextAnchor.UpperLeft, padding: 12, spacing: 8);
-        TintPanel(builder, new Color32(58, 44, 49, 255));
-        reviewConfirmation = builder.CurrentContainer;
-        builder.AddLabel(Loc("join_mod_warning"));
-        StyleLabel(builder.Last, TextAlignmentOptions.Left, ReviewWarning, 19);
-        builder.BeginRow(10, TextAnchor.MiddleRight);
-        builder.AddFlexibleSpace();
-        builder.AddButton(Loc("join_mod_cancel"), () => reviewConfirmation.gameObject.SetActive(false), "join_cancel_differences");
-        builder.AddButton(Loc("join_mod_confirm"), accept, "join_accept_differences");
-        builder.End().End();
-        reviewConfirmation.gameObject.SetActive(false);
+        if (canOpenMods)
+        {
+            builder.BeginPanel(alignment: TextAnchor.UpperLeft, padding: 12, spacing: 8);
+            builder.AddLabel(Loc("join_mod_open_mods_hint"));
+            StyleLabel(builder.Last, TextAlignmentOptions.Left, TerminalInk, 18);
+            builder.AddButton(Loc("join_mod_open_mods"), OpenNativeModsFromReview, "mod_review_open_mods");
+            builder.End();
+        }
+        if (!openingChoices)
+        {
+            builder.BeginPanel(alignment: TextAnchor.UpperLeft, padding: 12, spacing: 8);
+            TintPanel(builder, new Color32(58, 44, 49, 255));
+            reviewConfirmation = builder.CurrentContainer;
+            builder.AddLabel(Loc("join_mod_warning"));
+            StyleLabel(builder.Last, TextAlignmentOptions.Left, ReviewWarning, 19);
+            builder.BeginRow(10, TextAnchor.MiddleRight);
+            builder.AddFlexibleSpace();
+            builder.AddButton(Loc("join_mod_cancel"), () => reviewConfirmation.gameObject.SetActive(false), "join_cancel_differences");
+            builder.AddButton(Loc("join_mod_confirm"), accept, "join_accept_differences");
+            builder.End().End();
+            reviewConfirmation.gameObject.SetActive(false);
+        }
         builder.BeginRow(10, TextAnchor.MiddleRight);
         builder.AddButton(Loc("terminal_details_title"), OpenConnectionDetails, "mod_review_diagnostics");
+        if (room.IsGuest && room.Code.Length != 0)
+            builder.AddButton(Loc("join_mod_copy_join"), CopyReviewJoinInfo, "mod_review_copy_join");
         builder.AddFlexibleSpace();
         builder.AddButton(Loc("join_mod_recheck"), () =>
         {
             AddConnectionEvent("INFO", Loc("join_mod_recheck"));
-            recheck();
             CloseModReview();
+            recheck();
         }, "mod_review_recheck");
-        builder.AddButton(Loc("join_mod_force"), () => reviewConfirmation.gameObject.SetActive(true), "join_force");
+        if (openingChoices) builder.AddButton(Loc("opening_mod_back"), accept, "opening_mod_back");
+        else builder.AddButton(Loc("join_mod_force"), () => reviewConfirmation.gameObject.SetActive(true), "join_force");
         confirmReview = builder.Last;
         confirmReview.SetInteractable(!review.Blocked);
         if (confirmReview.button.image != null) confirmReview.button.image.color = new Color32(163, 221, 210, 255);
         builder.End();
         reviewWindow = builder.Show();
         nextTerminalRefresh = 0;
-        FitJoinWindow(reviewWindow, 900, Mathf.Clamp(280 + review.Rows.Length * 76, 375, 560));
+        int controlsHeight = canOpenMods ? 350 : 280;
+        FitJoinWindow(reviewWindow, 900, Mathf.Clamp(controlsHeight + review.Rows.Length * 76, 375, 620));
         if (diagnosticsWindow?.IsVisible == true) PlaceConnectionBesideReview();
     }
 
-    private static string RowStatus(RoomModManifest.Row row)
+    private void TickWorkshopReview(double now)
     {
-        string status = row.Kind == RoomModManifest.Difference.Missing && row.Workshop != 0 && ModWorkshop.IsAvailable
-            ? WorkshopInstallStatus(row.Workshop) : Loc("join_mod_" + row.Kind);
+        if (reviewWindow?.IsVisible != true || workshopReviewLabels.Count == 0 ||
+            now < nextWorkshopReviewRefresh) return;
+        nextWorkshopReviewRefresh = now + 1;
+        foreach (var (row, label) in workshopReviewLabels)
+        {
+            string status = RowStatus(row);
+            if (label.text.text != status) label.SetText(status);
+        }
+    }
+
+    private void CopyReviewJoinInfo()
+    {
+        if (reviewWindow?.IsVisible != true || !room.IsGuest || string.IsNullOrEmpty(room.Code)) return;
+        GUIUtility.systemCopyBuffer = room.GuestJoinInfo;
+        reviewWindow.Get("mod_review_copy_join")?.SetText(Loc("join_mod_join_copied"));
+    }
+
+    private void OpenWorkshopFromReview(ulong item)
+    {
+        if (inMenu && room.IsGuest && room.Code.Length != 0 && reviewWindow?.IsVisible == true)
+            RememberModJoin(room.GuestJoinInfo);
+        ModWorkshop.OpenItemPage(item);
+    }
+
+    private void OpenNativeModsFromReview()
+    {
+        if (!inMenu || !room.IsGuest || room.Code.Length == 0 ||
+            reviewWindow?.IsVisible != true || MainMenuUIController.Instance is not { } menu) return;
+        string joinInfo = room.GuestJoinInfo;
+        GUIUtility.systemCopyBuffer = joinInfo;
+        RememberModJoin(joinInfo);
+        CloseModReview();
+        room.Leave();
+        restoreAfterPartnerPicker = false;
+        if (window?.IsAlive == true) window.Hide();
+        AddConnectionEvent("INFO", Loc("join_mod_join_copied"));
+        menu.OpenModPanel();
+    }
+
+    private void RememberModJoin(string joinInfo)
+    {
+        var resume = RoomJoinResume.Create(joinInfo, DateTime.UtcNow);
+        if (resume == null) return;
+        modJoinResumeLoaded = true;
+        savedModJoin = resume;
+        try { ModHelper.WriteModDataFileText(RoomModManifest.OwnId, ModJoinResumeFile, resume.Write()); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { Debug.LogWarning("[probably_coop] mod join resume could not be saved: " + error.GetType().Name); }
+    }
+
+    private RoomJoinResume GetSavedModJoin()
+    {
+        DateTime now = DateTime.UtcNow;
+        if (!modJoinResumeLoaded)
+        {
+            modJoinResumeLoaded = true;
+            try
+            {
+                string text = ModHelper.ReadModDataFileText(RoomModManifest.OwnId, ModJoinResumeFile);
+                savedModJoin = RoomJoinResume.Read(text, now);
+                if (text != null && savedModJoin == null) ClearSavedModJoin();
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            { Debug.LogWarning("[probably_coop] mod join resume could not be read: " + error.GetType().Name); }
+        }
+        if (savedModJoin != null && !savedModJoin.IsCurrent(now)) ClearSavedModJoin();
+        return savedModJoin;
+    }
+
+    private void ClearSavedModJoin()
+    {
+        savedModJoin = null;
+        try { ModHelper.DeleteModDataFile(RoomModManifest.OwnId, ModJoinResumeFile); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { Debug.LogWarning("[probably_coop] mod join resume could not be cleared: " + error.GetType().Name); }
+    }
+
+    private void ResumeModJoin()
+    {
+        if (!inMenu || !CanConnect || GetSavedModJoin() is not { } resume) return;
+        code.SetString(resume.Code);
+        ipv4.RestoreMapping(resume.Mapping ?? "");
+        RequestJoin();
+    }
+
+    private static bool CanShowWorkshopProgress(RoomModManifest.Row row) => row.Workshop != 0 && !row.LocalOverridesWorkshop &&
+        row.Kind is RoomModManifest.Difference.Missing or RoomModManifest.Difference.Version or RoomModManifest.Difference.Files;
+
+    private static string RowStatus(RoomModManifest.Row row) =>
+        FormatReviewStatus(row, CanShowWorkshopProgress(row) && ModWorkshop.IsAvailable ? WorkshopInstallStatus(row) : null);
+
+    private static string FormatReviewStatus(RoomModManifest.Row row, string status = null)
+    {
+        status ??= Loc("join_mod_" + row.Kind);
+        if (row.LocalOverridesWorkshop) status += "  ·  " + Loc("join_mod_local_override");
         if (row.Blocker != null) return status + "  ·  " + JoinText(row.Blocker, row.Id);
         return status;
     }
 
-    private static string WorkshopInstallStatus(ulong id)
+    private static string WorkshopInstallStatus(RoomModManifest.Row row)
     {
-        uint state = SteamUGC.GetItemState(new PublishedFileId_t(id));
-        if ((state & 1) == 0) return Loc("join_mod_unsubscribed");
-        if ((state & 0x30) != 0 || (state & 4) == 0) return Loc("join_mod_downloading");
-        return Loc("join_mod_restart");
+        var id = new PublishedFileId_t(row.Workshop);
+        var state = (EItemState)SteamUGC.GetItemState(id);
+        var progress = RoomModManifest.ReadWorkshopProgress(row.Kind,
+            (state & EItemState.k_EItemStateSubscribed) != 0,
+            (state & EItemState.k_EItemStateInstalled) != 0,
+            pending: (state & EItemState.k_EItemStateDownloadPending) != 0,
+            needsUpdate: (state & EItemState.k_EItemStateNeedsUpdate) != 0,
+            downloading: (state & EItemState.k_EItemStateDownloading) != 0);
+        if (progress == RoomModManifest.WorkshopProgress.Downloading &&
+            SteamUGC.GetItemDownloadInfo(id, out ulong received, out ulong total) &&
+            RoomModManifest.WorkshopDownloadPercent(received, total) is int percent)
+            return JoinText("join_mod_download_percent", percent);
+        return progress switch
+        {
+            RoomModManifest.WorkshopProgress.NotSubscribed => Loc("join_mod_unsubscribed"),
+            RoomModManifest.WorkshopProgress.PendingDownload => Loc("join_mod_download_queued"),
+            RoomModManifest.WorkshopProgress.Downloading => Loc("join_mod_downloading"),
+            RoomModManifest.WorkshopProgress.WaitingForDownload => Loc("join_mod_download_waiting"),
+            RoomModManifest.WorkshopProgress.RestartRequired => Loc("join_mod_restart"),
+            _ => null
+        };
+    }
+
+    internal void CloseOpeningModReview()
+    {
+        if (reviewingOpeningChoices) CloseModReview();
     }
 
     internal void CloseModReview()
@@ -345,6 +547,9 @@ internal sealed partial class CoopPanel
         }
         reviewWindow = null;
         shownReview = null;
+        reviewingOpeningChoices = false;
+        workshopReviewLabels.Clear();
+        nextWorkshopReviewRefresh = 0;
     }
 
     private void CloseDiagnosticsWindows()

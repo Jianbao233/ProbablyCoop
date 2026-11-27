@@ -181,6 +181,7 @@ solo_import_failure_reason,无法创建合作副本：{0}
 sync_extension_missing_guest,客机需要启用模组 {0}。
 sync_extension_missing_host,房主尚未启用客机所用的模组 {0}。
 sync_extension_mismatch,两端的模组 {0} 版本或联机配置不兼容。
+sync_extension_apply_failed,模组 {0} 无法应用房主的数据。请查看连接记录，核对两端的模组后再重进。
 no_checkpoints,没有可读取的合作检查点。
 checkpoint_unavailable,无法读取这个合作检查点。
 cursor_location_0,主菜单
@@ -251,6 +252,8 @@ settings_ping_binding,标记物品按键
 settings_ping_binding_help,指向物品并按下此键即可提醒合伙人。默认鼠标中键。
 settings_sync_notices,显示联机同步提示
 settings_sync_notices_help,显示普通的操作等待与同步重试提示。入房错误和连接记录始终留在联机面板。
+settings_independent_travel,独立外出（房主）
+settings_independent_travel_help,关店后两人各有一次外出机会，可以去不同地点。同一地点共用库存。请在打开或重新载入合作档前设置。
 item_ping_notice,合伙人标记了 {0}
 player_name,玩家名称
 player_name_input,输入玩家名称（默认使用 Steam 名称）
@@ -298,6 +301,11 @@ force_day_started,房主已启动原版日结，正在等待存档确认。
 force_day_stale,当前已无法发起这次日结，请重新查看连接详情。
 trip_block_busy,场景或日结正在处理中，请稍后再确认出行。
 trip_block_trade,交易还在进行中，请完成或关闭交易后再出行。
+trip_merchant_no_space,店铺空间不足，剩余物品仍在工程师商店。腾出空间后再返回。
+trip_offline_return,召回离线合伙人
+trip_offline_return_confirm,合伙人在{0}断开连接。召回会把随身物品带回当铺，地板剩余物品按原版最后一人离场规则处理。召回后可另行日结。
+trip_offline_return_done,合伙人已回到当铺，可以正常日结。
+trip_offline_return_stale,连接或外出状态已变化。如果合伙人仍在外面，请重新打开确认。
 diag_copy,复制诊断
 diag_copied,诊断已复制
 diag_DAY-200,正在进行原版日结。请等待存档和晨间报告完成。
@@ -309,12 +317,15 @@ diag_DAY-206,房主未能写入或读回验证新一天的合作档。恢复后�
 diag_DAY-207,库存操作失败，日结已暂停。请在连接详情恢复最近已确认的合作档。
 diag_DAY-208,交易的资金或物品结果未通过校验，日结已暂停。请在连接详情恢复最近已确认的合作档。
 diag_DAY-209,店铺操作发生异常，日结已暂停。请在连接详情恢复最近已确认的合作档。
+diag_DAY-210,日结准备时发生异常，下一天尚未开始。请在连接详情恢复最近已确认的合作档。
 mutation_recovery_resume,恢复最近已确认的合作档
 mutation_recovery_confirm,房间将关闭。游戏会丢弃未保存的进度并载入最近已确认的合作档。
 mutation_recovery_unavailable,没有找到与最近确认记录一致的合作档。请将连接诊断和房主日志发给作者。
 diag_DAY-301,房主的店铺或日结已暂停。请房主查看连接详情里的 DAY 状态码，客机先在店内等候。
-diag_reloaded_from,已返回主菜单。请用「继续合作档」读取最近已确认的第 {0} 天。
-diag_no_checkpoint,已返回主菜单。本局暂无已确认的合作档，请新建合作局。
+diag_MOD-101,第三方 Mod 的操作没有完成。本局已停止，未写入存档。恢复后若再次出现，请复制连接详情并附上房主日志。
+diag_TRIP-201,共同出行切换场景时出错。本局已停止，未写入存档。恢复后若再次出现，请复制连接详情并附上房主日志。
+diag_reloaded_from,已返回主菜单。可在这里恢复最近已确认的第 {0} 天。
+diag_no_checkpoint,已返回主菜单。找不到与本局最近确认记录一致的合作档。可在「继续合作档」查看已有记录，或附上连接详情和房主日志反馈。
 diag_SYNC-101,房主未能收集店铺状态。房主保持当前游戏，客机重进一次；若再次失败请提供房主日志。
 diag_SYNC-102,房主未能打包店铺状态。客机可用原房间码重试一次；若再次失败请提供房主日志。
 diag_SYNC-103,客机收到的检查点未通过校验。请用原房间码重试；若再次失败请提供两端日志。
@@ -344,23 +355,33 @@ opening_debt_waived,免除开局差额 {0}。
 opening_debt_schedule,开局欠款 {0} · 每周附加房租 {1}
 opening_partner_perks,合伙人开局天赋
 opening_partner_perks_hint,选择个人和店铺天赋。共享赠品和设施只发放一次。
-opening_rent_calendar,下次租金 {0}（含开局分摊 {1} · 已欠 {2}） · 距离交租 {3} 天
+opening_rent_calendar,下次租金 {0}（含开局分摊 {1} · 已欠 {2}） · 距离交租 {3} 天\n开局欠款还剩 {4}
 join_mod_title,入房向导
 join_mod_can_try,发现 Mod 差异 · 可以尝试加入
-join_mod_blocked,有必需的联机扩展尚未就绪
-join_mod_resolve,处理标出的扩展问题后再检查。启用或更新 Mod 后请按原版提示重启。
+join_mod_blocked,有必需的 Mod 尚未就绪
+join_mod_resolve,处理标出的 Mod 问题后再检查。启用或更新 Mod 后请按原版提示重启。
 join_mod_explain,双方的 Mod 可以不同。你可以处理下列差异，或继续尝试进入房间。
 join_mod_versions,房主 {0}   ·   本机 {1}
 join_mod_Missing,本机未安装 · 手动取得同版
 join_mod_Disabled,已安装 · 请在改装件菜单启用并重启
+join_mod_LoadFailed,加载失败 · 请在改装件中查看错误
 join_mod_Version,版本不同
 join_mod_Files,版本相同 · 文件不同
+join_mod_local_override,本地副本优先加载
 join_mod_LocalOnly,仅本机启用
 join_mod_Extension,需要共同加载的联机扩展
 join_mod_unsubscribed,未订阅
-join_mod_downloading,已订阅 · 等待 Steam 安装
+join_mod_downloading,Steam 正在下载
+join_mod_download_queued,已加入 Steam 下载队列
+join_mod_download_waiting,已订阅 · 请查看 Steam 下载
+join_mod_download_percent,Steam 下载进度 · {0}%
+join_mod_copy_join,复制加入信息
+join_mod_join_copied,已复制加入信息
 join_mod_restart,已安装 · 等待游戏重新加载
 join_mod_workshop,打开工坊
+join_mod_open_mods,复制入房信息并打开改装件
+join_mod_open_mods_hint,在工坊订阅。下载完成后启用改装件，按游戏提示重启。回来后可以继续刚才的入房，也可以粘贴已复制的入房信息。如果仍提示文件不同，请与房主确认实际使用的版本。房间信息仅在本机暂存一小时。
+join_mod_resume,继续刚才的入房
 join_mod_warning,将以当前 Mod 组合尝试。遇到无法载入的内容时，客机会返回菜单并保留诊断。
 join_mod_cancel,取消
 join_mod_confirm,确认加入
@@ -370,7 +391,21 @@ join_mod_consent,客机确认按当前 Mod 差异尝试加入
 join_mod_ready,已按当前 Mod 组合载入房间
 join_mod_count,发现 {0} 项 Mod 差异
 join_diag_mod,{0}  ·  房主 {1} / 本机 {2}  ·  {3}
+join_diag_full_mods,还有 {0} 项差异，复制诊断可获取完整列表。
 diag_build,游戏 {0}  ·  合伙店 {1}  ·  联机协议 {2}
 diag_connection_state,连接 {0}  ·  {1}
 join_diag_load,处理同步时失败 · {0}
 join_diag_item,物品 {0} · 资源来源 {1} · {2}
+join_diag_extension,模组 {0} · 应用房主数据时失败 · {1}
+opening_shop_perk_conflict,双方的店铺天赋冲突：{0} / {1}。请其中一人重新选择。
+opening_career_conflict,这两种职业不能在同一家店开局。请重新选择职业。
+opening_career_unavailable,这个职业暂不能用于双人开局：{0}。
+commissary_perk_ban,你的开局天赋限制了你使用食品兑换处。
+opening_mod_review,查看开局 Mod
+opening_mod_review_heading,开局职业和天赋所需的 Mod
+opening_mod_review_hint,可以继续选双方都有的开局。如果房主已经选了 Mod 开局，请先安装并启用同一份 Mod。
+opening_mod_back,返回开局选择
+opening_install_host_career,选择职业前请先安装并启用提供「{0}」的同版 Mod。
+opening_mod_missing_match,开局天赋或职业需要双方启用同一份 Mod。
+opening_save_missing_mod,请启用此合作档需要的 Mod 后重启游戏。缺少 {0}。
+sync_opening_mod_required,此合作档需要双方启用同一份 {0}。

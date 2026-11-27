@@ -21,11 +21,14 @@ static class CheckpointLogicTests
     static JObject Node(int uid, long uuid = 0) => new JObject { ["uniqueId"] = uid, ["uuid"] = uuid,
         ["identifier"] = "fixture", ["unitCount"] = 1, ["childItems"] = new JArray(), ["childItemInventoryNode"] = new JArray() };
     static JObject Save(params JObject[] nodes) => new JObject { ["saveItems"] = new JArray(nodes) };
-    static NativeActorCheckpoint.Envelope Make(JArray roots = null, JArray selected = null, int[] shared = null, string setup = null)
-        => NativeActorCheckpoint.Create(Run, 5, 7, Personal(), roots ?? Roots(), selected ?? new JArray(null, null), shared ?? Array.Empty<int>(), setup);
+    static NativeActorCheckpoint.Envelope Make(JArray roots = null, JArray selected = null, int[] shared = null, string setup = null,
+        string openingMods = null)
+        => NativeActorCheckpoint.Create(Run, 5, 7, Personal(), roots ?? Roots(), selected ?? new JArray(null, null),
+            shared ?? Array.Empty<int>(), setup, openingMods);
     static PlayerStore Store() => new PlayerStore { runID = Run.ToString("D"), saveSlotId = 5 };
     static NativeActorCheckpoint.Receipt Receipt(NativeActorCheckpoint.Envelope e) => new NativeActorCheckpoint.Receipt {
-        Run = e.Run, Slot = e.Slot, Day = e.Day, CurrentUniqueId = 100, Encoded = e.Encoded, PartnerSetup = e.PartnerSetup, NativeHost = (JObject)e.Personal["actors"][0] };
+        Run = e.Run, Slot = e.Slot, Day = e.Day, CurrentUniqueId = 100, Encoded = e.Encoded,
+        PartnerSetup = e.PartnerSetup, OpeningMods = e.OpeningMods, NativeHost = (JObject)e.Personal["actors"][0] };
     static void Check(bool b, string name) { if (!b) throw new Exception(name); count++; Console.WriteLine("PASS " + name); }
     static void Fail(Action a, string name) { try { a(); } catch { Check(true,name); return; } throw new Exception("Expected rejection: " + name); }
     static JObject Slot(NativeActorCheckpoint.Envelope e)
@@ -38,6 +41,7 @@ static class CheckpointLogicTests
         foreach(string key in "appraiserLevel appraisalProgress appraisalPromotionDay scavengingAttempts dumpingGroundMajorWoundImmunitySearchesLeft dumpingGroundMinorWoundImmunitySearchesLeft".Split(' ')) body[key]=0;
         foreach (string key in "mainInvJSON backInvJSON hiddenInvJSON showcaseInvJSON soldInvJSON hirelingInvJSON vendingMachineInvJSON vendingFountainInvJSON trashcanInvJSON docInvJSON cassettePlayerInvJSON".Split(' ')) body[key] = null;
         if (e.PartnerSetup != null) body["modData"][NativeActorCheckpoint.PartnerSetupDataKey] = e.PartnerSetup;
+        if (e.OpeningMods != null) body["modData"][NativeActorCheckpoint.OpeningModsDataKey] = e.OpeningMods;
         return new JObject { ["playerStore"] = new JObject { ["__type"] = "PlayerStore", ["value"] = body },
             ["storeStation"] = new JObject { ["__type"] = "StoreStation", ["value"] = new JObject { ["dayCounter"] = e.Day } } };
     }
@@ -190,7 +194,30 @@ static class CheckpointLogicTests
         file=Slot(e);file["playerStore"]["value"]["modData"][NativeActorCheckpoint.PartnerSetupDataKey]=null;
         using(var reader=ES3Reader.Create(Encoding.UTF8.GetBytes(file.ToString()),new ES3Settings(false)))
             Fail(()=>NativeActorCheckpoint.ReadReceipt(reader),"present null setup marker is not silently treated as unselected");
+        VerifyOpeningMods(store);
         Console.WriteLine("PASS "+count+" isolated checkpoint assertions; ES3 runtime NOT_RUN.");
+    }
+
+    static void VerifyOpeningMods(PlayerStore store)
+    {
+        const string required = "[[\"brewer\",\"Brewing tools\",\"2.0\",27,\"\"]]";
+        var checkpoint = Make(openingMods: required);
+        Check(NativeActorCheckpoint.Decode(checkpoint.Encoded, Array.Empty<int>()).OpeningMods == required,
+            "saved opening dependencies survive the checkpoint codec");
+        var unsigned = Receipt(checkpoint);
+        unsigned.OpeningMods = null;
+        Fail(() => NativeActorCheckpoint.VerifyReceipt(checkpoint, unsigned), "missing opening dependency receipt rejected");
+
+        store.modData.Clear();
+        store.modData[NativeActorCheckpoint.OpeningModsDataKey] = required;
+        using var pending = new NativeActorCheckpoint.Pending(store, 7, checkpoint, () => true);
+        var file = Slot(checkpoint);
+        ((JObject)file["playerStore"]["value"]["modData"]).Remove(NativeActorCheckpoint.OpeningModsDataKey);
+        WriteSlot(file);
+        Fail(() => pending.VerifyWritten(), "file readback detects lost opening dependencies");
+        WriteSlot(Slot(checkpoint));
+        pending.VerifyWritten();
+        Check(true, "opening dependencies verified in the same saved slot");
     }
 
     static void CheckEffectAllocations()

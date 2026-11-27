@@ -43,6 +43,7 @@ internal static class PickupLeaseTests
             lease.Release(99,35)==ShopResult.Stale && lease.ActiveSerial==4,"wrong serial changed active hand");
         Check(lease.Renew(4,49,_=>true)==ShopResult.Stale && lease.ActiveSerial==0,"expired renewal revived hand");
         CheckTransportRetry();
+        CheckLostRelease();
         Console.WriteLine("PASS pickup lease ledger: atomic groups, immutable IDs, monotonic hands, cancellation, renewal/expiry, source invalidation, exact-set drop, exception release and ReplicaLink duplicate/lost-reply retry");
     }
     private static void CheckTransportRetry()
@@ -71,6 +72,67 @@ internal static class PickupLeaseTests
         Check(commits==1 && lease.ActiveSerial==0,"duplicate native drop mutated twice");
         Check(guest.Submit(drop,3),"replay transport submit"); guest.Tick(3,true); host.Receive(fromGuest.Single()); guest.Receive(fromHost.Last());
         Check(commits==1 && guest.Result==(ushort)ShopResult.Stale,"later serial reused finished lease");
+    }
+
+    private static void CheckLostRelease()
+    {
+        var outbound = new List<Packet>();
+        var replies = new List<Packet>();
+        var host = new ReplicaLink(true, (kind, serial, rev, value, data) =>
+        { replies.Add(new Packet(kind, serial:serial, revision:rev, value:value, payload:data)); return true; });
+        var guest = new ReplicaLink(false, (kind, serial, rev, value, data) =>
+        { outbound.Add(new Packet(kind, serial:serial, revision:rev, value:value, payload:data)); return true; });
+        var lease = new PickupLease();
+        double now = 0;
+        int releases = 0;
+        host.Execute = command =>
+        {
+            if (command[0] == 1)
+                return (ushort)lease.Acquire(command[1], new uint[] { command[1] }, now, _ => true);
+            releases++;
+            return (ushort)lease.Release(command[1], now);
+        };
+        host.Publish(new byte[] { 1 });
+        host.Tick(now, true);
+        guest.Receive(replies.Single());
+        host.Receive(outbound.Single());
+        outbound.Clear(); replies.Clear();
+
+        ulong Submit(byte kind, byte hand)
+        {
+            Check(guest.SubmitIndependent(new byte[] { kind, hand }, now, out ulong serial), "hand request submit");
+            return serial;
+        }
+        ulong first = Submit(1, 1);
+        host.Receive(outbound.Single());
+        guest.Receive(replies.Single());
+        Check(guest.TryTakeIndependentResult(first, out ushort grant) && grant == (ushort)ShopResult.Applied,
+            "first drag did not obtain a real independent command receipt");
+        outbound.Clear(); replies.Clear();
+
+        now = 1;
+        ulong release = Submit(2, 1);
+        outbound.Clear(); // Lose the actual release datagram, rather than its reply.
+        ulong second = Submit(1, 2);
+        host.Receive(outbound.Single());
+        Check(lease.ActiveSerial == 1 && releases == 0 && replies.Count == 0,
+            "a later drag bypassed the missing release and reordered host commands");
+        outbound.Clear();
+        now = 1.51;
+        guest.Tick(now, true);
+        var recovered = outbound.Single(packet => packet.Serial == release);
+        host.Receive(recovered);
+        host.Receive(recovered);
+        foreach (var reply in replies) guest.Receive(reply);
+        Check(guest.TryTakeIndependentResult(release, out ushort result) && result == (ushort)ShopResult.Applied &&
+            guest.TryTakeIndependentResult(second, out grant) && grant == (ushort)ShopResult.Applied &&
+            lease.ActiveSerial == 2 && releases == 1, "release retry did not clear exactly once before the next drag");
+        Check(lease.Tick(now + PickupLease.LifetimeSeconds) && lease.ActiveSerial == 0,
+            "a completely lost cancellation left the host permanently blocked");
+        lease.Reset();
+        Check(lease.Acquire(1, new uint[] { 6 }, now + PickupLease.LifetimeSeconds, _ => true) == ShopResult.Applied,
+            "the first hand after a fresh connection could not reserve inventory");
+        Console.WriteLine("PASS guest release datagram lost: queued next hand, ordered retry, duplicate release, lease expiry and fresh hand");
     }
     private static void Check(bool value,string message) { if(!value) throw new Exception(message); }
 }

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Buffers.Binary;
 using ProbablyCoop.Core;
 
 internal static class DirectConnectionMeasurementsTests
@@ -16,6 +17,9 @@ internal static class DirectConnectionMeasurementsTests
         bool dropPongs = true, dropFirstFragment = false, delayedFirstHostProbe = false;
         bool watchGuestPong = false, guestPongQueued = false;
         int lostProbes = 0, lostFragments = 0;
+        bool complementaryLoss = false, dropNextNativeAck = false, suppressProgress = false;
+        int fragmentPasses = 0, complementaryDrops = 0, snapshotBytes = 0, lostAcks = 0;
+        var fragmentSequences = new List<ulong>();
 
         void Pump()
         {
@@ -36,6 +40,12 @@ internal static class DirectConnectionMeasurementsTests
                 if (!from.Equals(host.LocalEndpoint))
                 {
                     guestEndpoint = from;
+                    if (bytes[16] == 0 && bytes.Length >= 23)
+                    {
+                        if (dropNextNativeAck && bytes[22] == (byte)Kind.NativeAck)
+                        { lostAcks++; dropNextNativeAck = false; suppressProgress = true; continue; }
+                        if (suppressProgress && bytes[22] == (byte)Kind.NativeProgress) continue;
+                    }
                     relay.Send(bytes, bytes.Length, host.LocalEndpoint);
                     continue;
                 }
@@ -46,6 +56,18 @@ internal static class DirectConnectionMeasurementsTests
                     guestPongQueued = true;
                 if (dropFirstFragment && marker == DirectFragments.Marker && bytes[27] == 0)
                 { lostFragments++; continue; }
+                if (complementaryLoss && marker == DirectFragments.Marker)
+                {
+                    snapshotBytes += bytes.Length;
+                    int fragment = bytes[27];
+                    if (fragment == 0)
+                    {
+                        fragmentPasses++;
+                        fragmentSequences.Add(BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(17, 8)));
+                    }
+                    if (fragmentPasses == 1 && fragment == 1 || fragmentPasses == 2 && fragment == 2)
+                    { complementaryDrops++; continue; }
+                }
                 relay.Send(bytes, bytes.Length, guestEndpoint);
             }
             now += 0.025;
@@ -94,6 +116,23 @@ internal static class DirectConnectionMeasurementsTests
         Until(() => guest.Session.Native.State != null && guest.Session.Native.State.AsSpan().SequenceEqual(payload), 6);
         Check(guest.Session.State == LinkState.Connected, "buffered stock repaired without rejoining");
         Console.WriteLine("PASS direct connection diagnostics: lost echo, recovered RTT, local stall, actual UDP fragments and in-room repair");
+
+        Until(() => host.Session.Native.Revision == guest.Session.Native.Revision, 4);
+        var next = new byte[14000];
+        new Random(2).NextBytes(next);
+        ulong expected = host.Session.Native.Revision + 1;
+        complementaryLoss = dropNextNativeAck = true;
+        host.Session.Native.Publish(next);
+        Until(() => guest.Session.Native.Revision == expected && lostAcks == 1, 3);
+        Check(complementaryDrops == 2 && fragmentPasses == 2 && fragmentSequences[0] == fragmentSequences[1] &&
+            guest.Session.Native.State.AsSpan().SequenceEqual(next),
+            "complementary loss must assemble one exact snapshot from two incomplete UDP sends");
+        int bytesToApply = snapshotBytes;
+        Until(() => host.Session.Native.Revision == expected, 1.35);
+        Check(fragmentPasses == 3 && fragmentSequences.All(seq => seq == fragmentSequences[0]) &&
+            host.Session.State == LinkState.Connected && guest.Session.State == LinkState.Connected,
+            "a completed chunk must repeat its lost ACK on the same fragment sequence");
+        Console.WriteLine($"PASS real UDP complementary loss: two incomplete sends, {bytesToApply} snapshot bytes to apply, lost ACK recovered without a sequence reset");
     }
 
     private static void Check(bool condition, string message)

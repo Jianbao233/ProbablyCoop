@@ -81,9 +81,11 @@ internal sealed partial class NativeWorld
             barter=OverlayHandler.current.currentBarterCharacter;
         }
         internal bool Current(GameItem item,GameItem currentRoot,double now)
+            => now-Time<=MaxReadAge && CurrentContext(item,currentRoot);
+        internal bool CurrentContext(GameItem item,GameItem currentRoot)
         {
             var store=PlayerStore.Instance;
-            return now-Time<=MaxReadAge && SamePlacement(item,currentRoot) && day==StoreStation.Instance.dayCounter &&
+            return SamePlacement(item,currentRoot) && day==StoreStation.Instance.dayCounter &&
                 cash==store.playerCash && phase==store.storeState && ReferenceEquals(customer,store.currentClientInstance) &&
                 ReferenceEquals(location,MapUIManager.Instance.Current) && ReferenceEquals(barter,OverlayHandler.current.currentBarterCharacter);
         }
@@ -142,7 +144,7 @@ internal sealed partial class NativeWorld
             return saved.Value.Pair;
         }
         using var timing=NativePerformance.Measure("host.in_capture_tooltip");
-        var pair=EvaluateTooltip(ticket.Item);
+        var pair=TryPreparedCheckpointTooltip(ticket,out var prepared) ? prepared : EvaluateTooltip(ticket.Item);
         saved.Value=new TooltipSample(ticket,pair,Time.realtimeSinceStartupAsDouble);
         return pair;
     }

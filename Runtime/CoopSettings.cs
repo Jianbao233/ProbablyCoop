@@ -10,6 +10,7 @@ internal static class CoopSettings
     private static ConfigEntry<PingBinding> pingBinding;
     private static ConfigEntry<string> pointerName;
     private static ConfigEntry<bool> syncNotices;
+    private static ConfigEntry<bool> independentTravel;
     private static string Loc(string key)=>ModHelper.GetLocalized("probably_coop",key);
 
     internal static void Register()
@@ -22,9 +23,12 @@ internal static class CoopSettings
             ()=>Loc("settings_ping_binding_help"));
         pointerName=config.Define("pointer_name","","Co-op",()=>Loc("settings_pointer_name"),
             tooltip:()=>Loc("settings_pointer_name_help"));
+        independentTravel=config.Define("independent_travel",false,"Co-op",()=>Loc("settings_independent_travel"),
+            ()=>Loc("settings_independent_travel_help"));
     }
 
     internal static bool ShowSyncNotices => syncNotices?.Value==true;
+    internal static bool IndependentTravel => independentTravel?.Value==true;
     internal static void SetSyncNotices(bool value)=>syncNotices?.Set(value);
     internal static string PointerName
     {

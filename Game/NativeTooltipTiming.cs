@@ -11,16 +11,20 @@ namespace ProbablyCoop;
 internal static class NativeTooltipTiming
 {
     [ThreadStatic] private static int depth;
+#if PROBABLY_COOP_GRID_QA
     [ThreadStatic] private static bool useFill;
     internal static bool HasBenchmarkFillPatch() => Fill.IsInstalled();
+#endif
     internal static Capture Begin()
     {
         if(!NativePerformance.Detailed) return default;
+#if PROBABLY_COOP_GRID_QA
         if(depth==0)
         {
             useFill=NativeCaptureComparison.Current?.UseFill==true;
             if(useFill) Fill.UpdateCompatibility();
         }
+#endif
         depth++;
         return new Capture(true);
     }
@@ -37,6 +41,7 @@ internal static class NativeTooltipTiming
         private static void Prefix(out NativePerformance.Scope __state)=>__state=depth>0 ? NativePerformance.Measure("host.tooltip_basic") : default;
         private static void Postfix(NativePerformance.Scope __state)=>__state.Dispose();
     }
+#if PROBABLY_COOP_GRID_QA
     [HarmonyPatch(typeof(RichTextBuilder),nameof(RichTextBuilder.GetFillString))]
     private static class Fill
     {
@@ -75,6 +80,7 @@ internal static class NativeTooltipTiming
             if(++verified==512) UnityEngine.Debug.Log("[probably_coop QA] PASS native-tooltip-fill 512 original rich text fills matched exactly");
         }
     }
+#endif
     [HarmonyPatch(typeof(RichTextBuilder),nameof(RichTextBuilder.Build))]
     private static class Build
     {

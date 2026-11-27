@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="*.cs" />
     <Compile Include="..\..\Core\ActivityScope.cs" Link="Core\ActivityScope.cs" />
+    <Compile Include="..\..\Compat\ModExtensionApi.cs" Link="Compat\ModExtensionApi.cs" />
     <Compile Include="..\..\Game\NativeActorState.cs" Link="Game\NativeActorState.cs" />
     <Compile Include="..\..\Game\NativeActorRun.cs" Link="Game\NativeActorRun.cs" />
     <Compile Include="..\..\Game\NativeActorActivities.cs" Link="Game\NativeActorActivities.cs" />

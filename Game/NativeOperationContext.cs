@@ -10,10 +10,12 @@ internal sealed partial class NativeWorld
     internal ulong ItemPingContext => host ? operationContext.Generation : observedOperationContext;
     internal static bool CanSeeItemPing(GameItem item)=>item!=null && Accessible(item.parentInventory);
 
-    private ulong ObserveOperationContext() => operationContext.Observe(
-        StoreStation.Instance.dayCounter, (int)PlayerStore.Instance.storeState,
-        MapUIManager.Instance.Current?.Id ?? "",
-        (bool)HarmonyLib.AccessTools.Field(typeof(MapUIManager), "inTransit").GetValue(MapUIManager.Instance));
+    private ulong ObserveOperationContext()
+    {
+        var trip = ObserveTravelPosition(NativeActorRun.Slot.Partner);
+        return operationContext.Observe(StoreStation.Instance.dayCounter, (int)PlayerStore.Instance.storeState,
+            trip.Site, MapUIManager.Instance.IsInTransit, trip.Generation);
+    }
 
     private void SealOperation(JObject command)
     {

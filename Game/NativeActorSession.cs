@@ -9,6 +9,7 @@ namespace ProbablyCoop;
 // room must not discard the partner, their carry or a partially attempted night.
 internal sealed class NativeActorSession : IDisposable
 {
+    internal const string TravelFaultCode = "TRIP-201";
     internal static NativeActorSession Current { get; private set; }
     internal PlayerStore Store { get; }
     internal int NativeSaveSlot { get; }
@@ -21,6 +22,8 @@ internal sealed class NativeActorSession : IDisposable
     internal bool Terminal { get; private set; }
     internal bool Faulted { get; private set; }
     internal string Failure { get; private set; }
+    internal ModExtensionActionFailure ExtensionActionFailure { get; private set; }
+    internal bool TravelTransitionFailed { get; private set; }
     internal string Ending { get; private set; }
     internal bool CreatedFromArmedRun { get; }
     internal bool Hydrating { get; set; }
@@ -45,7 +48,7 @@ internal sealed class NativeActorSession : IDisposable
         try
         {
             Carry = new NativeActorCarry(entry, () => Run.CurrentActor, NativeActorRun.Slot.Host);
-            Activities = new NativeActorActivities(run);
+            Activities = new NativeActorActivities(run, actor => NativeWorld.Host?.EnterExpeditionSite(actor));
             PersonalUi = new NativeActorPersonalUi(run);
             Night = new NativeActorNight(run.Run.ToString("N") + "/" + Guid.NewGuid().ToString("N"));
             Current = this;
@@ -102,7 +105,6 @@ internal sealed class NativeActorSession : IDisposable
     {
         if (!CoopRun.IsRegistered(store)) throw new InvalidOperationException("Actor restoration requires a registered cooperative run.");
         if (Current != null) throw new InvalidOperationException("Retire the previous native scene before restoring actors.");
-        NativeOpening.RestorePartnerCareerReputation(store);
         var result = new NativeActorSession(store, NativeActorRun.RestorePersonalCheckpoint(store, checkpoint.Personal), EmporiumEntry.Instance, false);
         result.Hydrating = true;
         return result;
@@ -118,6 +120,7 @@ internal sealed class NativeActorSession : IDisposable
 
     internal bool CanCommit => !disposed && !Terminal && !Faulted && !Hydrating && !NightActive &&
         !Activities.HasExecuting && !Activities.HasActiveBusiness && Run.CurrentActor == NativeActorRun.Slot.Host &&
+        !(NativeWorld.Host is { IndependentTravel: true, EitherActorOutside: true }) &&
         !(NativeWorld.Host?.PartnerHasHand ?? false) &&
         !(ItemMouseDragHandler.current?.IsDraggingItem ?? false) &&
         !(ItemMultiSelectHandler.current?.IsGroupDragging ?? false);
@@ -138,6 +141,18 @@ internal sealed class NativeActorSession : IDisposable
     }
     internal void MarkFault(Exception error)
     { CheckThread(); Faulted = true; Failure = error?.Message ?? "Native cooperative lifecycle failed."; }
+
+    internal void MarkModActionFault(string modId, string action, Exception error)
+    {
+        MarkFault(error);
+        ExtensionActionFailure ??= new ModExtensionActionFailure(modId, action, error);
+    }
+
+    internal void MarkTravelTransitionFault(Exception error)
+    {
+        MarkFault(error);
+        TravelTransitionFailed = true;
+    }
 
     internal void RetireScene()
     {
